@@ -12,8 +12,13 @@ use tokio::process::Command;
 /// the fix is on us — otherwise the user sees "No such file or directory" and
 /// blames the directory they just picked. Kept to one line: the TUI shows it
 /// in the footer flash, which truncates.
-pub const GIT_MISSING: &str =
-    "git was not found on your PATH — nebula needs it. Install git (https://git-scm.com/downloads), then restart nebula.";
+pub const GIT_MISSING: &str = concat!(
+    "git was not found on your PATH — ",
+    nebula_core::cli_name!(),
+    " needs it. Install git (https://git-scm.com/downloads), then restart ",
+    nebula_core::cli_name!(),
+    "."
+); // odyn:
 
 /// True when `err` came from `git` being absent, so callers can pass the
 /// message through instead of layering their own (wrong) explanation on top.

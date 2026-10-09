@@ -1,0 +1,11 @@
+[package]
+name = "odyn-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+odyn = { workspace = true }
+# Keep in step with the nebula crate's clap: the seam passes its Command
+# straight through, so two versions do not compile.
+clap = { version = "4", default-features = false, features = ["std"] }

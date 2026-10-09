@@ -31,7 +31,8 @@ const OPENCODE_DIR: &str = "opencode";
 /// docs name this one).
 const PLUGINS_DIR: &str = "plugins";
 /// Namespaced so it can never collide with a user's own plugin.
-const PLUGIN_FILE: &str = "nebula.ts";
+// odyn: named from `cli_name!()`.
+const PLUGIN_FILE: &str = concat!(nebula_core::cli_name!(), ".ts");
 
 /// The plugin, verbatim. Kept as TypeScript beside this module so it reads
 /// (and diffs) as the program it is.
@@ -140,7 +141,7 @@ mod tests {
         assert!(src.contains("\"chat.message\""));
         assert!(src.contains("{ prompt }"));
         // A named export, the shape OpenCode's plugin docs load.
-        assert!(src.contains("export const NebulaPlugin = async ("));
+        assert!(src.contains("export const OdynPlugin = async ("));
     }
 
     #[test]

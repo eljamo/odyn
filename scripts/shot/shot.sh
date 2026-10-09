@@ -6,8 +6,8 @@
 # repository with two worktrees, drives it inside a private tmux server, and captures the screen as
 # design-screenshots/<scene>.{txt,ansi,png}. Never touches the real daemon or the real data dir.
 #
-# Traps this encodes (learned 2026-08-20 / 2026-08-21): NEBULA_RUNTIME_DIR must be short (the unix
-# socket path caps at ~104 chars); NEBULA_AGENT_CMD must be set even with no agent (the PREWARM POOL
+# Traps this encodes (learned 2026-08-20 / 2026-08-21): ODYN_RUNTIME_DIR must be short (the unix
+# socket path caps at ~104 chars); ODYN_AGENT_CMD must be set even with no agent (the PREWARM POOL
 # launches a real claude otherwise); the first exec of a fresh binary can stall on macOS signature
 # validation (warm it before the TUI's connect deadline); capture with `-epN` or trailing styled cells
 # vanish; the daemon detaches and outlives tmux — kill it by pidfile.
@@ -16,12 +16,12 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$HERE/../.." && pwd)"
 SCENE="${1:-${SCENE:-open-prs}}"
 COLS="${COLS:-190}"; ROWS="${ROWS:-50}"
-BIN="$REPO/target/debug/nebula"
+BIN="$REPO/target/debug/odyn" # odyn:
 OUT="$REPO/design-screenshots"; mkdir -p "$OUT"
 ID="$$"
 RUNTIME="/tmp/nshot-$ID"                                   # short on purpose
-WORK="${TMPDIR:-/tmp}/nebula-shot/$ID"; mkdir -p "$WORK" "$RUNTIME"; chmod 700 "$RUNTIME"
-VENV="${NEBULA_SHOT_VENV:-${TMPDIR:-/tmp}/nebula-shot/venv}"
+WORK="${TMPDIR:-/tmp}/odyn-shot/$ID"; mkdir -p "$WORK" "$RUNTIME"; chmod 700 "$RUNTIME"
+VENV="${ODYN_SHOT_VENV:-${TMPDIR:-/tmp}/odyn-shot/venv}"
 TMUX="tmux -L nshot-$ID"
 cleanup() {
   $TMUX kill-server 2>/dev/null || true
@@ -41,12 +41,12 @@ git -C "$DEMO" worktree add -q -b feature-x "$WORK/demo-worktrees/feature-x" mai
 git -C "$DEMO" worktree add -q -b wheel-one-line "$WORK/demo-worktrees/wheel-one-line" main
 # A scene that needs more than the stock demo — a git config key, a file in a checkout — ships a
 # scenes/<scene>.setup.sh beside its .keys, sourced here with DEMO, WORK, RUNTIME and BIN in scope. It may
-# also export NEBULA_AGENT_CMD (a stand-in agent that talks to the HOOK RECEIVER) or NEBULA_GH_FIXTURES
+# also export ODYN_AGENT_CMD (a stand-in agent that talks to the HOOK RECEIVER) or ODYN_GH_FIXTURES
 # (its own fixtures directory) before the defaults below fill in.
 if [ -f "$HERE/scenes/$SCENE.setup.sh" ]; then DEMO="$DEMO" WORK="$WORK" RUNTIME="$RUNTIME" . "$HERE/scenes/$SCENE.setup.sh"; fi
 
-export NEBULA_RUNTIME_DIR="$RUNTIME" NEBULA_DATA_DIR="$WORK/data" NEBULA_AGENT_CMD="${NEBULA_AGENT_CMD:-/bin/cat}" \
-       NEBULA_UPDATE_CHECK_SECS=0 NEBULA_GH_FIXTURES="${NEBULA_GH_FIXTURES:-$HERE/fixtures}" \
+export ODYN_RUNTIME_DIR="$RUNTIME" ODYN_DATA_DIR="$WORK/data" ODYN_AGENT_CMD="${ODYN_AGENT_CMD:-/bin/cat}" \
+       ODYN_UPDATE_CHECK_SECS=0 ODYN_GH_FIXTURES="${ODYN_GH_FIXTURES:-$HERE/fixtures}" \
        PATH="$HERE/bin:$PATH" TERM=xterm-256color
 "$BIN" add "$DEMO" >/dev/null                                # registers the PROJECT (spawns the demo daemon)
 

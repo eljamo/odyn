@@ -16,16 +16,27 @@ use crate::registry::{CreateAgentSpec, Daemon};
 /// trying to launch an agent process itself. Claude and pi, like the
 /// worktree guidance (both take `--append-system-prompt`): codex and cursor
 /// have no system-prompt flag.
-pub const CLAUDE_SPAWN_GUIDANCE: &str = "[nebula] When the user asks you to start a new nebula \
-session (\"start a new nebula session that …\", \"spin up another session to …\", \"open a new \
+// odyn: the product and command name come from `cli_name!()`.
+pub const CLAUDE_SPAWN_GUIDANCE: &str = concat!(
+    "[odyn] When the user asks you to start a new ",
+    nebula_core::cli_name!(),
+    " \
+session (\"start a new ",
+    nebula_core::cli_name!(),
+    " session that …\", \"spin up another session to …\", \"open a new \
 session for …\"), do not launch an agent process yourself. Run this shell command instead, exactly \
-once:\n\n  nebula spawn \"<task>\"\n\nwhere <task> is the work the user wants that session to do, \
+once:\n\n  ",
+    nebula_core::cli_name!(),
+    " spawn \"<task>\"\n\nwhere <task> is the work the user wants that session to do, \
 in their own words — the new session opens on it as its first prompt, so make it self-contained. \
 Add `--kind claude|codex|cursor|pi|muse|opencode` only when the user names the harness; otherwise the new session \
-matches this one. nebula starts it beside this session, in the same worktree, and it shows up in \
+matches this one. ",
+    nebula_core::cli_name!(),
+    " starts it beside this session, in the same worktree, and it shows up in \
 the sessions list on its own. This session is unaffected: carry on with whatever else the user \
 asked, and if starting the session was the whole request, tell the user in one line that it is \
-running. If the command fails, report the error.";
+running. If the command fails, report the error."
+);
 
 /// The first free `agent-N` among `taken` — the same default the TUI's
 /// name prompt offers, which is what makes the new row eligible for

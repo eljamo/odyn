@@ -1,6 +1,6 @@
 //! `nebula tunnel` up to the point it would need a network. PATH is scrubbed
 //! so the ssh lookup fails deterministically whether or not the machine
-//! running these tests has an OpenSSH client, and `NEBULA_DATA_DIR` is
+//! running these tests has an OpenSSH client, and `ODYN_DATA_DIR` is
 //! redirected because the command records the destination for the TUI's host
 //! picker before it connects — into the real data dir otherwise.
 
@@ -8,7 +8,7 @@ use std::process::Command;
 
 fn tunnel(args: &[&str]) -> std::process::Output {
     let data = tempfile::tempdir().expect("temp data dir");
-    Command::new(env!("CARGO_BIN_EXE_nebula"))
+    Command::new(env!("CARGO_BIN_EXE_odyn"))
         .arg("tunnel")
         .args(args)
         .env("PATH", "")

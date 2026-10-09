@@ -13,7 +13,7 @@ cat > "$FIXTURES/pr-37.json" <<'JSON'
  "body": "One notch of the wheel scrolls one line, the way every other list in the app does.",
  "additions": 12, "deletions": 4, "changedFiles": 1, "comments": [], "reviews": []}
 JSON
-export NEBULA_GH_FIXTURES="$FIXTURES"
+export ODYN_GH_FIXTURES="$FIXTURES"
 mkdir -p "$WORK/data"
 cat > "$WORK/data/config.json" <<'JSON'
 {"prewarm_agents": false, "prewarm_sessions": false}

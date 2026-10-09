@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+odyn = { workspace = true } # odyn:
 serde = { workspace = true }
 serde_bytes = { workspace = true }
 serde_json = { workspace = true }

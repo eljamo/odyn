@@ -5,6 +5,8 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+odyn = { workspace = true } # odyn:
+odyn-tui = { workspace = true } # odyn:
 nebula-core = { workspace = true }
 nebula-fuzzy = { workspace = true }
 serde = { workspace = true }

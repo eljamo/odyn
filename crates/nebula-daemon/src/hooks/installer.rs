@@ -15,12 +15,12 @@
 //!
 //! Rules (learned the hard way in mission-control):
 //! - MERGE, never replace: user hooks are preserved untouched.
-//! - Our groups carry `_nebulaManaged: true` and are stripped + rebuilt on
+//! - Our groups carry `_odynManaged: true` and are stripped + rebuilt on
 //!   every spawn, so upgrades never accumulate duplicates. A legacy-signature
 //!   check (command contains our endpoint + env var) catches untagged strays.
 //! - A corrupt file ABORTS the install — never clobber user data.
 //! - Commands are env-guarded, so the hooks are inert when the user runs
-//!   `claude`/`codex`/`cursor-agent` outside nebula (no NEBULA_* in env →
+//!   `claude`/`codex`/`cursor-agent` outside nebula (no ODYN_* in env →
 //!   exit 0).
 //!
 //! Codex caveat, and the reason its hooks are the one set that does NOT go
@@ -36,6 +36,7 @@
 
 use anyhow::{bail, Context, Result};
 use nebula_core::env::{AGENT_ID, API_TOKEN, API_URL};
+use nebula_core::CLI_NAME; // odyn: user-visible messages name the binary.
 use serde_json::{json, Map, Value};
 use std::path::{Path, PathBuf};
 
@@ -146,11 +147,12 @@ fn hook_command(endpoint: &str, event: &str) -> String {
 /// worktree` relocation, `nebula spawn` sibling and `nebula open` file tabs
 /// its appended system prompt tells it to use (codex/cursor run with their
 /// skip-permissions flags).
+// odyn: the command name comes from `cli_name!()`.
 const CLAUDE_ALLOW_RULES: &[&str] = &[
-    "Bash(nebula rename:*)",
-    "Bash(nebula worktree:*)",
-    "Bash(nebula spawn:*)",
-    "Bash(nebula open:*)",
+    concat!("Bash(", nebula_core::cli_name!(), " rename:*)"),
+    concat!("Bash(", nebula_core::cli_name!(), " worktree:*)"),
+    concat!("Bash(", nebula_core::cli_name!(), " spawn:*)"),
+    concat!("Bash(", nebula_core::cli_name!(), " open:*)"),
 ];
 
 /// Cursor variant: the payload arrives on stdin like Claude's, but cursor
@@ -172,7 +174,7 @@ fn is_nebula_command(cmd: Option<&Value>) -> bool {
 }
 
 fn is_nebula_group(group: &Value) -> bool {
-    if group.get("_nebulaManaged").and_then(Value::as_bool) == Some(true) {
+    if group.get("_odynManaged").and_then(Value::as_bool) == Some(true) {
         return true;
     }
     // Legacy/untagged detection by command signature — nested Claude/Codex
@@ -196,7 +198,7 @@ fn managed_group(endpoint: &str, event: &str, matcher: Option<&str>) -> Value {
         "hooks".into(),
         json!([{ "type": "command", "command": hook_command(endpoint, event) }]),
     );
-    group.insert("_nebulaManaged".into(), json!(true));
+    group.insert("_odynManaged".into(), json!(true));
     Value::Object(group)
 }
 
@@ -353,7 +355,7 @@ pub fn install_cursor_hooks(cwd: &Path) -> Result<()> {
         let groups_arr = array_mut(groups, &format!("hooks.{cursor_event}"), &path)?;
         groups_arr.push(json!({
             "command": cursor_hook_command(nebula_event),
-            "_nebulaManaged": true,
+            "_odynManaged": true,
         }));
     }
 
@@ -463,7 +465,7 @@ fn merge_managed_hooks(
 /// the daemon accepts at most one auto-title per session.
 pub fn install_cursor_title_rule(cwd: &Path) -> Result<()> {
     let dir = cwd.join(CURSOR_DIR).join("rules");
-    write_text_atomic(&dir, "nebula-title.mdc", &cursor_title_rule())
+    write_text_atomic(&dir, "odyn-title.mdc", &cursor_title_rule())
 }
 
 /// Same instruction the injectable CLIs get, wrapped in cursor's rule
@@ -472,12 +474,12 @@ pub fn install_cursor_title_rule(cwd: &Path) -> Result<()> {
 fn cursor_title_rule() -> String {
     format!(
         "---
-description: Nebula session auto-title (managed by nebula — edits are overwritten)
+description: {CLI_NAME} session auto-title (managed by {CLI_NAME} — edits are overwritten)
 alwaysApply: true
 ---
 
-This rule applies only when the environment variable NEBULA_AGENT_ID is set
-(the session runs inside nebula). If it is unset, ignore this rule entirely.
+This rule applies only when the environment variable ODYN_AGENT_ID is set
+(the session runs inside {CLI_NAME}). If it is unset, ignore this rule entirely.
 
 On the first user message of a new conversation:
 
@@ -498,27 +500,27 @@ mod tests {
     fn hook_commands_are_spelled_exactly() {
         assert_eq!(
             hook_command("claude", "UserPromptSubmit"),
-            "if [ -z \"$NEBULA_AGENT_ID\" ] || [ -z \"$NEBULA_API_URL\" ]; then exit 0; fi; \
-             curl -sS -m 3 -X POST -H \"Authorization: Bearer $NEBULA_API_TOKEN\" \
+            "if [ -z \"$ODYN_AGENT_ID\" ] || [ -z \"$ODYN_API_URL\" ]; then exit 0; fi; \
+             curl -sS -m 3 -X POST -H \"Authorization: Bearer $ODYN_API_TOKEN\" \
              -H \"Content-Type: application/json\" --data-binary @- \
-             \"$NEBULA_API_URL/api/hooks/claude?agentId=$NEBULA_AGENT_ID&hookEvent=UserPromptSubmit\" \
+             \"$ODYN_API_URL/api/hooks/claude?agentId=$ODYN_AGENT_ID&hookEvent=UserPromptSubmit\" \
              2>/dev/null || true"
         );
         assert_eq!(
             hook_command("codex", "Stop"),
-            "if [ -z \"$NEBULA_AGENT_ID\" ] || [ -z \"$NEBULA_API_URL\" ]; then exit 0; fi; \
-             curl -sS -m 3 -X POST -H \"Authorization: Bearer $NEBULA_API_TOKEN\" \
+            "if [ -z \"$ODYN_AGENT_ID\" ] || [ -z \"$ODYN_API_URL\" ]; then exit 0; fi; \
+             curl -sS -m 3 -X POST -H \"Authorization: Bearer $ODYN_API_TOKEN\" \
              -H \"Content-Type: application/json\" --data-binary @- \
-             \"$NEBULA_API_URL/api/hooks/codex?agentId=$NEBULA_AGENT_ID&hookEvent=Stop\" \
+             \"$ODYN_API_URL/api/hooks/codex?agentId=$ODYN_AGENT_ID&hookEvent=Stop\" \
              >/dev/null 2>&1 || true"
         );
         assert_eq!(
             cursor_hook_command("Stop"),
-            "if [ -z \"$NEBULA_AGENT_ID\" ] || [ -z \"$NEBULA_API_URL\" ]; then \
+            "if [ -z \"$ODYN_AGENT_ID\" ] || [ -z \"$ODYN_API_URL\" ]; then \
              printf '{\"continue\": true}\\n'; exit 0; fi; \
-             curl -sS -m 3 -X POST -H \"Authorization: Bearer $NEBULA_API_TOKEN\" \
+             curl -sS -m 3 -X POST -H \"Authorization: Bearer $ODYN_API_TOKEN\" \
              -H \"Content-Type: application/json\" --data-binary @- \
-             \"$NEBULA_API_URL/api/hooks/cursor?agentId=$NEBULA_AGENT_ID&hookEvent=Stop\" \
+             \"$ODYN_API_URL/api/hooks/cursor?agentId=$ODYN_AGENT_ID&hookEvent=Stop\" \
              >/dev/null 2>&1 || true; printf '{\"continue\": true}\\n'"
         );
     }
@@ -539,7 +541,7 @@ mod tests {
         let settings = read_settings(tmp.path());
         let stop = &settings["hooks"]["Stop"];
         assert_eq!(stop.as_array().unwrap().len(), 1);
-        assert_eq!(stop[0]["_nebulaManaged"], json!(true));
+        assert_eq!(stop[0]["_odynManaged"], json!(true));
         assert!(stop[0]["hooks"][0]["command"]
             .as_str()
             .unwrap()
@@ -563,7 +565,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let old = |matcher: &str| {
             let mut g = managed_group("claude", "PostToolUse", Some(matcher));
-            g["_nebulaManaged"] = json!(true);
+            g["_odynManaged"] = json!(true);
             g
         };
         std::fs::write(
@@ -582,7 +584,7 @@ mod tests {
         let groups = settings["hooks"]["PostToolUse"].as_array().unwrap();
         assert_eq!(groups.len(), 1, "{groups:?}");
         assert!(groups[0].get("matcher").is_none());
-        assert_eq!(groups[0]["_nebulaManaged"], json!(true));
+        assert_eq!(groups[0]["_odynManaged"], json!(true));
         assert!(groups[0]["hooks"][0]["command"]
             .as_str()
             .unwrap()
@@ -652,7 +654,7 @@ mod tests {
         let hooks = read_json(tmp.path(), "hooks.json");
         let stop = &hooks["hooks"]["Stop"];
         assert_eq!(stop.as_array().unwrap().len(), 1);
-        assert_eq!(stop[0]["_nebulaManaged"], json!(true));
+        assert_eq!(stop[0]["_odynManaged"], json!(true));
         let cmd = stop[0]["hooks"][0]["command"].as_str().unwrap();
         assert!(cmd.contains("/api/hooks/codex?"), "codex endpoint: {cmd}");
         assert!(cmd.contains("hookEvent=Stop"));
@@ -707,16 +709,16 @@ mod tests {
             serde_json::to_string(&json!({
                 "hooks": {
                     "Stop": [
-                        { "_nebulaManaged": true,
+                        { "_odynManaged": true,
                           "hooks": [{ "type": "command",
-                            "command": "curl $NEBULA_API_URL/api/hooks/codex?agentId=$NEBULA_AGENT_ID" }] },
+                            "command": "curl $ODYN_API_URL/api/hooks/codex?agentId=$ODYN_AGENT_ID" }] },
                         { "_mcManaged": true,
                           "hooks": [{ "type": "command", "command": "curl $MC_API_URL/api/hooks/codex" }] }
                     ],
                     "UserPromptSubmit": [
-                        { "_nebulaManaged": true,
+                        { "_odynManaged": true,
                           "hooks": [{ "type": "command",
-                            "command": "curl $NEBULA_API_URL/api/hooks/codex?agentId=$NEBULA_AGENT_ID" }] }
+                            "command": "curl $ODYN_API_URL/api/hooks/codex?agentId=$ODYN_AGENT_ID" }] }
                     ]
                 }
             }))
@@ -741,9 +743,9 @@ mod tests {
             solo_dir.join("hooks.json"),
             serde_json::to_string(&json!({
                 "hooks": { "Stop": [
-                    { "_nebulaManaged": true,
+                    { "_odynManaged": true,
                       "hooks": [{ "type": "command",
-                        "command": "curl $NEBULA_API_URL/api/hooks/codex?agentId=$NEBULA_AGENT_ID" }] }
+                        "command": "curl $ODYN_API_URL/api/hooks/codex?agentId=$ODYN_AGENT_ID" }] }
                 ] }
             }))
             .unwrap(),
@@ -762,16 +764,16 @@ mod tests {
     fn cursor_title_rule_is_written_and_rewritten() {
         let tmp = tempfile::tempdir().unwrap();
         install_cursor_title_rule(tmp.path()).unwrap();
-        let path = tmp.path().join(".cursor/rules/nebula-title.mdc");
+        let path = tmp.path().join(".cursor/rules/odyn-title.mdc");
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.contains("alwaysApply: true"));
-        assert!(text.contains("nebula rename"));
-        assert!(text.contains("NEBULA_AGENT_ID"), "must be env-guarded");
+        assert!(text.contains(&format!("{} rename", nebula_core::CLI_NAME)));
+        assert!(text.contains("ODYN_AGENT_ID"), "must be env-guarded");
         // Wholly nebula-owned: a scribbled-on file is simply replaced.
         std::fs::write(&path, "user scribbles").unwrap();
         install_cursor_title_rule(tmp.path()).unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
-        assert!(text.contains("nebula rename"));
+        assert!(text.contains(&format!("{} rename", nebula_core::CLI_NAME)));
     }
 
     #[test]
@@ -799,7 +801,7 @@ mod tests {
         let stop = settings["hooks"]["Stop"].as_array().unwrap();
         assert_eq!(stop.len(), 2, "user group + nebula group");
         assert_eq!(stop[0]["hooks"][0]["command"], json!("say done"));
-        assert_eq!(stop[1]["_nebulaManaged"], json!(true));
+        assert_eq!(stop[1]["_odynManaged"], json!(true));
     }
 
     #[test]
@@ -832,7 +834,7 @@ mod tests {
                     "Stop": [
                         // Old nebula install without the marker.
                         { "hooks": [{ "type": "command",
-                            "command": "curl $NEBULA_API_URL/api/hooks/claude?agentId=$NEBULA_AGENT_ID" }] }
+                            "command": "curl $ODYN_API_URL/api/hooks/claude?agentId=$ODYN_AGENT_ID" }] }
                     ]
                 }
             }))
@@ -882,7 +884,7 @@ mod tests {
         let stop = hooks["hooks"]["Stop"].as_array().unwrap();
         assert_eq!(stop.len(), 2, "foreign managed group + nebula group");
         assert_eq!(stop[0]["_mcManaged"], json!(true));
-        assert_eq!(stop[1]["_nebulaManaged"], json!(true));
+        assert_eq!(stop[1]["_odynManaged"], json!(true));
     }
 
     #[test]
@@ -908,7 +910,7 @@ mod tests {
         // camelCase cursor events, flat command entries.
         let stop = &hooks["hooks"]["stop"];
         assert_eq!(stop.as_array().unwrap().len(), 1);
-        assert_eq!(stop[0]["_nebulaManaged"], json!(true));
+        assert_eq!(stop[0]["_odynManaged"], json!(true));
         let cmd = stop[0]["command"].as_str().unwrap();
         assert!(cmd.contains("/api/hooks/cursor?"), "cursor endpoint: {cmd}");
         assert!(cmd.contains("hookEvent=Stop"));
@@ -971,14 +973,14 @@ mod tests {
                 "version": 1,
                 "hooks": {
                     "Stop": [
-                        { "_nebulaManaged": true,
+                        { "_odynManaged": true,
                           "hooks": [{ "type": "command",
-                            "command": "curl $NEBULA_API_URL/api/hooks/cursor?agentId=$NEBULA_AGENT_ID&hookEvent=Stop" }] }
+                            "command": "curl $ODYN_API_URL/api/hooks/cursor?agentId=$ODYN_AGENT_ID&hookEvent=Stop" }] }
                     ],
                     "UserPromptSubmit": [
-                        { "_nebulaManaged": true,
+                        { "_odynManaged": true,
                           "hooks": [{ "type": "command",
-                            "command": "curl $NEBULA_API_URL/api/hooks/cursor?agentId=$NEBULA_AGENT_ID&hookEvent=UserPromptSubmit" }] }
+                            "command": "curl $ODYN_API_URL/api/hooks/cursor?agentId=$ODYN_AGENT_ID&hookEvent=UserPromptSubmit" }] }
                     ],
                     "stop": [
                         { "command": "curl $MC_API_URL/api/hooks/cursor", "_mcManaged": true }
@@ -998,7 +1000,7 @@ mod tests {
         let stop = hooks["hooks"]["stop"].as_array().unwrap();
         assert_eq!(stop.len(), 2, "mc group + nebula group");
         assert_eq!(stop[0]["_mcManaged"], json!(true));
-        assert_eq!(stop[1]["_nebulaManaged"], json!(true));
+        assert_eq!(stop[1]["_odynManaged"], json!(true));
     }
 
     #[test]

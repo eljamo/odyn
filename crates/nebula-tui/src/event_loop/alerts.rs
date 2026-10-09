@@ -11,6 +11,7 @@
 use crate::app::{FeedbackAlert, Tree};
 use crate::config::Sound;
 use nebula_core::AgentId;
+use nebula_core::CLI_NAME; // odyn: user-visible messages name the binary.
 use std::process::{Command, Stdio};
 
 /// Ring `sound` once: a file goes to `afplay` (detached; a helper thread
@@ -91,14 +92,14 @@ fn notifier_command(alert: &FeedbackAlert, macos: bool) -> (&'static str, Vec<St
     let summary = format!("{} needs feedback", alert.session);
     if macos {
         let mut script = format!(
-            "display notification {} with title \"nebula\" subtitle {}",
+            "display notification {} with title \"{CLI_NAME}\" subtitle {}",
             applescript_str(&alert.place),
             applescript_str(&summary)
         );
         if alert.place.is_empty() {
             // No body to show: the subtitle carries the whole message.
             script = format!(
-                "display notification {} with title \"nebula\"",
+                "display notification {} with title \"{CLI_NAME}\"",
                 applescript_str(&summary)
             );
         }
@@ -106,7 +107,11 @@ fn notifier_command(alert: &FeedbackAlert, macos: bool) -> (&'static str, Vec<St
     } else {
         (
             "notify-send",
-            vec!["--app-name=nebula".into(), summary, alert.place.clone()],
+            vec![
+                concat!("--app-name=", nebula_core::cli_name!()).into(),
+                summary,
+                alert.place.clone(),
+            ], // odyn:
         )
     }
 }
@@ -165,14 +170,22 @@ mod tests {
             args,
             [
                 "-e",
-                r#"display notification "demo · main" with title "nebula" subtitle "Fix Login needs feedback""#,
+                concat!(
+                    r#"display notification "demo · main" with title ""#,
+                    nebula_core::cli_name!(),
+                    r#"" subtitle "Fix Login needs feedback""#
+                ),
             ]
         );
 
         let (_, args) = notifier_command(&alert("agent-2", ""), true);
         assert_eq!(
             args[1],
-            r#"display notification "agent-2 needs feedback" with title "nebula""#
+            concat!(
+                r#"display notification "agent-2 needs feedback" with title ""#,
+                nebula_core::cli_name!(),
+                r#"""#
+            )
         );
 
         let (program, args) = notifier_command(&alert("Fix Login", "demo · main"), false);
@@ -180,7 +193,7 @@ mod tests {
         assert_eq!(
             args,
             [
-                "--app-name=nebula",
+                concat!("--app-name=", nebula_core::cli_name!()),
                 "Fix Login needs feedback",
                 "demo · main"
             ]

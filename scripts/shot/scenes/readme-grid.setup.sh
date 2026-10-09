@@ -4,10 +4,10 @@
 # permission prompt — under PROJECT TABS that carry each project's dots. The PREWARM POOL is off so
 # every launch is one of the scripted ones, `$SHELL` is a stub that prints a `cargo test` run for the
 # terminal card (and passes `-c` probes through to /bin/sh), and the pane sits along the bottom
-# (NEBULA_SHOT_PANE=right puts it beside the cards) so a band shows four cards across.
+# (ODYN_SHOT_PANE=right puts it beside the cards) so a band shows four cards across.
 mkdir -p "$WORK/data"
 cat > "$WORK/data/config.json" <<JSON
-{"prewarm_agents": false, "prewarm_sessions": false, "session_pane": "${NEBULA_SHOT_PANE:-bottom}",
+{"prewarm_agents": false, "prewarm_sessions": false, "session_pane": "${ODYN_SHOT_PANE:-bottom}",
  "claude_model": "opus", "claude_effort": "high", "codex_model": "gpt-5.6-sol", "codex_effort": "high"}
 JSON
 mk() {
@@ -43,7 +43,7 @@ chmod +x "$RUNTIME/nebula"
 BIN="$RUNTIME/nebula"
 # Pull requests: one ready on feat/auth-tokens, one draft on fix/rate-limits, one with no checkout.
 cp -R "$HERE/fixtures" "$WORK/fx"
-export NEBULA_GH_FIXTURES="$WORK/fx"
+export ODYN_GH_FIXTURES="$WORK/fx"
 cat > "$WORK/fx/pr-list.json" <<'JSON'
 [
   {"number": 57, "title": "Move the token store to sqlite", "url": "https://github.com/orbit/orbit-api/pull/57", "isDraft": false, "headRefName": "feat/auth-tokens"},
@@ -75,16 +75,16 @@ esac
 SHELL
 chmod +x "$RUNTIME/shell"
 export SHELL="$RUNTIME/shell"
-export NEBULA_SHOT_BIN="$REAL_BIN" NEBULA_SHOT_COUNTER="$RUNTIME/launches"
+export ODYN_SHOT_BIN="$REAL_BIN" ODYN_SHOT_COUNTER="$RUNTIME/launches"
 cat > "$RUNTIME/agent" <<'AGENT'
 #!/bin/sh
 # Stand-in agent: launch N tells story N. The dialect posted to follows the harness the keys picked.
-n=$(cat "$NEBULA_SHOT_COUNTER" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "$NEBULA_SHOT_COUNTER"
+n=$(cat "$ODYN_SHOT_COUNTER" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "$ODYN_SHOT_COUNTER"
 dialect=claude
 case "$n" in 3) dialect=codex;; 6) dialect=opencode;; esac
 post() {
-  curl -sS -m 3 -X POST -H "Authorization: Bearer $NEBULA_API_TOKEN" -H 'Content-Type: application/json' \
-    -d "$2" "$NEBULA_API_URL/api/hooks/$dialect?agentId=$NEBULA_AGENT_ID&hookEvent=$1" >/dev/null 2>&1
+  curl -sS -m 3 -X POST -H "Authorization: Bearer $ODYN_API_TOKEN" -H 'Content-Type: application/json' \
+    -d "$2" "$ODYN_API_URL/api/hooks/$dialect?agentId=$ODYN_AGENT_ID&hookEvent=$1" >/dev/null 2>&1
 }
 say() { printf '%s\r\n' "$@"; }
 case "$n" in
@@ -131,8 +131,8 @@ case "$n" in
          "Entries are newest first and Unreleased stays pinned on top."
      sleep 0.3; post Stop '{"session_id":"shot-6"}' ;;
 esac
-"$NEBULA_SHOT_BIN" rename "$title" >/dev/null 2>&1 || true
+"$ODYN_SHOT_BIN" rename "$title" >/dev/null 2>&1 || true
 exec /bin/cat
 AGENT
 chmod +x "$RUNTIME/agent"
-export NEBULA_AGENT_CMD="$RUNTIME/agent"
+export ODYN_AGENT_CMD="$RUNTIME/agent"

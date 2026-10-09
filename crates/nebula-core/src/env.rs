@@ -8,56 +8,56 @@ use std::path::PathBuf;
 
 /// Id of the agent a hook or CLI invocation is running inside. Set on every
 /// agent PTY, scrubbed from plain terminals.
-pub const AGENT_ID: &str = "NEBULA_AGENT_ID";
+pub const AGENT_ID: &str = "ODYN_AGENT_ID";
 /// Base URL of the daemon's hook receiver, set on agent PTYs.
-pub const API_URL: &str = "NEBULA_API_URL";
+pub const API_URL: &str = "ODYN_API_URL";
 /// Bearer token the hook receiver expects, set on agent PTYs.
-pub const API_TOKEN: &str = "NEBULA_API_TOKEN";
+pub const API_TOKEN: &str = "ODYN_API_TOKEN";
 /// Overrides the runtime dir holding the socket and pidfile.
-pub const RUNTIME_DIR: &str = "NEBULA_RUNTIME_DIR";
+pub const RUNTIME_DIR: &str = "ODYN_RUNTIME_DIR";
 /// Overrides the data dir holding the database, config and logs.
-pub const DATA_DIR: &str = "NEBULA_DATA_DIR";
+pub const DATA_DIR: &str = "ODYN_DATA_DIR";
 /// Moves `config.json` alone — into a dotfiles checkout, say — leaving the
 /// database, the logs and `config.local.json` in the data dir.
-pub const CONFIG_FILE: &str = "NEBULA_CONFIG_FILE";
+pub const CONFIG_FILE: &str = "ODYN_CONFIG_FILE";
 /// A SETTINGS BUNDLE (base64 JSON) that `nebula ssh` / `nebula tunnel` hand
 /// the remote nebula. Read once at startup, merged into that machine's
 /// settings, and removed from the environment before anything is spawned.
-pub const IMPORT_BUNDLE: &str = "NEBULA_IMPORT_BUNDLE";
+pub const IMPORT_BUNDLE: &str = "ODYN_IMPORT_BUNDLE";
 /// Replaces every agent CLI with one command line, taken verbatim (tests
 /// stand in `/bin/sh` or a stub script for `claude`).
-pub const AGENT_CMD: &str = "NEBULA_AGENT_CMD";
+pub const AGENT_CMD: &str = "ODYN_AGENT_CMD";
 /// Idle-session reaper sweep period in ms; tests shorten it.
-pub const IDLE_REAP_MS: &str = "NEBULA_IDLE_REAP_MS";
+pub const IDLE_REAP_MS: &str = "ODYN_IDLE_REAP_MS";
 /// External-worktree sync probe period in ms; tests shorten it.
-pub const WORKTREE_SYNC_MS: &str = "NEBULA_WORKTREE_SYNC_MS";
+pub const WORKTREE_SYNC_MS: &str = "ODYN_WORKTREE_SYNC_MS";
 /// How long a WORKTREE HOOK may run before the daemon kills it, in ms
 /// (default 30s); tests shorten it.
-pub const HOOK_TIMEOUT_MS: &str = "NEBULA_HOOK_TIMEOUT_MS";
+pub const HOOK_TIMEOUT_MS: &str = "ODYN_HOOK_TIMEOUT_MS";
 /// `RUST_LOG`-style tracing filter for both the daemon and the TUI.
-pub const LOG: &str = "NEBULA_LOG";
+pub const LOG: &str = "ODYN_LOG";
 /// Overrides the install script URL `nebula upgrade` / `nebula ssh` fetch.
-pub const INSTALL_URL: &str = "NEBULA_INSTALL_URL";
+pub const INSTALL_URL: &str = "ODYN_INSTALL_URL";
 /// Editor command the file modals open, ahead of the config's `editor`.
-pub const EDITOR: &str = "NEBULA_EDITOR";
+pub const EDITOR: &str = "ODYN_EDITOR";
 /// Cadence in seconds of the TUI's check for a newer published release
 /// (the footer's `⇡ vX.Y.Z` update indicator); `0` turns it off, as the
 /// e2e tests do so their footers never depend on what GitHub has published.
-pub const UPDATE_CHECK_SECS: &str = "NEBULA_UPDATE_CHECK_SECS";
+pub const UPDATE_CHECK_SECS: &str = "ODYN_UPDATE_CHECK_SECS";
 /// A file the TUI writes its INPUT LATENCY PROBE's timeline to
 /// (`make perf`); unset, there is no probe.
-pub const PERF_LOG: &str = "NEBULA_PERF_LOG";
+pub const PERF_LOG: &str = "ODYN_PERF_LOG";
 /// Set by `nebula upgrade` on the install script it runs, so the script
 /// leaves the "daemon still running" note to the upgrade. `install.sh`
 /// reads it by this name.
-pub const UPGRADE_HANDOFF: &str = "NEBULA_UPGRADE_HANDOFF";
+pub const UPGRADE_HANDOFF: &str = "ODYN_UPGRADE_HANDOFF";
 /// Set on a WORKTREE HOOK script: which hook it is running as
 /// (`worktree-create` / `worktree-delete`), so one script can serve both.
-pub const HOOK: &str = "NEBULA_HOOK";
+pub const HOOK: &str = "ODYN_HOOK";
 /// Set on a WORKTREE HOOK script: the worktree's branch.
-pub const WORKTREE_BRANCH: &str = "NEBULA_WORKTREE_BRANCH";
+pub const WORKTREE_BRANCH: &str = "ODYN_WORKTREE_BRANCH";
 /// Set on a WORKTREE HOOK script: the worktree's id.
-pub const WORKTREE_ID: &str = "NEBULA_WORKTREE_ID";
+pub const WORKTREE_ID: &str = "ODYN_WORKTREE_ID";
 /// Claude Code's own override of its config dir (`~/.claude`), honoured
 /// wherever nebula reads Claude's settings or transcripts.
 pub const CLAUDE_CONFIG_DIR: &str = "CLAUDE_CONFIG_DIR";
@@ -256,7 +256,7 @@ mod tests {
 
     #[test]
     fn non_empty_treats_unset_and_empty_alike() {
-        let var = format!("NEBULA_TEST_NON_EMPTY_{}", std::process::id());
+        let var = format!("ODYN_TEST_NON_EMPTY_{}", std::process::id());
         assert_eq!(non_empty(&var), None);
         std::env::set_var(&var, "");
         assert_eq!(non_empty(&var), None);

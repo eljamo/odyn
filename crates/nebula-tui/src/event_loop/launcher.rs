@@ -5439,7 +5439,10 @@ mod tests {
                     "ack_first={ack_first}: the pane folded away: {text}"
                 );
                 assert_eq!(app.flash.as_deref(), Some(super::NO_SESSIONS));
-                assert!(text.contains("Welcome to nebula"), "{text}");
+                assert!(
+                    text.contains(&format!("Welcome to {}", nebula_core::CLI_NAME)),
+                    "{text}"
+                );
                 assert!(!text.contains("shell-1"), "no terminal of demo's: {text}");
             }
         });
@@ -5530,7 +5533,7 @@ mod tests {
                 assert!(!super::has_pane(&app), "{way}: the pane folded: {text}");
                 assert!(!text.contains("polish-nav"), "{way}: {text}");
                 assert!(
-                    text.contains("Welcome to nebula"),
+                    text.contains(&format!("Welcome to {}", nebula_core::CLI_NAME)),
                     "{way}: docs' lone empty root is the welcome: {text}"
                 );
                 assert_eq!(app.flash.as_deref(), Some(super::NO_SESSIONS), "{way}");
@@ -5539,7 +5542,10 @@ mod tests {
                 let text = buffer_text(&draw(&mut app));
                 assert!(!super::has_pane(&app), "{way}: no band to aim at: {text}");
                 assert_eq!(reading(&app), None, "{way}");
-                assert!(text.contains("Welcome to nebula"), "{way}: {text}");
+                assert!(
+                    text.contains(&format!("Welcome to {}", nebula_core::CLI_NAME)),
+                    "{way}: {text}"
+                );
             }
         });
     }
@@ -5770,7 +5776,10 @@ mod tests {
             let mut by_click = on_an_empty_project();
             let terminal = draw(&mut by_click);
             let text = buffer_text(&terminal);
-            assert!(text.contains("Welcome to nebula"), "{text}");
+            assert!(
+                text.contains(&format!("Welcome to {}", nebula_core::CLI_NAME)),
+                "{text}"
+            );
             assert!(text.contains("press  p  to prompt"), "{text}");
             assert!(!text.contains("type a task"), "only the welcome: {text}");
             let (x, y) = crumb_cell(&by_click, HitTarget::LauncherWelcomePrompt);
@@ -5825,7 +5834,8 @@ mod tests {
             let (_, key_y) = crumb_cell(&app, HitTarget::LauncherWelcomePrompt);
             let sky = glyphs(&terminal, grid.y..key_y - 3);
             assert!(sky > 40, "{sky} specks of dust: {}", buffer_text(&terminal));
-            assert!(row(&terminal, key_y - 2).contains("   Welcome to nebula   "));
+            assert!(row(&terminal, key_y - 2)
+                .contains(&format!("   Welcome to {}   ", nebula_core::CLI_NAME)));
             assert!(row(&terminal, key_y).contains("   press  p  to prompt   "));
             assert!(!app.welcome_active(), "animations off: a still frame");
 
@@ -5834,7 +5844,8 @@ mod tests {
             let terminal = draw_at(&mut small, 40, 12);
             let grid = crate::launcher::grid(small.body_area).area;
             let (_, key_y) = crumb_cell(&small, HitTarget::LauncherWelcomePrompt);
-            assert!(row(&terminal, key_y - 2).contains("Welcome to nebula"));
+            assert!(row(&terminal, key_y - 2)
+                .contains(&format!("Welcome to {}", nebula_core::CLI_NAME)));
             let specks =
                 glyphs(&terminal, grid.y..key_y - 2) + glyphs(&terminal, key_y + 1..grid.bottom());
             assert_eq!(specks, 0, "{}", buffer_text(&terminal));
@@ -11428,7 +11439,10 @@ mod tests {
             key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
             assert!(crate::launcher::bands(&app).is_empty());
             let text = buffer_text(&draw_tall(&mut app));
-            assert!(text.contains("Welcome to nebula"), "{text}");
+            assert!(
+                text.contains(&format!("Welcome to {}", nebula_core::CLI_NAME)),
+                "{text}"
+            );
             assert!(!super::has_pane(&app), "nothing for the pane to read");
         });
     }

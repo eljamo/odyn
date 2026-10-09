@@ -1,4 +1,4 @@
-//! The PROJECT FILE: `.nebula.json`, committed at the root of a repository,
+//! The PROJECT FILE: `.odyn.json`, committed at the root of a repository,
 //! telling nebula how the project is run and how to open what it serves.
 //!
 //! ```json
@@ -29,9 +29,9 @@ use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
 /// The file's name at the root of a checkout.
-pub const FILE_NAME: &str = ".nebula.json";
+pub const FILE_NAME: &str = ".odyn.json";
 
-/// What `.nebula.json` says. Unknown keys are ignored, so a file written
+/// What `.odyn.json` says. Unknown keys are ignored, so a file written
 /// for a newer nebula still works in this one.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 pub struct ProjectFile {
@@ -219,7 +219,7 @@ mod tests {
     fn missing_file_blank_command_and_bad_json_say_what_to_fix() {
         let empty = TempDir::new();
         let err = command(&empty.0, &empty.0, ProjectCommand::Run).unwrap_err();
-        assert!(err.contains("no .nebula.json"), "{err}");
+        assert!(err.contains("no .odyn.json"), "{err}");
         assert!(err.contains(r#"{"run": "npm run dev"}"#), "{err}");
 
         let blank = TempDir::new().with_file(r#"{"run": "   "}"#);

@@ -49,6 +49,7 @@ pub mod view_jobs;
 pub mod vim_term;
 
 use anyhow::Result;
+use nebula_core::CLI_NAME; // odyn: user-visible messages name the binary.
 
 fn runtime() -> Result<tokio::runtime::Runtime> {
     Ok(tokio::runtime::Builder::new_multi_thread()
@@ -116,9 +117,9 @@ pub use ipc::RenameMode;
 pub fn run_kill() -> Result<()> {
     runtime()?.block_on(async {
         if ipc::kill_daemon().await? {
-            println!("nebula daemon shut down");
+            println!("{CLI_NAME} daemon shut down");
         } else {
-            println!("no nebula daemon running");
+            println!("no {CLI_NAME} daemon running");
         }
         Ok(())
     })

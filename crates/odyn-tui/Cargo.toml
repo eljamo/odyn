@@ -1,0 +1,10 @@
+[package]
+name = "odyn-tui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+# Keep in step with nebula-tui's ratatui: the seams pass its Buffer and
+# Rect straight through, so two versions do not compile.
+ratatui = { version = "0.30", default-features = false }

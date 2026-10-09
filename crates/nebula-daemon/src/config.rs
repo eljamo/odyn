@@ -63,7 +63,7 @@ pub struct Config {
 #[serde(default)]
 pub struct ProjectConfig {
     /// The RUN COMMAND a menu's **Run** starts in this project's
-    /// worktrees, typed into Settings → Project. Empty means the checkout's `.nebula.json`
+    /// worktrees, typed into Settings → Project. Empty means the checkout's `.odyn.json`
     /// `run`, as before the row existed.
     pub run_command: String,
 }
@@ -119,7 +119,7 @@ impl Config {
 
     /// The RUN COMMAND set for the project checked out at `repo_path` in
     /// Settings → Project, trimmed; None when the project has no entry or
-    /// the row is empty, which means the checkout's `.nebula.json` decides.
+    /// the row is empty, which means the checkout's `.odyn.json` decides.
     pub fn run_command(&self, repo_path: &Path) -> Option<&str> {
         self.projects
             .get(repo_path)

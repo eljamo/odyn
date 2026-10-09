@@ -5,8 +5,8 @@
 //! repository in git config, read fresh at each use:
 //!
 //! ```sh
-//! git config nebula.worktreeCreateHook /absolute/path/to/script
-//! git config nebula.worktreeDeleteHook /absolute/path/to/script
+//! git config odyn.worktreeCreateHook /absolute/path/to/script
+//! git config odyn.worktreeDeleteHook /absolute/path/to/script
 //! ```
 //!
 //! Never a file inside the checkout — a committed hook would run whatever
@@ -17,8 +17,8 @@
 //! The value is an executable path, spawned directly with no shell so
 //! spaces in either path survive, from the main checkout (the deleted
 //! directory is gone), with the main repository path and the worktree
-//! path as its two arguments and `NEBULA_HOOK`, `NEBULA_WORKTREE_BRANCH`
-//! and `NEBULA_WORKTREE_ID` in its environment. A hook only reports: it
+//! path as its two arguments and `ODYN_HOOK`, `ODYN_WORKTREE_BRANCH`
+//! and `ODYN_WORKTREE_ID` in its environment. A hook only reports: it
 //! runs after the git operation and the row change have gone through,
 //! and a failure, a timeout, or a program that will not start becomes a
 //! warning in every client — never a rolled-back create or delete. The
@@ -45,12 +45,12 @@ impl WorktreeHook {
     /// The git config key naming the executable.
     pub fn config_key(self) -> &'static str {
         match self {
-            Self::Create => "nebula.worktreeCreateHook",
-            Self::Delete => "nebula.worktreeDeleteHook",
+            Self::Create => "odyn.worktreeCreateHook",
+            Self::Delete => "odyn.worktreeDeleteHook",
         }
     }
 
-    /// The `NEBULA_HOOK` value the script sees, so one script can serve
+    /// The `ODYN_HOOK` value the script sees, so one script can serve
     /// both keys and branch on it.
     pub fn name(self) -> &'static str {
         match self {
@@ -71,7 +71,7 @@ pub struct HookContext<'a> {
 }
 
 /// How long a hook may run before it is killed, unless
-/// `NEBULA_HOOK_TIMEOUT_MS` says otherwise.
+/// `ODYN_HOOK_TIMEOUT_MS` says otherwise.
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// The hook timeout from the env override: a positive number of ms, else
@@ -297,18 +297,14 @@ mod tests {
         let hook = script(
             &root,
             &format!(
-                "printf '%s\\n%s\\n%s\\n%s\\n%s\\n%s\\n' \"$1\" \"$2\" \"$NEBULA_HOOK\" \
-                 \"$NEBULA_WORKTREE_BRANCH\" \"$NEBULA_WORKTREE_ID\" \"$(pwd)\" > '{}'",
+                "printf '%s\\n%s\\n%s\\n%s\\n%s\\n%s\\n' \"$1\" \"$2\" \"$ODYN_HOOK\" \
+                 \"$ODYN_WORKTREE_BRANCH\" \"$ODYN_WORKTREE_ID\" \"$(pwd)\" > '{}'",
                 out.display()
             ),
         );
         git(
             &repo,
-            &[
-                "config",
-                "nebula.worktreeDeleteHook",
-                &hook.to_string_lossy(),
-            ],
+            &["config", "odyn.worktreeDeleteHook", &hook.to_string_lossy()],
         );
         let wt = root.join("my repo-worktrees").join("feat x");
         let id = WorktreeId("w1".into());
@@ -342,15 +338,11 @@ mod tests {
         let out = root.join("out.txt");
         let hook = script(
             &root,
-            &format!("echo \"$NEBULA_HOOK\" >> '{}'", out.display()),
+            &format!("echo \"$ODYN_HOOK\" >> '{}'", out.display()),
         );
         git(
             &repo,
-            &[
-                "config",
-                "nebula.worktreeCreateHook",
-                &hook.to_string_lossy(),
-            ],
+            &["config", "odyn.worktreeCreateHook", &hook.to_string_lossy()],
         );
         let wt = root.join("wt");
         std::fs::create_dir(&wt).unwrap();
@@ -377,11 +369,7 @@ mod tests {
         let hook = script(&root, &format!("touch '{}'", out.display()));
         git(
             &repo,
-            &[
-                "config",
-                "nebula.worktreeDeleteHook",
-                &hook.to_string_lossy(),
-            ],
+            &["config", "odyn.worktreeDeleteHook", &hook.to_string_lossy()],
         );
         let wt = root.join("still-here");
         std::fs::create_dir(&wt).unwrap();

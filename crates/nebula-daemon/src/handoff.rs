@@ -152,7 +152,11 @@ pub fn restart(daemon: &Arc<Daemon>, handles: &Handles, request: &Request) -> Re
     let exe = &request.exe;
     let meta = std::fs::metadata(exe).with_context(|| format!("{}", exe.display()))?;
     if !exe.is_absolute() || !meta.is_file() {
-        bail!("{} is not a nebula binary", exe.display());
+        bail!(
+            "{} is not the {} binary",
+            exe.display(),
+            nebula_core::CLI_NAME
+        ); // odyn:
     }
     match probe_version(exe) {
         Some(v) if v >= VERSION => {}

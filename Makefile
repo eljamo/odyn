@@ -15,8 +15,10 @@
 #                 and whatever those still depend on)
 
 PREFIX      ?= $(HOME)/.cargo/bin
-RELEASE_BIN := target/release/nebula
-DEBUG_BIN   := target/debug/nebula
+# odyn: the binary's name; must match `odyn::CLI_NAME`.
+BIN         := odyn
+RELEASE_BIN := target/release/$(BIN)
+DEBUG_BIN   := target/debug/$(BIN)
 
 # The dev instance is a second, complete nebula: its own socket, DB, and
 # settings — and one *per checkout*, so the main clone and every worktree can
@@ -30,8 +32,8 @@ DEBUG_BIN   := target/debug/nebula
 # runtime dir takes the hash alone — it holds a unix socket, and SUN_LEN (104
 # bytes on macOS) is not a budget a long worktree name should be spending.
 DEV_SLOT    := $(shell printf '%s' '$(CURDIR)' | shasum | cut -c1-8)
-DEV_RUNTIME := /tmp/nebula-dev-$(DEV_SLOT)
-DEV_DATA    := $(HOME)/.nebula-dev/$(notdir $(CURDIR))-$(DEV_SLOT)
+DEV_RUNTIME := /tmp/odyn-dev-$(DEV_SLOT)
+DEV_DATA    := $(HOME)/.odyn-dev/$(notdir $(CURDIR))-$(DEV_SLOT)
 # `make dev SEED=0` skips the first-run copy and starts the dev instance empty.
 SEED ?= 1
 # `make prune KEEP=1` keeps only the newest build of every crate (default 3: the
@@ -49,8 +51,8 @@ PORT ?=
 
 # Every dev-instance run goes through this: its own socket dir and its own DB,
 # so nothing here can touch the real daemon's state.
-DEV_ENV = NEBULA_RUNTIME_DIR=$(DEV_RUNTIME) NEBULA_DATA_DIR=$(DEV_DATA) \
-	$(if $(AGENT),NEBULA_AGENT_CMD=$(AGENT))
+DEV_ENV = ODYN_RUNTIME_DIR=$(DEV_RUNTIME) ODYN_DATA_DIR=$(DEV_DATA) \
+	$(if $(AGENT),ODYN_AGENT_CMD=$(AGENT))
 
 .DEFAULT_GOAL := help
 .PHONY: help dev browser dev-prep dev-seed dev-reset dev-ls dev-stop build install kill prune cycle check fmt lint test ci clean shot perf
@@ -98,21 +100,21 @@ dev-prep:
 # settings, minus `agents` and `terminals`: those rows are the live sessions
 # the real daemon owns, and the dev daemon must not resume them. `.backup`
 # reads the WAL, so the copy is consistent even with the real daemon running.
-# The real dir is where `directories::ProjectDirs::from("dev","nebula","nebula")`
+# The real dir is where `directories::ProjectDirs::from("dev", CLI_NAME, CLI_NAME)`
 # puts it (nebula-core/src/paths.rs); keep the two in step.
 dev-seed: ## Copy real projects/settings into the dev instance (only if it has no DB yet)
-	@[ ! -e $(DEV_DATA)/nebula.db ] || exit 0; \
+	@[ ! -e $(DEV_DATA)/$(BIN).db ] || exit 0; \
 	case "$$(uname -s)" in \
-		Darwin) real="$$HOME/Library/Application Support/dev.nebula.nebula";; \
-		*)      real="$${XDG_DATA_HOME:-$$HOME/.local/share}/nebula";; \
+		Darwin) real="$$HOME/Library/Application Support/dev.$(BIN).$(BIN)";; \
+		*)      real="$${XDG_DATA_HOME:-$$HOME/.local/share}/$(BIN)";; \
 	esac; \
-	if [ ! -f "$$real/nebula.db" ]; then \
-		echo "no real nebula data at $$real — dev instance starts empty"; exit 0; fi; \
+	if [ ! -f "$$real/$(BIN).db" ]; then \
+		echo "no real $(BIN) data at $$real — dev instance starts empty"; exit 0; fi; \
 	if ! command -v sqlite3 >/dev/null 2>&1; then \
 		echo "sqlite3 not on PATH — dev instance starts empty"; exit 0; fi; \
 	mkdir -p $(DEV_DATA); \
-	sqlite3 "$$real/nebula.db" ".backup '$(DEV_DATA)/nebula.db'"; \
-	sqlite3 $(DEV_DATA)/nebula.db "DELETE FROM agents; DELETE FROM terminals;"; \
+	sqlite3 "$$real/$(BIN).db" ".backup '$(DEV_DATA)/$(BIN).db'"; \
+	sqlite3 $(DEV_DATA)/$(BIN).db "DELETE FROM agents; DELETE FROM terminals;"; \
 	for f in config.json config.local.json reviewed.json; do \
 		if [ -f "$$real/$$f" ]; then cp "$$real/$$f" $(DEV_DATA)/; fi; \
 	done; \
@@ -128,7 +130,7 @@ shot: ## Screenshot the debug TUI with demo data (SCENE=open-prs KEYS="…")
 	scripts/shot/shot.sh $(SCENE)
 
 # The LATENCY HARNESS: the same isolation as `make shot`, against a clone of this repository, with the
-# INPUT LATENCY PROBE on (NEBULA_PERF_LOG). Drives scripts/perf/scenario.steps — every view, modal and
+# INPUT LATENCY PROBE on (ODYN_PERF_LOG). Drives scripts/perf/scenario.steps — every view, modal and
 # verb — and prints per step how long the key held the loop, how long it waited for its frame, how long
 # the screen took to settle, and the TUI's and daemon's peak RSS. `make perf BIN=target/release/nebula`
 # measures the release build; `python3 scripts/perf/report.py BEFORE AFTER` compares two runs.
@@ -137,16 +139,16 @@ perf: ## Measure input latency per action in the debug TUI (BIN=… OUT=… PERF
 	scripts/perf/run.sh
 
 # Slots accumulate: a worktree you deleted leaves its DB behind under
-# ~/.nebula-dev. This lists every one with its daemon's state, so you can see
+# ~/.odyn-dev. This lists every one with its daemon's state, so you can see
 # what is still running and `rm -rf` what is not.
 dev-ls: ## List every checkout's dev instance and whether its daemon is up
-	@for d in $(HOME)/.nebula-dev/*-*/; do \
+	@for d in $(HOME)/.odyn-dev/*-*/; do \
 		[ -d "$$d" ] || continue; \
 		slot=$${d%/}; slot=$${slot##*-}; \
-		pidfile=/tmp/nebula-dev-$$slot/daemon.pid; \
+		pidfile=/tmp/odyn-dev-$$slot/daemon.pid; \
 		state=stopped; \
 		if [ -f "$$pidfile" ] && ps -p "$$(cat $$pidfile 2>/dev/null)" -o command= 2>/dev/null \
-			| grep -q 'nebula daemon'; then state=running; fi; \
+			| grep -q '$(BIN) daemon'; then state=running; fi; \
 		printf '  %-8s %-40s %s\n' "$$state" "$$(basename $$d)" "$$d"; \
 	done
 
@@ -159,7 +161,7 @@ dev-stop: ## Stop the dev daemon (it detaches, so quitting the TUI leaves it run
 	[ -f $$pidfile ] || exit 0; \
 	pid=$$(cat $$pidfile 2>/dev/null); \
 	case "$$pid" in ''|*[!0-9]*) exit 0;; esac; \
-	if ps -p $$pid -o command= 2>/dev/null | grep -q 'nebula daemon'; then \
+	if ps -p $$pid -o command= 2>/dev/null | grep -q '$(BIN) daemon'; then \
 		kill $$pid 2>/dev/null || true; \
 	fi
 
@@ -173,13 +175,13 @@ build: ## Release build
 # for that inode no longer matches the new contents — every exec then dies
 # with SIGKILL (exit 137). A fresh inode forces signature re-validation.
 install: build ## Install to $(PREFIX) — warns if the live daemon is now stale
-	cp $(RELEASE_BIN) $(PREFIX)/nebula.new
-	mv $(PREFIX)/nebula.new $(PREFIX)/nebula
-	@$(PREFIX)/nebula --version
-	@$(PREFIX)/nebula _stale-daemon-note
+	cp $(RELEASE_BIN) $(PREFIX)/$(BIN).new
+	mv $(PREFIX)/$(BIN).new $(PREFIX)/$(BIN)
+	@$(PREFIX)/$(BIN) --version
+	@$(PREFIX)/$(BIN) _stale-daemon-note
 
 kill: ## Stop every session and the daemon — the cutover step after `make install`
-	$(PREFIX)/nebula kill
+	$(PREFIX)/$(BIN) kill
 
 # Every distinct build configuration gets its own hash under target/: a
 # version bump at release re-hashes every workspace crate, and `cargo build`,

@@ -81,7 +81,7 @@ const RUN_TERMINAL_NAME: &str = "run";
 /// places a RUN COMMAND can come from.
 const NO_RUN_COMMAND: &str =
     "no run command for this worktree — set one in Settings (s) → Project, \
-                              or add .nebula.json with {\"run\": \"npm run dev\"}";
+                              or add .odyn.json with {\"run\": \"npm run dev\"}";
 /// Why a RUN TERMINAL with nothing left to replay will not attach — its
 /// run ended before a DAEMON restart, typically.
 const RUN_NOT_RUNNING: &str = "this run has stopped — press r on its worktree to start it again";
@@ -107,7 +107,7 @@ pub(crate) struct CreateAgentSpec {
 
 /// A pre-spawned agent CLI waiting to be adopted by the next CreateAgent for
 /// the same (worktree, kind). The PTY lives in the normal sessions map under
-/// a pre-generated agent id, so its NEBULA_AGENT_ID env is already the id
+/// a pre-generated agent id, so its ODYN_AGENT_ID env is already the id
 /// the adopted row will use. Hook events that arrive before the row exists
 /// (SessionStart carries the resume session id) are buffered here and
 /// replayed at adoption.
@@ -1617,8 +1617,9 @@ impl Daemon {
         if !self.store.rename_agent_if_auto_pending(id, &title)? {
             bail!(
                 "session already has a title ({:?}); leaving it unchanged — a user-set \
-                 title is only replaced with `nebula rename --force`",
-                agent.name
+                 title is only replaced with `{} rename --force`",
+                agent.name,
+                nebula_core::CLI_NAME, // odyn:
             );
         }
         self.broadcast_agent(id)?;
@@ -2141,7 +2142,7 @@ impl Daemon {
     // ---- run terminals ----
 
     /// `r` on a worktree: start its RUN COMMAND — the project's
-    /// `run_command` setting (Settings → Project), else `.nebula.json`'s
+    /// `run_command` setting (Settings → Project), else `.odyn.json`'s
     /// `run`, read fresh from the worktree's checkout, else the main
     /// checkout's — in the worktree's RUN TERMINAL. A run that already
     /// exited lends its row; one still going is the answer as it stands,
@@ -2534,7 +2535,7 @@ impl Daemon {
             tracing::warn!(error = %e, cwd = %worktree.path.display(), "hook install failed");
         }
 
-        // NEBULA_AGENT_CMD overrides for tests; default is the kind's CLI.
+        // ODYN_AGENT_CMD overrides for tests; default is the kind's CLI.
         let cmd_override = std::env::var(env::AGENT_CMD).ok();
         // A Claude session id with no transcript behind it — a CLI nobody
         // sent a prompt, or a session Claude's cleanup has deleted — resumes
@@ -3042,7 +3043,7 @@ impl Daemon {
 
 /// The session id a spawn of `agent` would hand `claude --resume` — the
 /// only kind of session Claude can have sent to its background. None under
-/// the `NEBULA_AGENT_CMD` override (tests), which never resumes.
+/// the `ODYN_AGENT_CMD` override (tests), which never resumes.
 fn claude_resumable_session(agent: &Agent) -> Option<&str> {
     if agent.kind != AgentKind::Claude || std::env::var(env::AGENT_CMD).is_ok() {
         return None;
@@ -3165,17 +3166,28 @@ fn test_custom_harness(
 /// keeps their worktrees. Claude and pi (both take `--append-system-prompt`;
 /// pi has no EnterWorktree, but does run `git worktree add` on its own
 /// unless told otherwise): codex and cursor have no system-prompt flag.
-pub const CLAUDE_WORKTREE_GUIDANCE: &str = "[nebula] This session runs inside nebula, which \
+// odyn: the product and command name come from `cli_name!()`.
+pub const CLAUDE_WORKTREE_GUIDANCE: &str = concat!(
+    "[odyn] This session runs inside ",
+    nebula_core::cli_name!(),
+    ", which \
 manages this project's git worktrees. When the user asks you to work in a worktree (\"do this in a \
 worktree\", \"in a new worktree\", \"branch this off in its own checkout\"), do not use the \
 EnterWorktree tool and do not run `git worktree add` yourself. Run this shell command instead, \
-exactly once:\n\n  nebula worktree <name>\n\nwhere <name> is the branch name the user gave, or a \
-short kebab-case name for the task (`nebula worktree` with no name invents one; `--base <ref>` picks \
-the start point). nebula creates the worktree, associates this session with it, and relocates the \
+exactly once:\n\n  ",
+    nebula_core::cli_name!(),
+    " worktree <name>\n\nwhere <name> is the branch name the user gave, or a \
+short kebab-case name for the task (`",
+    nebula_core::cli_name!(),
+    " worktree` with no name invents one; `--base <ref>` picks \
+the start point). ",
+    nebula_core::cli_name!(),
+    " creates the worktree, associates this session with it, and relocates the \
 session into it once your current turn ends. So when the command succeeds, end your turn at once: \
 tell the user in one line that the session is moving into the worktree, and make no further tool \
 calls or edits — you will be resumed inside the worktree with a prompt to carry on there. If the \
-command fails, report the error and carry on in the current checkout.";
+command fails, report the error and carry on in the current checkout."
+);
 
 /// The prompt a relocated session is resumed with: it names the checkout
 /// the process now runs in and asks for the work to pick back up there, so
@@ -3189,7 +3201,7 @@ command fails, report the error and carry on in the current checkout.";
 fn relocation_prompt(relocate: bool, worktree: &Worktree) -> Option<String> {
     relocate.then(|| {
         format!(
-            "[nebula] This session now runs inside the worktree `{}` at {} — your working \
+            "[odyn] This session now runs inside the worktree `{}` at {} — your working \
              directory is that checkout. Continue the user's most recent request there.",
             worktree.branch,
             worktree.path.display()
@@ -3619,7 +3631,7 @@ fn login_shell_wrap(shell: &str, program: &str, args: &[String]) -> (String, Vec
 }
 
 /// [`login_shell_wrap`] for a line that is already shell syntax — a RUN
-/// TERMINAL's `.nebula.json` `run`, pipes and `&&` and all — behind the
+/// TERMINAL's `.odyn.json` `run`, pipes and `&&` and all — behind the
 /// same prelude.
 fn login_shell_line(shell: &str, line: &str) -> (String, Vec<String>) {
     let mut cmdline = String::from("exec </dev/tty; unset");
@@ -4958,7 +4970,7 @@ mod tests {
     }
 
     /// A project whose main checkout is a fresh directory, registered with
-    /// `daemon`, for the RUN TERMINAL tests to write `.nebula.json` into.
+    /// `daemon`, for the RUN TERMINAL tests to write `.odyn.json` into.
     fn run_worktree(daemon: &Daemon) -> (tempfile::TempDir, Worktree) {
         let dir = tempfile::tempdir().unwrap();
         let project = Project {
@@ -4988,7 +5000,7 @@ mod tests {
         let missing = daemon.start_run(&worktree.id).unwrap_err();
         assert!(
             missing.to_string().contains("Settings (s) → Project")
-                && missing.to_string().contains(".nebula.json"),
+                && missing.to_string().contains(".odyn.json"),
             "names both places: {missing}"
         );
         assert!(daemon
@@ -4997,7 +5009,7 @@ mod tests {
             .unwrap()
             .is_empty());
 
-        std::fs::write(dir.path().join(".nebula.json"), r#"{"run": "sleep 30"}"#).unwrap();
+        std::fs::write(dir.path().join(".odyn.json"), r#"{"run": "sleep 30"}"#).unwrap();
         let EntityId::Terminal(id) = daemon.start_run(&worktree.id).unwrap() else {
             panic!("a run lives in a terminal");
         };
@@ -5028,7 +5040,7 @@ mod tests {
     }
 
     /// The project's `run_command` setting (Settings → Project) is what
-    /// `r` runs when it is set, over whatever `.nebula.json` says; blank,
+    /// `r` runs when it is set, over whatever `.odyn.json` says; blank,
     /// the file decides as before; a project's setting is its own; and a
     /// file that won't parse is still that file's error, not "no command".
     #[tokio::test]
@@ -5055,7 +5067,7 @@ mod tests {
         // No file: the setting is the whole answer.
         assert_eq!(run_with(&entry(dir.path(), "sleep 31")), "sleep 31");
         // Both: the setting wins.
-        std::fs::write(dir.path().join(".nebula.json"), r#"{"run": "sleep 30"}"#).unwrap();
+        std::fs::write(dir.path().join(".odyn.json"), r#"{"run": "sleep 30"}"#).unwrap();
         assert_eq!(run_with(&entry(dir.path(), "sleep 31")), "sleep 31");
         // Blank, or another project's: the file.
         assert_eq!(run_with(&entry(dir.path(), "   ")), "sleep 30");
@@ -5064,17 +5076,17 @@ mod tests {
             "sleep 30"
         );
         // Neither: the message names both.
-        std::fs::remove_file(dir.path().join(".nebula.json")).unwrap();
+        std::fs::remove_file(dir.path().join(".odyn.json")).unwrap();
         let err = daemon
             .start_run_with(&worktree.id, &entry(dir.path(), ""))
             .unwrap_err();
         assert!(err.to_string().contains("Settings (s) → Project"), "{err}");
         // A broken file is its own complaint, whatever the setting isn't.
-        std::fs::write(dir.path().join(".nebula.json"), "{").unwrap();
+        std::fs::write(dir.path().join(".odyn.json"), "{").unwrap();
         let err = daemon
             .start_run_with(&worktree.id, &crate::config::Config::default())
             .unwrap_err();
-        assert!(err.to_string().contains(".nebula.json:"), "{err}");
+        assert!(err.to_string().contains(".odyn.json:"), "{err}");
         assert_eq!(
             run_with(&entry(dir.path(), "sleep 31")),
             "sleep 31",
@@ -5090,7 +5102,7 @@ mod tests {
         let daemon = test_daemon();
         let (dir, worktree) = run_worktree(&daemon);
         std::fs::write(
-            dir.path().join(".nebula.json"),
+            dir.path().join(".odyn.json"),
             r#"{"run": "echo run-finished"}"#,
         )
         .unwrap();
@@ -6397,17 +6409,13 @@ mod tests {
         let hook = hook_script(
             &root,
             &format!(
-                "printf '%s %s %s %s\\n' \"$NEBULA_HOOK\" \"$1\" \"$2\" \"$NEBULA_WORKTREE_BRANCH\" > '{}'",
+                "printf '%s %s %s %s\\n' \"$ODYN_HOOK\" \"$1\" \"$2\" \"$ODYN_WORKTREE_BRANCH\" > '{}'",
                 log.display()
             ),
         );
         git_in(
             &repo,
-            &[
-                "config",
-                "nebula.worktreeCreateHook",
-                &hook.to_string_lossy(),
-            ],
+            &["config", "odyn.worktreeCreateHook", &hook.to_string_lossy()],
         );
         let daemon = test_daemon();
         let project = project_at(&daemon, &repo);
@@ -6453,7 +6461,7 @@ mod tests {
         let hook = hook_script(
             &root,
             &format!(
-                "printf '%s %s %s\\n' \"$NEBULA_HOOK\" \"$1\" \"$2\" > '{}'\n\
+                "printf '%s %s %s\\n' \"$ODYN_HOOK\" \"$1\" \"$2\" > '{}'\n\
                  [ -e \"$2\" ] && echo 'still there' >&2\n\
                  echo 'slot 7 was not ours' >&2\n\
                  exit 2",
@@ -6462,11 +6470,7 @@ mod tests {
         );
         git_in(
             &repo,
-            &[
-                "config",
-                "nebula.worktreeDeleteHook",
-                &hook.to_string_lossy(),
-            ],
+            &["config", "odyn.worktreeDeleteHook", &hook.to_string_lossy()],
         );
         let daemon = test_daemon();
         project_at(&daemon, &repo);
@@ -6515,12 +6519,12 @@ mod tests {
         let hook = hook_script(
             &root,
             &format!(
-                "[ \"$NEBULA_HOOK\" = worktree-delete ] && sleep 0.5\n\
-                 echo \"$NEBULA_HOOK $2\" >> '{}'",
+                "[ \"$ODYN_HOOK\" = worktree-delete ] && sleep 0.5\n\
+                 echo \"$ODYN_HOOK $2\" >> '{}'",
                 log.display()
             ),
         );
-        for key in ["nebula.worktreeCreateHook", "nebula.worktreeDeleteHook"] {
+        for key in ["odyn.worktreeCreateHook", "odyn.worktreeDeleteHook"] {
             git_in(&repo, &["config", key, &hook.to_string_lossy()]);
         }
         let daemon = test_daemon();

@@ -2608,7 +2608,8 @@ fn draw_empty(f: &mut Frame, app: &mut App, area: Rect) {
     let th = app.theme;
     let t = crate::splash::scene_time(app, app.splash_epoch);
     let mut welcome = vec![Span::styled("Welcome to ", Style::default().fg(th.text))];
-    welcome.extend(crate::splash::wordmark_word("nebula", t));
+    // odyn: the name comes from `CLI_NAME`.
+    welcome.extend(crate::splash::wordmark_word(nebula_core::CLI_NAME, t));
     // The key line is a button, and marked as one under the pointer the
     // way the header's are.
     let mut words = Style::default().fg(th.muted);

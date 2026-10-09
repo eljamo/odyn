@@ -1,0 +1,9 @@
+[package]
+name = "odyn"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# odyn's own constants. No dependencies, so any nebula crate can call it
+# from a seam without a cycle.
+[dependencies]

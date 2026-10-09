@@ -90,7 +90,7 @@ pub use nebula_core::harness::DEFAULT_CHOICE;
 /// `""`, never this word.
 pub const AUTO_CHOICE: &str = "auto";
 /// What the Project tab's **Run command** row shows while it is empty:
-/// the checkout's `.nebula.json` is what `r` reads then.
+/// the checkout's `.odyn.json` is what `r` reads then.
 pub const PROJECT_FILE_CHOICE: &str = nebula_core::project_file::FILE_NAME;
 
 // The static model/effort lists live in the core registry table now
@@ -565,7 +565,7 @@ pub const SETTINGS_TABS: &[SettingsTab] = &[
             SettingSpec {
                 kind: SettingKind::Editor,
                 label: "File editor",
-                hint: "Editor f/b/F and ⌥click launch (NEBULA_EDITOR overrides)",
+                hint: "Editor f/b/F and ⌥click launch (ODYN_EDITOR overrides)",
                 group: "",
             },
             SettingSpec {
@@ -577,7 +577,7 @@ pub const SETTINGS_TABS: &[SettingsTab] = &[
             SettingSpec {
                 kind: SettingKind::SshSyncConfig,
                 label: "Sync settings over ssh",
-                hint: "nebula ssh / tunnel carry config.json and presets to the remote (config.local.json stays)",
+                hint: concat!(nebula_core::cli_name!(), " ssh / tunnel carry config.json and presets to the remote (config.local.json stays)"), // odyn:
                 group: "",
             },
         ]),
@@ -724,13 +724,13 @@ pub const SETTINGS_TABS: &[SettingsTab] = &[
             SettingSpec {
                 kind: SettingKind::RunCommand,
                 label: "Run command",
-                hint: "Shell line a menu's Run starts in this project's worktrees (empty = its .nebula.json \"run\")",
+                hint: "Shell line a menu's Run starts in this project's worktrees (empty = its .odyn.json \"run\")",
                 group: "",
             },
             SettingSpec {
                 kind: SettingKind::OpenCommand,
                 label: "Open command",
-                hint: "Shell line ⇧Enter / ⇧O runs to open a worktree of this project, e.g. open http://localhost:3000 (empty = its .nebula.json \"open\")",
+                hint: "Shell line ⇧Enter / ⇧O runs to open a worktree of this project, e.g. open http://localhost:3000 (empty = its .odyn.json \"open\")",
                 group: "",
             },
         ]),
@@ -968,7 +968,7 @@ pub struct Config {
     /// find-in-files (`F`), and ⌥click file links launch, invoked as
     /// `<editor> +<line> <file>`. Any command passes through verbatim, so
     /// hand-edited configs can name editors the picker doesn't list. The
-    /// `NEBULA_EDITOR` env var overrides it for the process; see
+    /// `ODYN_EDITOR` env var overrides it for the process; see
     /// [`Config::editor_command`].
     pub editor: String,
     /// Opening a file from the file finder (`f`) or find-in-files (`F`)
@@ -1353,7 +1353,7 @@ pub struct Config {
 #[serde(default)]
 pub struct ProjectSettings {
     /// The RUN COMMAND a menu's **Run** starts in this project's
-    /// worktrees, typed on the Project tab. Empty — the default, shown as `.nebula.json` — is
+    /// worktrees, typed on the Project tab. Empty — the default, shown as `.odyn.json` — is
     /// the checkout's PROJECT FILE `run`, where the command lived before
     /// the row existed; set, it wins over the file. The DAEMON reads it
     /// (`nebula-daemon/src/config.rs`); the TUI only edits it. Left out
@@ -1363,7 +1363,7 @@ pub struct ProjectSettings {
     pub run_command: String,
     /// The OPEN COMMAND `Shift+Enter` / `Shift+O` fires on this project's
     /// worktrees, typed on the Project tab — `open http://localhost:3000`,
-    /// say. Empty (shown as `.nebula.json`) is the checkout's PROJECT FILE
+    /// say. Empty (shown as `.odyn.json`) is the checkout's PROJECT FILE
     /// `open`; set, it wins over the file. The TUI both edits and runs it
     /// (`event_loop::open_worktree`): what it opens belongs on the machine
     /// the user sits at, never the DAEMON's. Left out of the file while
@@ -1396,7 +1396,7 @@ impl ProjectSettings {
     }
 
     /// The stored text of a typed PROJECT TAB row as its prompt pre-fills
-    /// it — `""` for an unset row, never the `.nebula.json` the overlay
+    /// it — `""` for an unset row, never the `.odyn.json` the overlay
     /// shows in its place. Empty for a row that is not typed.
     pub fn text_value(&self, kind: SettingKind) -> String {
         match kind {
@@ -1521,7 +1521,7 @@ impl Config {
     /// back into it, every other key into `config.json`.
     pub fn save(&self) -> std::io::Result<()> {
         // A test that reaches a save without pinning the path would write
-        // the dev's own settings file (and `NEBULA_DATA_DIR` only moves it
+        // the dev's own settings file (and `ODYN_DATA_DIR` only moves it
         // to their dev instance's, which is no better). Saves hang off
         // ordinary keystrokes now — `Shift+W` is one — so make the miss
         // loud instead of leaving it to be noticed in a diff later.
@@ -1643,7 +1643,7 @@ impl Config {
             .unwrap_or(WORKTREE_LAYOUTS[0])
     }
 
-    /// The editor the file overlays launch: `NEBULA_EDITOR` when set,
+    /// The editor the file overlays launch: `ODYN_EDITOR` when set,
     /// otherwise the `editor` setting, otherwise vim.
     pub fn editor_command(&self) -> String {
         resolve_editor(
@@ -4060,7 +4060,7 @@ mod tests {
 
     /// **Run command** on the Project tab: a typed row (Enter prompts,
     /// ←/→ and cycle change nothing) kept per repo path as `run_command`,
-    /// shown as `.nebula.json` while empty — the file decides then — and
+    /// shown as `.odyn.json` while empty — the file decides then — and
     /// left out of the file while empty, so an entry with nothing else in
     /// it is dropped rather than written.
     #[test]
@@ -4078,7 +4078,7 @@ mod tests {
             cfg.project(demo).value_label(SettingKind::RunCommand),
             PROJECT_FILE_CHOICE
         );
-        assert_eq!(cfg.value_label(SettingKind::RunCommand), ".nebula.json");
+        assert_eq!(cfg.value_label(SettingKind::RunCommand), ".odyn.json");
         assert_eq!(cfg.project_text_value(demo, SettingKind::RunCommand), "");
 
         // The tab's cycle never touches a typed row.
@@ -4146,7 +4146,7 @@ mod tests {
 
     /// **Open command** on the Project tab: the same typed per-project row
     /// as Run command, right under it, kept as `open_command` — what
-    /// `Shift+Enter` / `Shift+O` runs before looking at `.nebula.json`.
+    /// `Shift+Enter` / `Shift+O` runs before looking at `.odyn.json`.
     /// Its own key, so setting it leaves `run_command` alone; empty drops
     /// it from the entry.
     #[test]
@@ -4167,7 +4167,7 @@ mod tests {
             cfg.project(demo).value_label(SettingKind::OpenCommand),
             PROJECT_FILE_CHOICE
         );
-        assert_eq!(cfg.value_label(SettingKind::OpenCommand), ".nebula.json");
+        assert_eq!(cfg.value_label(SettingKind::OpenCommand), ".odyn.json");
 
         // A typed row: cycling its tab row changes nothing, and the
         // top-level setter is not its.

@@ -5,15 +5,16 @@
 //! from remembering the curl one-liner.
 
 use anyhow::{bail, Context, Result};
+use nebula_core::CLI_NAME; // odyn: user-visible messages name the binary.
 use nebula_core::PROTOCOL_VERSION;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-const INSTALL_URL: &str =
-    "https://raw.githubusercontent.com/AgentSystemLabs/nebula/main/install.sh";
+// odyn: the fork's install script, which installs odyn's releases.
+const INSTALL_URL: &str = odyn::INSTALL_URL;
 
-/// The published install script, with `NEBULA_INSTALL_URL` as the override
+/// The published install script, with `ODYN_INSTALL_URL` as the override
 /// hook (tests point it at a file:// URL). Shared with `nebula ssh`.
 pub(crate) fn install_url() -> String {
     nebula_core::env::non_empty(nebula_core::env::INSTALL_URL)
@@ -23,12 +24,20 @@ pub(crate) fn install_url() -> String {
 /// Printed whenever a daemon from before IN-PLACE RESTARTS is left running:
 /// the only way onto the new code is a restart, and a restart takes the
 /// sessions.
-pub(crate) const KILL_HINT: &str =
-    "      run 'nebula kill' to restart onto the new binary (stops all sessions).";
+// odyn: the command name comes from `cli_name!()`.
+pub(crate) const KILL_HINT: &str = concat!(
+    "      run '",
+    nebula_core::cli_name!(),
+    " kill' to restart onto the new binary (stops all sessions)."
+);
 
 /// Printed for a stale daemon that can move onto the new binary in place.
-pub(crate) const RELOAD_HINT: &str =
-    "      run 'nebula reload' to move it onto the new binary (sessions keep running).";
+// odyn: the command name comes from `cli_name!()`.
+pub(crate) const RELOAD_HINT: &str = concat!(
+    "      run '",
+    nebula_core::cli_name!(),
+    " reload' to move it onto the new binary (sessions keep running)."
+);
 
 /// `nebula reload`: restart the daemon in place onto the binary this
 /// command runs from.
@@ -37,11 +46,11 @@ pub fn run_reload() -> Result<()> {
     let exe = std::env::current_exe().context("resolve current_exe")?;
     match request_restart(&exe)? {
         Restart::NoDaemon => {
-            println!("no nebula daemon running — the next launch starts this binary");
+            println!("no {CLI_NAME} daemon running — the next launch starts this binary");
         }
         Restart::Unsupported => bail!(
             "the running daemon predates in-place restarts, so it can't move onto this \
-             binary with its sessions.\nRun 'nebula kill' to restart it (stops all sessions)."
+             binary with its sessions.\nRun '{CLI_NAME} kill' to restart it (stops all sessions)."
         ),
         Restart::Restarted { sessions } => println!("{}", restarted_note(sessions)),
     }
@@ -52,7 +61,7 @@ fn restarted_note(sessions: usize) -> String {
     let plural = if sessions == 1 { "" } else { "s" };
     format!(
         "the daemon now runs the new binary — {sessions} live session{plural} kept running.\n\
-         relaunch nebula to pick them back up."
+         relaunch {CLI_NAME} to pick them back up."
     )
 }
 
@@ -142,7 +151,7 @@ fn restart_onto_installed() -> bool {
 fn nebula_on_path(path: &OsStr) -> Option<PathBuf> {
     use std::os::unix::fs::PermissionsExt;
     std::env::split_paths(path)
-        .map(|dir| dir.join("nebula"))
+        .map(|dir| dir.join(nebula_core::CLI_NAME)) // odyn:
         .find(|p| {
             p.metadata()
                 .is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
@@ -153,7 +162,8 @@ fn nebula_on_path(path: &OsStr) -> Option<PathBuf> {
 fn protocol_change_note(installed: u32) -> String {
     format!(
         "      the new build speaks protocol v{installed} and the daemon v{PROTOCOL_VERSION}, \
-         so `nebula` won't open until the daemon restarts."
+         so `{}` won't open until the daemon restarts.",
+        nebula_core::CLI_NAME, // odyn:
     )
 }
 
@@ -223,7 +233,7 @@ fn upgrade_with(url: &str, staging_dir: &Path, force: bool) -> Result<()> {
 
     let script = stage_script(url, staging_dir)?;
     // Inherited stdio: the script's own progress lines are the UI here.
-    // NEBULA_UPGRADE_HANDOFF tells install.sh to skip its "daemon still
+    // ODYN_UPGRADE_HANDOFF tells install.sh to skip its "daemon still
     // running" note — finish_daemon_handoff owns that messaging here.
     let result = Command::new("sh")
         .arg(&script)
@@ -370,7 +380,7 @@ mod tests {
 
     fn fake_nebula(dir: &Path, body: &str) {
         use std::os::unix::fs::PermissionsExt;
-        let exe = dir.join("nebula");
+        let exe = dir.join(nebula_core::CLI_NAME); // odyn:
         std::fs::write(&exe, body).unwrap();
         std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
     }

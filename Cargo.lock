@@ -1135,6 +1135,8 @@ dependencies = [
  "nebula-core",
  "nebula-daemon",
  "nebula-tui",
+ "odyn",
+ "odyn-cli",
  "portable-pty",
  "serde_json",
  "tempfile",
@@ -1149,6 +1151,7 @@ name = "nebula-core"
 version = "0.44.0"
 dependencies = [
  "directories",
+ "odyn",
  "rmp-serde",
  "serde",
  "serde_bytes",
@@ -1195,6 +1198,8 @@ dependencies = [
  "futures",
  "nebula-core",
  "nebula-fuzzy",
+ "odyn",
+ "odyn-tui",
  "portable-pty",
  "pulldown-cmark",
  "ratatui",
@@ -1297,6 +1302,25 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5c7398b9c8b70908f6371f47ed36737907c87c52af34c268fed0bf0ceb92ead9"
 dependencies = [
  "libc",
+]
+
+[[package]]
+name = "odyn"
+version = "0.44.0"
+
+[[package]]
+name = "odyn-cli"
+version = "0.44.0"
+dependencies = [
+ "clap",
+ "odyn",
+]
+
+[[package]]
+name = "odyn-tui"
+version = "0.44.0"
+dependencies = [
+ "ratatui",
 ]
 
 [[package]]

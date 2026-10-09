@@ -39,7 +39,7 @@ pub struct FileTab {
 pub struct FileTabsView {
     /// The agent's checkout: the editor's cwd, and what labels are relative to.
     pub root: PathBuf,
-    /// Editor command Enter launches (NEBULA_EDITOR, then the `editor`
+    /// Editor command Enter launches (ODYN_EDITOR, then the `editor`
     /// setting, default vim), captured at open time.
     pub editor: String,
     pub tabs: Vec<FileTab>,

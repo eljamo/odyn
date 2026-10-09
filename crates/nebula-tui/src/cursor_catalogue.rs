@@ -482,7 +482,7 @@ pub fn fetch_ids() -> Option<Vec<String>> {
 /// TUI startup: install the cached catalogue at once and, when the cache is
 /// missing or older than [`CACHE_TTL`], refresh it on a background thread.
 /// Skipped when Cursor is switched off (HARNESS TOGGLE) and under
-/// `NEBULA_AGENT_CMD` (tests, STUB AGENTS), so no test ever shells out.
+/// `ODYN_AGENT_CMD` (tests, STUB AGENTS), so no test ever shells out.
 pub fn bootstrap(cursor_enabled: bool) {
     if !cursor_enabled || nebula_core::env::non_empty(nebula_core::env::AGENT_CMD).is_some() {
         return;

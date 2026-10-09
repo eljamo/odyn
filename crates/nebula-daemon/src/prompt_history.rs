@@ -14,7 +14,7 @@
 //!
 //! Prompts nobody typed are left out: the ones nebula itself composes
 //! (the PR SESSION scope, the `nebula worktree` relocation notice —
-//! anything opening with `[nebula]`) and the ones a CLI injects into its
+//! anything opening with `[odyn]`) and the ones a CLI injects into its
 //! own turn queue and then reports through the very same hook — a
 //! sibling session's message, a background task or subagent handing back,
 //! an idle notice the session had asked for. See [`INJECTED_PREFIXES`].
@@ -30,7 +30,7 @@ use crate::registry::Daemon;
 /// sentence.
 pub const MAX_PROMPT_CHARS: usize = 200;
 
-/// What a prompt nobody typed opens with. `[nebula]` marks the prompts
+/// What a prompt nobody typed opens with. `[odyn]` marks the prompts
 /// nebula composes itself; the rest are the envelopes a CLI wraps around
 /// something it injected into its own turn queue — Claude reports those
 /// through `UserPromptSubmit` exactly as it reports a typed prompt, so
@@ -39,7 +39,7 @@ pub const MAX_PROMPT_CHARS: usize = 200;
 /// do, and a panel showing them says `<cross-session-message from="uds:`
 /// where the user's own sentence belongs.
 const INJECTED_PREFIXES: &[&str] = &[
-    "[nebula]",
+    "[odyn]",
     "[Cross-session idle notice]",
     "<cross-session-message",
     "<task-notification",
@@ -117,14 +117,14 @@ mod tests {
         assert_eq!(condense(""), None);
         assert_eq!(condense("  \n\t "), None);
         assert_eq!(
-            condense("[nebula] This session now runs inside the worktree `x`"),
+            condense("[odyn] This session now runs inside the worktree `x`"),
             None
         );
-        assert_eq!(condense("\n  [nebula] anything"), None);
+        assert_eq!(condense("\n  [odyn] anything"), None);
         // Only the opening marker counts: a user mentioning nebula stays.
         assert_eq!(
-            condense("why does [nebula] show a red dot").as_deref(),
-            Some("why does [nebula] show a red dot")
+            condense("why does [odyn] show a red dot").as_deref(),
+            Some("why does [odyn] show a red dot")
         );
     }
 

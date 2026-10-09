@@ -1,6 +1,6 @@
 //! `nebula config` against throwaway data dirs, and the receiving half of the
 //! settings forward `nebula ssh` does: the bundle a remote nebula finds in
-//! `NEBULA_IMPORT_BUNDLE` when it starts.
+//! `ODYN_IMPORT_BUNDLE` when it starts.
 
 use nebula_core::env::{CONFIG_FILE, DATA_DIR, IMPORT_BUNDLE};
 use serde_json::{json, Value};
@@ -9,7 +9,7 @@ use std::path::Path;
 use std::process::{Command, Output, Stdio};
 
 fn command(data: &Path, args: &[&str]) -> Command {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_nebula"));
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_odyn"));
     cmd.args(args)
         .env(DATA_DIR, data)
         .env_remove(CONFIG_FILE)
@@ -73,7 +73,7 @@ fn a_backup_restores_into_another_machines_settings() {
     let folder = backups.path().display().to_string();
     let out = nebula(old.path(), &["config", "export", &folder]);
     assert!(out.status.success(), "{}", text(&out.stderr));
-    let bundle = get(&backups.path().join("nebula-settings.json"));
+    let bundle = get(&backups.path().join("odyn-settings.json"));
     assert_eq!(bundle["config"]["theme"], "ocean");
     assert!(
         bundle["config"].get("editor").is_none(),
@@ -109,7 +109,7 @@ fn an_export_on_stdout_imports_from_stdin() {
     let out = nebula(from.path(), &["config", "export"]);
     assert!(out.status.success(), "{}", text(&out.stderr));
     let bundle: Value = serde_json::from_slice(&out.stdout).expect("stdout is the bundle");
-    assert_eq!(bundle["nebula_bundle"], 1);
+    assert_eq!(bundle["odyn_bundle"], 1);
 
     let mut child = command(to.path(), &["config", "import", "-"])
         .stdin(Stdio::piped())
@@ -136,7 +136,7 @@ fn a_bundle_in_the_environment_is_merged_at_startup() {
         json!({"theme": "default", "editor": "vim"}),
     );
     let bundle = nebula_tui::bundle::encode(&json!({
-        "nebula_bundle": 1,
+        "odyn_bundle": 1,
         "config": {"theme": "forest"},
     }));
     let out = command(data.path(), &["config", "path"])

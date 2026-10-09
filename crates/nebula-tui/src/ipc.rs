@@ -3,6 +3,7 @@
 
 use anyhow::{bail, Context, Result};
 use nebula_core::codec::{read_frame, write_frame};
+use nebula_core::CLI_NAME; // odyn:
 use nebula_core::{
     env, paths, AgentId, AgentKind, ClientRequest, EnterOutcome, ServerEvent, PROTOCOL_VERSION,
 };
@@ -35,10 +36,10 @@ pub async fn connect_or_spawn() -> Result<Connection> {
         Some(nebula_core::host::WslFlavor::Wsl1)
     ) {
         bail!(
-            "nebula supports WSL2, but this looks like WSL1. \
+            "{CLI_NAME} supports WSL2, but this looks like WSL1. \
              WSL1 does not provide the Linux kernel features the daemon needs \
              for its Unix socket, pidfile lock, and PTYs. Convert the distro \
-             with `wsl.exe --set-version <distro> 2`, then run `nebula` again."
+             with `wsl.exe --set-version <distro> 2`, then run `{CLI_NAME}` again." // odyn:
         );
     }
 
@@ -86,7 +87,8 @@ fn spawn_daemon() -> Result<()> {
     unsafe {
         cmd.pre_exec(own_session);
     }
-    cmd.spawn().context("spawn nebula daemon")?;
+    cmd.spawn()
+        .context(concat!("spawn ", nebula_core::cli_name!(), " daemon"))?; // odyn:
     Ok(())
 }
 
@@ -162,7 +164,7 @@ fn version_skew_message(daemon_protocol_version: u32, daemon_pid: Option<i32>) -
     );
     if daemon_protocol_version > PROTOCOL_VERSION {
         format!(
-            "{header}This client is the older build, so `nebula kill` will not fix it — the \
+            "{header}This client is the older build, so `{CLI_NAME} kill` will not fix it — the \
              running instance respawns its daemon from its own binary. Install the daemon's \
              build over this one instead (`make install` from that checkout)."
         )
@@ -176,7 +178,7 @@ fn version_skew_message(daemon_protocol_version: u32, daemon_pid: Option<i32>) -
             })
             .unwrap_or_default();
         format!(
-            "{header}The daemon is the older build — run `nebula kill` and relaunch. That \
+            "{header}The daemon is the older build — run `{CLI_NAME} kill` and relaunch. That \
              stops every live session.{by_hand}"
         )
     }
@@ -237,14 +239,14 @@ pub fn split_connection(conn: Connection) -> IpcChannels {
     }
 }
 
-/// The agent id a one-shot CLI runs as, from the raw `NEBULA_AGENT_ID`
+/// The agent id a one-shot CLI runs as, from the raw `ODYN_AGENT_ID`
 /// value. Unset and empty are the same miss, and the error names the
 /// `nebula <verb>` that needs it. Pure so the message is testable.
 fn agent_id_from(value: Option<String>, verb: &str) -> Result<String> {
     value.filter(|v| !v.is_empty()).with_context(|| {
         format!(
-            "{} is not set — `nebula {verb}` only works from inside a \
-             nebula agent session",
+            "{} is not set — `{CLI_NAME} {verb}` only works from inside a \
+             {CLI_NAME} agent session",
             env::AGENT_ID
         )
     })
@@ -299,7 +301,7 @@ pub enum RenameMode {
 }
 
 /// One-shot client for `nebula rename`, run from inside an agent session's
-/// CLI: resolve the agent from NEBULA_AGENT_ID and ask the daemon to title
+/// CLI: resolve the agent from ODYN_AGENT_ID and ask the daemon to title
 /// it. Never spawns a daemon — no daemon means no session worth titling.
 ///
 /// Daemon-reported outcomes (renamed, or "already titled" on the non-force
@@ -309,7 +311,7 @@ pub async fn rename_current_agent(title: &str, mode: RenameMode) -> Result<()> {
     let agent_id = current_agent_id("rename")?;
     let sock = paths::socket_path();
     let Ok(stream) = try_connect(&sock).await else {
-        bail!("no nebula daemon is running — title unchanged");
+        bail!("no {CLI_NAME} daemon is running — title unchanged");
     };
     let mut conn = handshake(stream).await?;
     let req_id = ONE_SHOT_REQ_ID;
@@ -322,7 +324,7 @@ pub async fn rename_current_agent(title: &str, mode: RenameMode) -> Result<()> {
     write_frame(&mut conn.stream, &request).await?;
     match await_reply(&mut conn, req_id).await? {
         Reply::Ack => println!("session renamed to \"{title}\""),
-        Reply::Error(message) => println!("nebula: {message}"),
+        Reply::Error(message) => println!("{CLI_NAME}: {message}"),
     }
     Ok(())
 }
@@ -340,11 +342,11 @@ pub async fn spawn_sibling_for_current_agent(task: &str, kind: Option<AgentKind>
     let agent_id = current_agent_id("spawn")?;
     let task = task.trim();
     if task.is_empty() {
-        bail!("the task is empty — `nebula spawn \"<task>\"` needs the work the new session starts on");
+        bail!("the task is empty — `{CLI_NAME} spawn \"<task>\"` needs the work the new session starts on");
     }
     let sock = paths::socket_path();
     let Ok(stream) = try_connect(&sock).await else {
-        bail!("no nebula daemon is running — no session started");
+        bail!("no {CLI_NAME} daemon is running — no session started");
     };
     let mut conn = handshake(stream).await?;
     let req_id = ONE_SHOT_REQ_ID;
@@ -375,7 +377,7 @@ pub async fn spawn_sibling_for_current_agent(task: &str, kind: Option<AgentKind>
 pub async fn open_files_for_current_agent(files: &[String]) -> Result<()> {
     let agent_id = current_agent_id("open")?;
     if files.is_empty() {
-        bail!("nothing to open — `nebula open <file>…` needs at least one file");
+        bail!("nothing to open — `{CLI_NAME} open <file>…` needs at least one file");
     }
     let mut resolved = Vec::with_capacity(files.len());
     for file in files {
@@ -391,7 +393,7 @@ pub async fn open_files_for_current_agent(files: &[String]) -> Result<()> {
             .with_context(|| format!("can't open {file}: unreadable"))?;
         if !text {
             bail!(
-                "can't open {file}: not a text file — nebula shows text only (no images, PDFs or \
+                "can't open {file}: not a text file — {CLI_NAME} shows text only (no images, PDFs or \
                  other binaries); name the path in your reply instead"
             );
         }
@@ -399,7 +401,7 @@ pub async fn open_files_for_current_agent(files: &[String]) -> Result<()> {
     }
     let sock = paths::socket_path();
     let Ok(stream) = try_connect(&sock).await else {
-        bail!("no nebula daemon is running — nothing opened");
+        bail!("no {CLI_NAME} daemon is running — nothing opened");
     };
     let mut conn = handshake(stream).await?;
     let req_id = ONE_SHOT_REQ_ID;
@@ -416,7 +418,7 @@ pub async fn open_files_for_current_agent(files: &[String]) -> Result<()> {
     await_ack(&mut conn, req_id).await?;
     let noun = if count == 1 { "file" } else { "files" };
     println!(
-        "opened {count} {noun} in nebula's file tabs — the user is looking at them now, one tab \
+        "opened {count} {noun} in {CLI_NAME}'s file tabs — the user is looking at them now, one tab \
          each, with a preview and an editor. Don't paste their contents into your reply; carry on."
     );
     Ok(())
@@ -442,7 +444,7 @@ pub async fn enter_worktree_for_current_agent(name: &str, base: Option<String>) 
     };
     let sock = paths::socket_path();
     let Ok(stream) = try_connect(&sock).await else {
-        bail!("no nebula daemon is running — nothing to move");
+        bail!("no {CLI_NAME} daemon is running — nothing to move");
     };
     let mut conn = handshake(stream).await?;
     let req_id = ONE_SHOT_REQ_ID;
@@ -474,7 +476,7 @@ pub async fn enter_worktree_for_current_agent(name: &str, base: Option<String>) 
                     }
                     EnterOutcome::Relocating => {
                         println!(
-                            "this session is now associated with it; nebula will relocate the \
+                            "this session is now associated with it; {CLI_NAME} will relocate the \
                              session into it the moment this turn ends."
                         );
                         println!(
@@ -570,8 +572,8 @@ async fn kill_daemon_at(sock: &std::path::Path, pidfile: &std::path::Path) -> Re
             return Ok(true);
         }
         bail!(
-            "a nebula daemon is listening on {} but this build can't talk to it or find its \
-             pid — look it up with `pgrep -f 'nebula daemon'` and stop it with `kill <pid>` \
+            "a {CLI_NAME} daemon is listening on {} but this build can't talk to it or find its \
+             pid — look it up with `pgrep -f '{CLI_NAME} daemon'` and stop it with `kill <pid>` \
              (never `kill -9`, which skips flushing its database)",
             sock.display()
         );
@@ -736,12 +738,12 @@ mod tests {
     #[test]
     fn agent_id_requires_a_non_empty_value_and_names_the_verb() {
         let err = agent_id_from(None, "rename").unwrap_err().to_string();
-        assert!(err.contains("`nebula rename`"), "{err}");
+        assert!(err.contains(&format!("`{CLI_NAME} rename`")), "{err}");
         assert!(err.contains(env::AGENT_ID), "{err}");
         let err = agent_id_from(Some(String::new()), "worktree")
             .unwrap_err()
             .to_string();
-        assert!(err.contains("`nebula worktree`"), "{err}");
+        assert!(err.contains(&format!("`{CLI_NAME} worktree`")), "{err}");
         assert_eq!(agent_id_from(Some("a1".into()), "rename").unwrap(), "a1");
     }
 
@@ -753,14 +755,14 @@ mod tests {
         let daemon_ahead = version_skew_message(PROTOCOL_VERSION + 2, None);
         assert!(daemon_ahead.contains("This client is the older build"));
         assert!(
-            !daemon_ahead.contains("run `nebula kill` and relaunch"),
+            !daemon_ahead.contains(&format!("run `{CLI_NAME} kill` and relaunch")),
             "must not send the user to kill a daemon that is not the stale side: {daemon_ahead}"
         );
         assert!(daemon_ahead.contains("make install"));
 
         let daemon_behind = version_skew_message(PROTOCOL_VERSION - 1, None);
         assert!(daemon_behind.contains("The daemon is the older build"));
-        assert!(daemon_behind.contains("run `nebula kill` and relaunch"));
+        assert!(daemon_behind.contains(&format!("run `{CLI_NAME} kill` and relaunch")));
     }
 
     // #68: with the daemon's pid known, the stale-daemon message names it
@@ -778,7 +780,7 @@ mod tests {
     }
 
     /// Env var that turns [`fake_skewed_daemon`] from a no-op into a daemon.
-    const FAKE_DAEMON_SOCK: &str = "NEBULA_TEST_FAKE_DAEMON_SOCK";
+    const FAKE_DAEMON_SOCK: &str = "ODYN_TEST_FAKE_DAEMON_SOCK";
 
     /// A child re-exec of this test binary playing the daemon from #68: on
     /// an older protocol, with no pidfile, answering every `Hello` with

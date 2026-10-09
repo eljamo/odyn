@@ -251,7 +251,7 @@ pub struct SpawnSpec {
     pub program: String,
     pub args: Vec<String>,
     pub cwd: std::path::PathBuf,
-    /// Extra env vars (NEBULA_* for agents). Plain terminals get none.
+    /// Extra env vars (ODYN_* for agents). Plain terminals get none.
     pub env: Vec<(String, String)>,
     /// Env var names to scrub from the inherited environment. Only ever a
     /// fixed list (the agent-session vars), so it is borrowed, not built.

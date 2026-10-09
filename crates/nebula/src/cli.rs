@@ -21,7 +21,7 @@ use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
 #[command(
-    name = "nebula",
+    name = nebula_core::CLI_NAME, // odyn:
     version,
     max_term_width = 100,
     about = "Terminal multiplexer for Claude Code agents",
@@ -87,7 +87,7 @@ pub(crate) enum Command {
     ///
     /// The daemon holds every PTY, the store, git and agent status. The TUI
     /// auto-spawns it detached, so you rarely run this by hand — reach for it
-    /// when you want to watch what the daemon is doing. Set NEBULA_LOG to
+    /// when you want to watch what the daemon is doing. Set ODYN_LOG to
     /// change the log level.
     #[command(after_help = DAEMON_EXAMPLES)]
     Daemon {
@@ -331,7 +331,7 @@ Examples:
 const DAEMON_EXAMPLES: &str = "\
 Examples:
   nebula daemon --foreground       run it attached, logs on stdout
-  NEBULA_LOG=debug nebula daemon --foreground
+  ODYN_LOG=debug nebula daemon --foreground
                                    the same, at debug level";
 
 const KILL_EXAMPLES: &str = "\
@@ -384,7 +384,7 @@ Examples:
 const CONFIG_EXAMPLES: &str = "\
 Examples:
   nebula config path               where each settings file lives
-  nebula config export ~/backups   write ~/backups/nebula-settings.json
+  nebula config export ~/backups   write ~/backups/odyn-settings.json
   nebula config import ~/backups   merge it back in, here or elsewhere";
 
 const TUNNEL_EXAMPLES: &str = "\
@@ -403,8 +403,8 @@ Examples:
 pub(crate) enum ConfigCommand {
     /// Print where each settings file lives.
     ///
-    /// `NEBULA_CONFIG_FILE` moves `config.json` alone — into a dotfiles
-    /// checkout, say; `NEBULA_DATA_DIR` moves them all.
+    /// `ODYN_CONFIG_FILE` moves `config.json` alone — into a dotfiles
+    /// checkout, say; `ODYN_DATA_DIR` moves them all.
     #[command(after_help = "Example:\n  nebula config path")]
     Path,
     /// Write this machine's settings to one JSON file.
@@ -413,8 +413,8 @@ pub(crate) enum ConfigCommand {
     /// `config.local.json`. Keys and presets this build doesn't know are
     /// carried as they are, so a newer nebula's settings survive the trip.
     #[command(
-        after_help = "Examples:\n  nebula config export > nebula-settings.json\n  \
-                            nebula config export ~/backups   writes ~/backups/nebula-settings.json"
+        after_help = "Examples:\n  nebula config export > odyn-settings.json\n  \
+                            nebula config export ~/backups   writes ~/backups/odyn-settings.json"
     )]
     Export {
         /// File, or existing folder, to write (default: stdout; `-` too).
@@ -429,7 +429,7 @@ pub(crate) enum ConfigCommand {
     /// presets merge by name and hosts by destination. `config.local.json` is
     /// never written, and still wins.
     #[command(
-        after_help = "Examples:\n  nebula config import nebula-settings.json\n  \
+        after_help = "Examples:\n  nebula config import odyn-settings.json\n  \
                             nebula config import ~/dotfiles/nebula   a folder holding config.json"
     )]
     Import {

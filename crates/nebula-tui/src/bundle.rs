@@ -2,11 +2,11 @@
 //! machine to another — `config.json`, the AGENT PRESETS and the SSH HOSTS
 //! FILE. `nebula config export` writes one, `nebula config import` merges one
 //! in, and `nebula ssh` / `nebula tunnel` hand one to the remote nebula in
-//! `NEBULA_IMPORT_BUNDLE`, so the remote takes this machine's settings on
+//! `ODYN_IMPORT_BUNDLE`, so the remote takes this machine's settings on
 //! every connect.
 //!
 //! ```json
-//! { "nebula_bundle": 1, "exported_by": "0.27.0",
+//! { "odyn_bundle": 1, "exported_by": "0.27.0",
 //!   "config": { "theme": "ocean" }, "agent_presets": [], "ssh_hosts": [] }
 //! ```
 //!
@@ -15,7 +15,7 @@
 //! preset field this build has never heard of is exactly what a newer one
 //! wrote, and dropping it on the way through would undo that build's
 //! settings. Sections are optional and only ever added; a reader leaves one
-//! it doesn't know alone. `nebula_bundle` marks the file as a bundle and is
+//! it doesn't know alone. `odyn_bundle` marks the file as a bundle and is
 //! never bumped — a change of meaning ships under a new section name
 //! instead. `config.local.json` is never exported, and an import never
 //! writes it.
@@ -26,17 +26,18 @@ use nebula_core::paths::{
     CONFIG_FILE_NAME, CONFIG_LOCAL_FILE_NAME, PRESETS_FILE_NAME, SSH_HOSTS_FILE_NAME,
 };
 use nebula_core::settings::{self, Object};
+use nebula_core::CLI_NAME; // odyn: user-visible messages name the binary.
 use serde_json::{json, Value};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
 /// The key every bundle carries; its value is [`FORMAT`].
-pub const MARKER: &str = "nebula_bundle";
+pub const MARKER: &str = "odyn_bundle";
 /// Never bumped: see the module docs.
 pub const FORMAT: u64 = 1;
 /// What `nebula config export <folder>` writes, and what a folder import
 /// looks for first.
-pub const FILE_NAME: &str = "nebula-settings.json";
+pub const FILE_NAME: &str = "odyn-settings.json";
 /// The biggest encoded bundle `nebula ssh` puts on the remote command line.
 /// Linux caps a single argument at 128 KiB and the whole remote command
 /// travels as one; a real bundle is a few KiB.
@@ -202,7 +203,7 @@ impl Report {
         }
         if !self.unknown_sections.is_empty() {
             parts.push(format!(
-                "left alone, unknown to this nebula: {}",
+                "left alone, unknown to this {CLI_NAME}: {}",
                 self.unknown_sections.join(", ")
             ));
         }
@@ -221,7 +222,7 @@ fn plural(n: usize, noun: &str) -> String {
 /// import with nothing changed.
 pub fn import(paths: &Paths, bundle: &Value) -> Result<Report> {
     let Some(obj) = bundle.as_object().filter(|obj| obj.contains_key(MARKER)) else {
-        bail!("not a nebula settings bundle (it has no \"{MARKER}\" key)");
+        bail!("not a {CLI_NAME} settings bundle (it has no \"{MARKER}\" key)");
     };
     let incoming_config = match obj.get(CONFIG) {
         None => None,
@@ -463,7 +464,7 @@ fn bare_bundle() -> Object {
     Object::from_iter([(MARKER.to_string(), json!(FORMAT))])
 }
 
-/// `bundle` as `NEBULA_IMPORT_BUNDLE` carries it: compact JSON in standard
+/// `bundle` as `ODYN_IMPORT_BUNDLE` carries it: compact JSON in standard
 /// base64, an alphabet that survives single quotes in every login shell —
 /// fish reads a `\` inside them, and JSON is full of backslashes.
 pub fn encode(bundle: &Value) -> String {
@@ -487,7 +488,7 @@ pub fn for_remote() -> Option<String> {
     }
     let (bundle, warnings) = export(&Paths::current(), Scope::Remote);
     for warning in warnings {
-        eprintln!("nebula: settings not sent in full: {warning}");
+        eprintln!("{CLI_NAME}: settings not sent in full: {warning}");
     }
     if section_count(&bundle) == 0 {
         return None;
@@ -495,7 +496,7 @@ pub fn for_remote() -> Option<String> {
     let encoded = encode(&bundle);
     if encoded.len() > MAX_FORWARD_BYTES {
         eprintln!(
-            "nebula: settings are {} KiB, too large to send over ssh — connecting without them",
+            "{CLI_NAME}: settings are {} KiB, too large to send over ssh — connecting without them",
             encoded.len() / 1024
         );
         return None;
@@ -504,7 +505,7 @@ pub fn for_remote() -> Option<String> {
 }
 
 /// Merge the bundle a `nebula ssh` / `nebula tunnel` from another machine
-/// sent in `NEBULA_IMPORT_BUNDLE`, if any, and take the variable out of the
+/// sent in `ODYN_IMPORT_BUNDLE`, if any, and take the variable out of the
 /// environment so the daemon, agent sessions and ttyd's TUIs never inherit
 /// it. Call it first thing, before a thread exists. Says what changed on
 /// stderr (the TUI's screen covers that line, and restores it on quit) and
@@ -520,11 +521,13 @@ pub fn apply_forwarded() {
     }
     match decode(&encoded).and_then(|bundle| import(&Paths::current(), &bundle)) {
         Ok(report) if report.changed() || !report.held_local.is_empty() => eprintln!(
-            "nebula: settings from the connecting machine applied — {}",
+            "{CLI_NAME}: settings from the connecting machine applied — {}",
             report.summary()
         ),
         Ok(_) => {}
-        Err(err) => eprintln!("nebula: ignored the settings the connecting machine sent: {err:#}"),
+        Err(err) => {
+            eprintln!("{CLI_NAME}: ignored the settings the connecting machine sent: {err:#}")
+        }
     }
 }
 
@@ -567,7 +570,7 @@ pub fn run(op: ConfigOp) -> Result<()> {
         ConfigOp::Export { path } => {
             let (bundle, warnings) = export(&paths, Scope::Backup);
             for warning in &warnings {
-                eprintln!("nebula: {warning}");
+                eprintln!("{CLI_NAME}: {warning}");
             }
             let mut text = serde_json::to_string_pretty(&bundle)?;
             text.push('\n');
@@ -716,7 +719,7 @@ mod tests {
         put(&p.config, json!({"theme": "default", "animations": false}));
         put(&p.local, json!({"theme": "rose"}));
         let bundle = json!({
-            "nebula_bundle": 1,
+            "odyn_bundle": 1,
             "exported_by": "9.9.9",
             "config": {"theme": "ocean", "focus_tint": false},
             "projects": [],
@@ -751,7 +754,7 @@ mod tests {
             json!([{"host": "a@one", "last_used_ms": 5}, {"host": "b@two", "last_used_ms": 1}]),
         );
         let bundle = json!({
-            "nebula_bundle": 1,
+            "odyn_bundle": 1,
             "agent_presets": [
                 {"name": "reviewer", "kind": "antigravity"},
                 {"name": "new", "kind": "pi"},
@@ -795,7 +798,7 @@ mod tests {
         put(&p.presets, json!([]));
         std::fs::write(&p.config, "{ broken").unwrap();
         let bundle = json!({
-            "nebula_bundle": 1,
+            "odyn_bundle": 1,
             "config": {"theme": "ocean"},
             "agent_presets": [{"name": "p"}],
         });
@@ -805,7 +808,7 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&p.config).unwrap(), "{ broken");
 
         let err = import(&p, &json!({"theme": "ocean"})).unwrap_err();
-        assert!(err.to_string().contains("not a nebula settings bundle"));
+        assert!(err.to_string().contains(&format!("not a {CLI_NAME} settings bundle")));
     }
 
     #[test]
@@ -815,7 +818,7 @@ mod tests {
 
         put(
             &dir.path().join("backup.json"),
-            json!({"nebula_bundle": 1, "config": {"theme": "ocean"}}),
+            json!({"odyn_bundle": 1, "config": {"theme": "ocean"}}),
         );
         assert_eq!(
             read_source(&src("backup.json")).unwrap()["config"]["theme"],
@@ -858,7 +861,7 @@ mod tests {
 
         put(
             &folder.join(FILE_NAME),
-            json!({"nebula_bundle": 1, "config": {"theme": "rose"}}),
+            json!({"odyn_bundle": 1, "config": {"theme": "rose"}}),
         );
         let bundle = read_source(&folder.display().to_string()).unwrap();
         assert_eq!(bundle["config"], json!({"theme": "rose"}), "an export wins");
@@ -867,7 +870,7 @@ mod tests {
     #[test]
     fn the_environment_form_round_trips_and_needs_no_escaping() {
         let bundle = json!({
-            "nebula_bundle": 1,
+            "odyn_bundle": 1,
             "agent_presets": [{"name": "p", "prefix": "line one\nsay \"hi\" \\ at 5 o'clock"}],
         });
         let encoded = encode(&bundle);

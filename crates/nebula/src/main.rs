@@ -5,12 +5,15 @@ mod tunnel;
 mod upgrade;
 
 use anyhow::Result;
-use clap::Parser;
+use clap::{CommandFactory, FromArgMatches}; // odyn:
 use cli::{Cli, Command, ConfigCommand};
+use nebula_core::CLI_NAME; // odyn: user-visible messages name the binary.
 use std::path::Path;
 
 fn main() -> Result<()> {
-    let cli = Cli::parse();
+    // odyn: the help text names odyn.
+    let cli = odyn_cli::with_odyn_help(Cli::command()).get_matches();
+    let cli = Cli::from_arg_matches(&cli).unwrap_or_else(|e| e.exit());
     // A `nebula ssh` / `nebula tunnel` from another machine may have sent its
     // settings along. Merge them before anything reads a setting, and before
     // a thread or a child exists to inherit the variable.
@@ -120,7 +123,7 @@ fn main() -> Result<()> {
                     // terminal so a fresh `nebula ssh` can exec over us (the
                     // local daemon and its sessions stay up).
                     Some(entry) => {
-                        eprintln!("nebula: connecting to {}…", entry.host);
+                        eprintln!("{CLI_NAME}: connecting to {}…", entry.host);
                         ssh::run_ssh(&entry.host, entry.path.as_deref(), true)
                     }
                     None => Ok(()),

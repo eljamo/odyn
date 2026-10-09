@@ -13,14 +13,14 @@ pub const SSH_HOSTS_FILE_NAME: &str = "ssh_hosts.json";
 const FALLBACK_RUNTIME_ROOT: &str = "/tmp";
 
 /// Runtime dir holding the socket + pidfile. Mode 0700 — this is the auth
-/// boundary, same model as tmux. `NEBULA_RUNTIME_DIR` overrides (tests,
+/// boundary, same model as tmux. `ODYN_RUNTIME_DIR` overrides (tests,
 /// parallel instances).
 pub fn runtime_dir() -> PathBuf {
     if let Some(dir) = env::non_empty(env::RUNTIME_DIR) {
         return PathBuf::from(dir);
     }
     if let Some(dir) = xdg_runtime_dir() {
-        return dir.join("nebula");
+        return dir.join(crate::CLI_NAME); // odyn:
     }
     fallback_runtime_dir()
 }
@@ -37,7 +37,7 @@ fn xdg_runtime_dir() -> Option<PathBuf> {
 
 fn fallback_runtime_dir() -> PathBuf {
     let uid = libc_geteuid();
-    Path::new(FALLBACK_RUNTIME_ROOT).join(format!("nebula-{uid}"))
+    Path::new(FALLBACK_RUNTIME_ROOT).join(format!("{}-{uid}", crate::CLI_NAME)) // odyn:
 }
 
 // Avoid a libc dependency in this dep-light crate for one call.
@@ -89,9 +89,10 @@ pub fn restart_state_path() -> PathBuf {
 }
 
 /// The platform's per-user dirs for this app (`~/Library/Application
-/// Support/dev.nebula.nebula` on macOS, `~/.local/share/nebula` on Linux).
+/// Support/dev.odyn.odyn` on macOS, `~/.local/share/odyn` on Linux).
+// odyn: the app's own dirs, named from `CLI_NAME`; nebula's are not read.
 fn project_dirs() -> Option<directories::ProjectDirs> {
-    directories::ProjectDirs::from("dev", "nebula", "nebula")
+    directories::ProjectDirs::from("dev", crate::CLI_NAME, crate::CLI_NAME)
 }
 
 pub fn data_dir() -> PathBuf {
@@ -100,16 +101,20 @@ pub fn data_dir() -> PathBuf {
     }
     project_dirs()
         .map(|d| d.data_dir().to_path_buf())
-        .unwrap_or_else(|| env::home_dir().unwrap_or_default().join(".nebula"))
+        .unwrap_or_else(|| {
+            env::home_dir()
+                .unwrap_or_default()
+                .join(format!(".{}", crate::CLI_NAME))
+        }) // odyn:
 }
 
 pub fn db_path() -> PathBuf {
-    data_dir().join("nebula.db")
+    data_dir().join(format!("{}.db", crate::CLI_NAME)) // odyn:
 }
 
 /// User settings file (JSON) — the portable layer, which backups and
-/// `nebula ssh` carry. Lives beside the DB so `NEBULA_DATA_DIR` isolates it
-/// for tests and parallel instances too; `NEBULA_CONFIG_FILE` moves this one
+/// `nebula ssh` carry. Lives beside the DB so `ODYN_DATA_DIR` isolates it
+/// for tests and parallel instances too; `ODYN_CONFIG_FILE` moves this one
 /// file alone (a leading `~/` is expanded, since a quoted value never is).
 pub fn config_path() -> PathBuf {
     match env::non_empty(env::CONFIG_FILE) {
@@ -123,7 +128,7 @@ pub fn config_path() -> PathBuf {
 
 /// This machine's settings, layered over [`config_path`] key by key: never
 /// exported, forwarded or overwritten by an import. Stays in the data dir
-/// when `NEBULA_CONFIG_FILE` moves the portable file.
+/// when `ODYN_CONFIG_FILE` moves the portable file.
 pub fn config_local_path() -> PathBuf {
     data_dir().join(CONFIG_LOCAL_FILE_NAME)
 }
@@ -201,7 +206,7 @@ mod tests {
         assert_eq!(pidfile_path(), runtime.join("daemon.pid"));
         assert_eq!(buildstamp_path(), runtime.join("daemon.build"));
         assert_eq!(data_dir(), data);
-        assert_eq!(db_path(), data.join("nebula.db"));
+        assert_eq!(db_path(), data.join(format!("{}.db", crate::CLI_NAME)));
         assert_eq!(config_path(), data.join("config.json"));
         assert_eq!(config_local_path(), data.join("config.local.json"));
         // Logs follow the data override so isolated instances keep their
@@ -216,7 +221,7 @@ mod tests {
         std::env::set_var(crate::env::CONFIG_FILE, &dotfile);
         assert_eq!(config_path(), dotfile);
         assert_eq!(config_local_path(), data.join("config.local.json"));
-        assert_eq!(db_path(), data.join("nebula.db"));
+        assert_eq!(db_path(), data.join(format!("{}.db", crate::CLI_NAME)));
         std::env::set_var(crate::env::CONFIG_FILE, "~/dotfiles/nebula.json");
         assert_eq!(
             config_path(),
@@ -243,7 +248,7 @@ mod tests {
         let xdg = std::env::temp_dir().join(format!("nebula-paths-xdg-{}", std::process::id()));
         std::fs::create_dir_all(&xdg).unwrap();
         std::env::set_var("XDG_RUNTIME_DIR", &xdg);
-        assert_eq!(runtime_dir(), xdg.join("nebula"));
+        assert_eq!(runtime_dir(), xdg.join(crate::CLI_NAME));
 
         std::fs::remove_dir_all(&xdg).unwrap();
         assert_eq!(runtime_dir(), fallback_runtime_dir());

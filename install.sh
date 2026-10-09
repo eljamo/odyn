@@ -1,18 +1,20 @@
 #!/bin/sh
-# nebula installer — installs or updates the `nebula` binary.
+# odyn installer — installs or updates the `odyn` binary.
 #
-#   curl -fsSL https://raw.githubusercontent.com/AgentSystemLabs/nebula/main/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/eljamo/odyn/main/install.sh | sh
 #
 # Grabs the prebuilt binary for this platform from the latest GitHub release,
 # falling back to `cargo install --git` when no release (or no matching asset)
 # exists. Running it again updates in place.
 #
 # Environment overrides:
-#   NEBULA_INSTALL_DIR   install destination (default: ~/.local/bin)
+#   ODYN_INSTALL_DIR   install destination (default: ~/.local/bin)
 set -eu
 
-REPO="AgentSystemLabs/nebula"
-INSTALL_DIR="${NEBULA_INSTALL_DIR:-$HOME/.local/bin}"
+# odyn: the fork's repository and binary. Keep BIN in step with odyn::CLI_NAME.
+REPO="eljamo/odyn"
+BIN="odyn"
+INSTALL_DIR="${ODYN_INSTALL_DIR:-$HOME/.local/bin}"
 
 say() { printf '%s\n' "$*"; }
 err() {
@@ -36,25 +38,26 @@ detect_target() {
         *) return 1 ;;
         esac
         ;;
-    *) err "nebula runs on macOS and Linux only (the daemon needs unix sockets)" ;;
+    *) err "$BIN runs on macOS and Linux only (the daemon needs unix sockets)" ;;
     esac
 }
 
 install_from_release() {
-    url="https://github.com/$REPO/releases/latest/download/nebula-$1.tar.gz"
+    url="https://github.com/$REPO/releases/latest/download/$BIN-$1.tar.gz"
     tmp=$(mktemp -d)
     trap 'rm -rf "$tmp"' EXIT
     say "downloading $url"
-    curl -fsSL "$url" -o "$tmp/nebula.tar.gz" || return 1
-    tar -xzf "$tmp/nebula.tar.gz" -C "$tmp"
+    curl -fsSL "$url" -o "$tmp/$BIN.tar.gz" || return 1
+    tar -xzf "$tmp/$BIN.tar.gz" -C "$tmp"
     mkdir -p "$INSTALL_DIR"
-    install -m 755 "$tmp/nebula" "$INSTALL_DIR/nebula"
+    install -m 755 "$tmp/$BIN" "$INSTALL_DIR/$BIN"
 }
 
 install_from_source() {
     command -v cargo >/dev/null 2>&1 ||
         err "no prebuilt binary available and cargo is not installed — get Rust from https://rustup.rs and re-run"
     say "building from source (this takes a few minutes)…"
+    # `nebula` is the cargo package; it builds the `$BIN` binary.
     cargo install --git "https://github.com/$REPO" nebula --locked --force
 }
 
@@ -64,9 +67,9 @@ main() {
     installed=""
     if target=$(detect_target); then
         if install_from_release "$target"; then
-            installed="$INSTALL_DIR/nebula"
+            installed="$INSTALL_DIR/$BIN"
         else
-            reason="couldn't download nebula-$target from the latest release"
+            reason="couldn't download $BIN-$target from the latest release"
         fi
     else
         reason="no prebuilt binary for $(uname -s) $(uname -m)"
@@ -75,10 +78,10 @@ main() {
     if [ -z "$installed" ]; then
         say "$reason — building from source instead"
         install_from_source
-        installed="$HOME/.cargo/bin/nebula"
+        installed="$HOME/.cargo/bin/$BIN"
     fi
 
-    version=$("$installed" --version 2>/dev/null || echo nebula)
+    version=$("$installed" --version 2>/dev/null || echo "$BIN")
     say "installed $version → $installed"
 
     bin_dir=$(dirname "$installed")
@@ -88,15 +91,15 @@ main() {
     esac
 
     # Replacing the file doesn't touch an already-running daemon: sessions keep
-    # running on the old binary until it's restarted. `nebula reload` restarts
+    # running on the old binary until it's restarted. `odyn reload` restarts
     # it in place, sessions and all; a daemon from before reload existed can
-    # only be restarted by `nebula kill`, which stops every session. `nebula
+    # only be restarted by `odyn kill`, which stops every session. `odyn
     # upgrade` handles this itself and suppresses the note via
-    # NEBULA_UPGRADE_HANDOFF.
-    if [ -z "${NEBULA_UPGRADE_HANDOFF:-}" ] && pgrep -f 'nebula daemon' >/dev/null 2>&1; then
-        say "note: a nebula daemon from the previous version is still running."
-        say "      run 'nebula reload' to move it onto the new one (sessions keep running);"
-        say "      a daemon too old for that needs 'nebula kill' (stops all sessions)."
+    # ODYN_UPGRADE_HANDOFF.
+    if [ -z "${ODYN_UPGRADE_HANDOFF:-}" ] && pgrep -f "$BIN daemon" >/dev/null 2>&1; then
+        say "note: a daemon from the previous version is still running."
+        say "      run '$BIN reload' to move it onto the new one (sessions keep running);"
+        say "      a daemon too old for that needs '$BIN kill' (stops all sessions)."
     fi
 }
 

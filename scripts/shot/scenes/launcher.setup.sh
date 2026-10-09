@@ -26,21 +26,21 @@ WRAP
 chmod +x "$RUNTIME/nebula"
 BIN="$RUNTIME/nebula"
 cp -R "$HERE/fixtures" "$WORK/fx"
-export NEBULA_GH_FIXTURES="$WORK/fx"
-export NEBULA_SHOT_BIN="$REAL_BIN" NEBULA_SHOT_COUNTER="$RUNTIME/launches"
+export ODYN_GH_FIXTURES="$WORK/fx"
+export ODYN_SHOT_BIN="$REAL_BIN" ODYN_SHOT_COUNTER="$RUNTIME/launches"
 cat > "$RUNTIME/agent" <<'AGENT'
 #!/bin/sh
-n=$(cat "$NEBULA_SHOT_COUNTER" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "$NEBULA_SHOT_COUNTER"
+n=$(cat "$ODYN_SHOT_COUNTER" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "$ODYN_SHOT_COUNTER"
 post() {
-  curl -sS -m 3 -X POST -H "Authorization: Bearer $NEBULA_API_TOKEN" -H 'Content-Type: application/json' \
-    -d "$2" "$NEBULA_API_URL/api/hooks/claude?agentId=$NEBULA_AGENT_ID&hookEvent=$1" >/dev/null 2>&1
+  curl -sS -m 3 -X POST -H "Authorization: Bearer $ODYN_API_TOKEN" -H 'Content-Type: application/json' \
+    -d "$2" "$ODYN_API_URL/api/hooks/claude?agentId=$ODYN_AGENT_ID&hookEvent=$1" >/dev/null 2>&1
 }
 say() { printf '%s\r\n' "$@"; }
 case "$n" in
   1) title="Login redirect loop"
      post UserPromptSubmit "{\"session_id\":\"shot-1\",\"prompt\":\"Fix the login redirect loop when the session cookie has expired\"}"
      printf '{"number": 57, "url": "https://github.com/AgentSystemLabs/nebula/pull/57", "title": "Fix the login redirect loop on expired cookies", "state": "OPEN", "isDraft": false, "comments": [], "reviews": []}' \
-       > "$NEBULA_GH_FIXTURES/pr-view-$(basename "$PWD").json"
+       > "$ODYN_GH_FIXTURES/pr-view-$(basename "$PWD").json"
      say "> Fix the login redirect loop when the session cookie has expired" "" \
          "⏺ Read(src/auth/session.rs)" "  ⎿  Read 214 lines" "" \
          "⏺ The redirect fires before the expired cookie is cleared, so the" \
@@ -63,8 +63,8 @@ case "$n" in
          "  Do you want to proceed?" "  ❯ 1. Yes" "    2. Yes, and don't ask again for cargo build" "    3. No"
      sleep 0.3; post PermissionRequest "{\"session_id\":\"shot-3\"}" ;;
 esac
-"$NEBULA_SHOT_BIN" rename "$title" >/dev/null 2>&1 || true
+"$ODYN_SHOT_BIN" rename "$title" >/dev/null 2>&1 || true
 exec /bin/cat
 AGENT
 chmod +x "$RUNTIME/agent"
-export NEBULA_AGENT_CMD="$RUNTIME/agent"
+export ODYN_AGENT_CMD="$RUNTIME/agent"

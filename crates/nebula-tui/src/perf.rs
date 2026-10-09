@@ -1,4 +1,4 @@
-//! The INPUT LATENCY PROBE: `NEBULA_PERF_LOG=<file>` makes the TUI write one
+//! The INPUT LATENCY PROBE: `ODYN_PERF_LOG=<file>` makes the TUI write one
 //! JSON line per input event, per painted frame and per daemon event, so
 //! "does this key feel instant" is a number rather than an impression.
 //!
@@ -32,7 +32,7 @@ pub struct Perf {
 }
 
 impl Perf {
-    /// The probe, when `NEBULA_PERF_LOG` names a file that can be created.
+    /// The probe, when `ODYN_PERF_LOG` names a file that can be created.
     pub fn from_env() -> Option<Self> {
         let path = std::env::var_os(nebula_core::env::PERF_LOG)?;
         let file = std::fs::File::create(path).ok()?;

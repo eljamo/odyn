@@ -32,7 +32,7 @@ const VISIBLE: &[&[&str]] = &[
 ];
 
 fn help_at(columns: &str, args: &[&str]) -> String {
-    let out = Command::new(env!("CARGO_BIN_EXE_nebula"))
+    let out = Command::new(env!("CARGO_BIN_EXE_odyn"))
         .args(args)
         .env("COLUMNS", columns)
         .output()
@@ -57,10 +57,12 @@ fn every_visible_command_has_its_own_help_page() {
         let mut with_help = args.to_vec();
         with_help.push("--help");
         let help = help_at("100", &with_help);
-        let usage = format!("Usage: nebula {}", args.join(" "));
+        // odyn: the binary's name comes from `CLI_NAME`.
+        let usage = format!("Usage: {} {}", nebula_core::CLI_NAME, args.join(" "));
         assert!(
             help.contains(&usage),
-            "`nebula {} --help` is missing `{usage}`:\n{help}",
+            "`{} {} --help` is missing `{usage}`:\n{help}",
+            nebula_core::CLI_NAME,
             args.join(" ")
         );
         assert!(

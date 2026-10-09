@@ -103,7 +103,7 @@ pub enum Action {
     SwitchBranch,
     /// `Shift+Enter` / `Shift+O` / `Alt+Enter`, on the grid: fire the
     /// selected worktree's OPEN COMMAND — the project's **Open command**
-    /// setting, else its `.nebula.json` `open` (`open http://localhost:3000`,
+    /// setting, else its `.odyn.json` `open` (`open http://localhost:3000`,
     /// say). Three chords because only the kitty protocol carries a shifted
     /// Enter: Terminal.app sends a plain one and tmux flattens it, while
     /// `ESC CR` — what `/terminal-setup` gives Shift+Enter in VS Code, and
@@ -335,7 +335,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         action: Action::ProjectDropdown,
         id: "project_dropdown",
         label: "Switch project",
-        hint: "Drop the list of every project under the + in the header — type to narrow it, Enter or a click opens one. + is the header's own button and arrives in every terminal and in nebula browser; ⌘P does the same from inside the pane, where the terminal sends ⌘ at all (Ghostty/kitty do, Terminal.app and the browser never do)",
+        hint: concat!("Drop the list of every project under the + in the header — type to narrow it, Enter or a click opens one. + is the header's own button and arrives in every terminal and in ", nebula_core::cli_name!(), " browser; ⌘P does the same from inside the pane, where the terminal sends ⌘ at all (Ghostty/kitty do, Terminal.app and the browser never do)"), // odyn:
         group: "NAVIGATE",
         scope: Scope::Global,
         // `+`, the header button's own glyph, is the key the app shows —
@@ -349,7 +349,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         action: Action::AddProject,
         id: "add_project",
         label: "Open a folder as a project",
-        hint: "Open a folder as a project in nebula, from anywhere; ⇧O opens a checkout outside it, in your editor",
+        hint: concat!("Open a folder as a project in ", nebula_core::cli_name!(), ", from anywhere; ⇧O opens a checkout outside it, in your editor"), // odyn:
         group: "PROJECTS & WORKTREES",
         scope: Scope::Global,
         defaults: &["o"],
@@ -385,7 +385,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         action: Action::OpenPullRequest,
         id: "open_pull_request",
         label: "Open pull request in browser",
-        hint: "Send the pull request of the session card under the cursor — its checkout's branch — to your browser, as a click on the card's #42 line does. v lists the pull requests in nebula; ⇧V goes to GitHub",
+        hint: concat!("Send the pull request of the session card under the cursor — its checkout's branch — to your browser, as a click on the card's #42 line does. v lists the pull requests in ", nebula_core::cli_name!(), "; ⇧V goes to GitHub"), // odyn:
         group: "PROJECTS & WORKTREES",
         scope: Scope::Global,
         defaults: &["shift+v"],
@@ -394,7 +394,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         action: Action::OpenIssue,
         id: "open_issue",
         label: "Open issue in browser",
-        hint: "Send the GitHub issue the session card under the cursor was started from to your browser. i lists the issues in nebula; ⇧I goes to GitHub",
+        hint: concat!("Send the GitHub issue the session card under the cursor was started from to your browser. i lists the issues in ", nebula_core::cli_name!(), "; ⇧I goes to GitHub"), // odyn:
         group: "PROJECTS & WORKTREES",
         scope: Scope::Global,
         defaults: &["shift+i"],
@@ -448,7 +448,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         action: Action::OpenWorktree,
         id: "open_worktree",
         label: "Open checkout in editor",
-        hint: "Open the selected checkout outside nebula, usually in your editor: its project's Open command (Settings → Project), else .nebula.json \"open\" — e.g. open http://localhost:3000 (⇧Enter needs the kitty protocol; ⇧O arrives everywhere; ⌥Enter is the ESC CR that VS Code's Shift+Enter setup sends and tmux passes through)",
+        hint: concat!("Open the selected checkout outside ", nebula_core::cli_name!(), ", usually in your editor: its project's Open command (Settings → Project), else .odyn.json \"open\" — e.g. open http://localhost:3000 (⇧Enter needs the kitty protocol; ⇧O arrives everywhere; ⌥Enter is the ESC CR that VS Code's Shift+Enter setup sends and tmux passes through)"), // odyn:
         group: "PROJECTS & WORKTREES",
         scope: Scope::Global,
         defaults: &["shift+enter", "shift+o", "alt+enter"],
@@ -458,7 +458,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         action: Action::NewTerminal,
         id: "new_terminal",
         label: "New shell terminal",
-        hint: "Spawn a plain shell inside nebula, in the selected worktree's directory; ⇧T opens one outside it, in a Ghostty tab",
+        hint: concat!("Spawn a plain shell inside ", nebula_core::cli_name!(), ", in the selected worktree's directory; ⇧T opens one outside it, in a Ghostty tab"), // odyn:
         group: "SESSIONS",
         scope: Scope::Global,
         defaults: &["t"],
@@ -468,7 +468,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         action: Action::OpenGhosttyTab,
         id: "open_ghostty_tab",
         label: "Terminal in a Ghostty tab",
-        hint: "Open a new Ghostty tab in the selected worktree's directory — t's terminal, outside nebula; does nothing without Ghostty.app",
+        hint: concat!("Open a new Ghostty tab in the selected worktree's directory — t's terminal, outside ", nebula_core::cli_name!(), "; does nothing without Ghostty.app"), // odyn:
         group: "SESSIONS",
         scope: Scope::Global,
         defaults: &["shift+t"],
@@ -640,7 +640,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         action: Action::Hosts,
         id: "hosts",
         label: "SSH hosts",
-        hint: "Connect to a saved ssh host (restarts nebula over ssh)",
+        hint: concat!("Connect to a saved ssh host (restarts ", nebula_core::cli_name!(), " over ssh)"), // odyn:
         group: "GENERAL",
         scope: Scope::Global,
         defaults: &["shift+h"],
@@ -658,7 +658,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         action: Action::Metrics,
         id: "metrics",
         label: "Memory usage",
-        hint: "RAM used by nebula and every live agent's process tree",
+        hint: concat!("RAM used by ", nebula_core::cli_name!(), " and every live agent's process tree"), // odyn:
         group: "GENERAL",
         scope: Scope::Global,
         defaults: &["shift+m"],
@@ -675,7 +675,7 @@ pub const ACTIONS: &[ActionSpec] = &[
     ActionSpec {
         action: Action::Quit,
         id: "quit",
-        label: "Quit nebula",
+        label: concat!("Quit ", nebula_core::cli_name!()), // odyn:
         hint: "Leave the TUI (sessions keep running in the daemon)",
         group: "GENERAL",
         scope: Scope::Global,

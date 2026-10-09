@@ -34,6 +34,7 @@
 //! away an edit it did not show, and a checkout git abandons part-way is
 //! undone only for files byte-identical to the branch it was writing.
 
+use nebula_core::CLI_NAME; // odyn: user-visible messages name the binary.
 use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -673,7 +674,7 @@ pub fn switch(root: &Path, from: &str, target: &Branch, carry: &Carry) -> Outcom
             }
         }
         Carry::Stash => {
-            let message = format!("nebula: {from} before switching to {to}");
+            let message = format!("{CLI_NAME}: {from} before switching to {to}");
             match stash_push(root, &message) {
                 Ok(entry) => {
                     if entry.is_some() {
@@ -903,7 +904,12 @@ impl Choice {
 
     fn detail(self, from: &str, to: &str, detached: bool) -> String {
         match self {
-            Choice::Stash => "stash them in a nebula entry — git stash list shows it".into(),
+            Choice::Stash => concat!(
+                "stash them in a ",
+                nebula_core::cli_name!(),
+                " entry — git stash list shows it"
+            )
+            .into(), // odyn:
             Choice::Bring => format!("keep them on {to} — refused if they collide with it"),
             Choice::Commit if detached => {
                 "unavailable: HEAD is detached, the commit would belong to no branch".into()
@@ -2517,7 +2523,10 @@ mod tests {
         );
         let stashes = git(&repo, &["stash", "list"]);
         assert!(
-            stashes.contains("nebula: main before switching to feature"),
+            stashes.contains(concat!(
+                nebula_core::cli_name!(),
+                ": main before switching to feature"
+            )),
             "{stashes}"
         );
     }
@@ -2619,7 +2628,9 @@ mod tests {
             "feature\n",
             "no stash popped onto feature"
         );
-        assert!(git(&repo, &["stash", "list"]).contains("nebula: main"));
+        assert!(
+            git(&repo, &["stash", "list"]).contains(concat!(nebula_core::cli_name!(), ": main"))
+        );
     }
 
     #[test]

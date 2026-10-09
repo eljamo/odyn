@@ -21,4 +21,4 @@ rows = [
 ]
 json.dump(rows, open(sys.argv[1], "w"), indent=2)
 PY
-export NEBULA_GH_FIXTURES="$FIX"
+export ODYN_GH_FIXTURES="$FIX"

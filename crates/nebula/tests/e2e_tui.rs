@@ -75,7 +75,7 @@ impl TuiHarness {
                 pixel_height: 0,
             })
             .unwrap();
-        let mut cmd = CommandBuilder::new(env!("CARGO_BIN_EXE_nebula"));
+        let mut cmd = CommandBuilder::new(env!("CARGO_BIN_EXE_odyn"));
         cmd.env(nebula_core::env::RUNTIME_DIR, &runtime_dir);
         cmd.env(nebula_core::env::DATA_DIR, &data_dir);
         cmd.env(nebula_core::env::AGENT_CMD, "/bin/sh"); // stand-in for claude
@@ -243,7 +243,7 @@ impl Drop for TuiHarness {
     fn drop(&mut self) {
         let _ = self.child.kill();
         // Stop the auto-spawned daemon and clean the short-lived dirs.
-        let _ = std::process::Command::new(env!("CARGO_BIN_EXE_nebula"))
+        let _ = std::process::Command::new(env!("CARGO_BIN_EXE_odyn"))
             .arg("kill")
             .env(nebula_core::env::RUNTIME_DIR, &self.runtime_dir)
             .env(nebula_core::env::DATA_DIR, &self.data_dir)
@@ -416,7 +416,7 @@ fn host_working_directory_follows_project_switches_and_restores_on_exit() {
     tui.wait_for_working_directory(&second);
 
     tui.send(b"q");
-    tui.wait_for_text("Quit nebula");
+    tui.wait_for_text(concat!("Quit ", nebula_core::cli_name!()));
     tui.send(ENTER);
     tui.wait_for_working_directory(&tui._repos.path().canonicalize().unwrap());
 }
@@ -461,7 +461,7 @@ fn nebula_open_from_inside_a_session_raises_the_file_tabs() {
     // ---- what the model runs, typed at the shell inside the session ----
     tui.type_str(&format!(
         "{} open {} {}",
-        env!("CARGO_BIN_EXE_nebula"),
+        env!("CARGO_BIN_EXE_odyn"),
         alpha.display(),
         beta.display()
     ));
@@ -814,8 +814,10 @@ fn tui_branch_switcher_moves_the_root_checkout() {
         .output()
         .unwrap();
     assert!(
-        String::from_utf8_lossy(&stashes.stdout)
-            .contains("nebula: feature-login before switching to main"),
+        String::from_utf8_lossy(&stashes.stdout).contains(concat!(
+            nebula_core::cli_name!(),
+            ": feature-login before switching to main"
+        )),
         "{}",
         String::from_utf8_lossy(&stashes.stdout)
     );

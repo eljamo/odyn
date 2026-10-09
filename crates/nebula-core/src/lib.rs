@@ -17,3 +17,7 @@ pub use entities::*;
 pub use harness::*;
 pub use ids::*;
 pub use protocol::*;
+
+// odyn: the command name comes from the odyn crate. Upstream code uses
+// `CLI_NAME`, or `cli_name!()` inside `concat!` for a `const` string.
+pub use odyn::{cli_name, CLI_NAME};

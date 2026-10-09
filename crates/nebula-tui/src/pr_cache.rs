@@ -17,7 +17,7 @@
 //! its row. What lands replaces what was hydrated; what fails to land
 //! leaves it (see `pull_request::Lookup`).
 //!
-//! Layout, under the DATA DIR (`NEBULA_DATA_DIR` isolates it for tests and
+//! Layout, under the DATA DIR (`ODYN_DATA_DIR` isolates it for tests and
 //! parallel instances, like everything else there):
 //!
 //! ```text

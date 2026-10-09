@@ -20,6 +20,7 @@ pub mod store;
 pub mod worktree_hooks;
 
 use anyhow::{bail, Context, Result};
+use nebula_core::CLI_NAME; // odyn: user-visible messages name the binary.
 use nebula_core::{env, paths};
 
 /// Floor on any env-tunable loop period: the overrides exist to make tests
@@ -79,7 +80,7 @@ async fn serve(opts: DaemonOpts) -> Result<()> {
         }
         None => {
             let Some(lock) = lifecycle::PidfileLock::try_acquire()? else {
-                bail!("another nebula daemon is already running");
+                bail!("another {CLI_NAME} daemon is already running");
             };
             lifecycle::unlink_stale_socket(&sock);
             let listener = tokio::net::UnixListener::bind(&sock)
@@ -99,7 +100,8 @@ async fn serve(opts: DaemonOpts) -> Result<()> {
         pid = std::process::id(),
         socket = %sock.display(),
         restarted = carry.is_some(),
-        "nebula daemon listening"
+        "{} daemon listening",
+        nebula_core::CLI_NAME, // odyn:
     );
 
     let store = std::sync::Arc::new(store::Store::open(&paths::db_path())?);

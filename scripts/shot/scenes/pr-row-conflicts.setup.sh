@@ -35,7 +35,7 @@ cat > "$FIXTURES/pr-42.json" <<'JSON'
  "body": "A worktree can now carry saved links as rows of the SESSIONS PANEL's PULL REQUESTS group.",
  "comments": [], "reviews": []}
 JSON
-export NEBULA_GH_FIXTURES="$FIXTURES"
+export ODYN_GH_FIXTURES="$FIXTURES"
 mkdir -p "$WORK/data"
 cat > "$WORK/data/config.json" <<'JSON'
 {"prewarm_agents": false, "prewarm_sessions": false}

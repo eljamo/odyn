@@ -19,6 +19,7 @@ use crossterm::event::{
     Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
 use futures::StreamExt;
+use nebula_core::CLI_NAME; // odyn: user-visible messages name the binary.
 use nebula_core::{
     AgentId, AgentKind, ClientRequest, EntityId, ProjectId, ServerEvent, SessionRef, TerminalId,
     WorktreeId, MAX_CLOUD_PROMPT_BYTES,
@@ -362,7 +363,7 @@ async fn main_loop(
     // spawns (VimEvent generations keep them apart).
     let (vim_tx, mut vim_rx) = tokio::sync::mpsc::unbounded_channel::<VimEvent>();
     app.vim_tx = Some(vim_tx);
-    // The INPUT LATENCY PROBE (`NEBULA_PERF_LOG`); None outside a
+    // The INPUT LATENCY PROBE (`ODYN_PERF_LOG`); None outside a
     // measurement run.
     let mut perf = crate::perf::Perf::from_env();
 
@@ -3340,7 +3341,7 @@ fn handle_key(app: &mut App, key: KeyEvent, out: &mut Vec<ClientRequest>) {
                 }
             }
             // Nothing on the Worktrees panel is renamed, so `r` is RUN
-            // there: the checkout's `.nebula.json` RUN COMMAND, started or
+            // there: the checkout's `.odyn.json` RUN COMMAND, started or
             // stopped. The KEY COMBO DISPLAY says which, not "Rename".
             Focus::Worktrees => {
                 let running = app
@@ -3629,10 +3630,10 @@ pub(crate) fn open_prompt(app: &mut App, kind: PromptKind) {
                     "branch new worktrees start from (empty = auto: origin's default branch)"
                 }
                 crate::config::SettingKind::RunCommand => {
-                    "shell line r runs in this project's worktrees (empty = the checkout's .nebula.json \"run\")"
+                    "shell line r runs in this project's worktrees (empty = the checkout's .odyn.json \"run\")"
                 }
                 crate::config::SettingKind::OpenCommand => {
-                    "shell line Shift+Enter / Shift+O runs to open a worktree of this project (empty = the checkout's .nebula.json \"open\")"
+                    "shell line Shift+Enter / Shift+O runs to open a worktree of this project (empty = the checkout's .odyn.json \"open\")"
                 }
                 _ => "value (empty = default)",
             };
@@ -3773,7 +3774,7 @@ fn open_folder(app: &mut App, path: std::path::PathBuf, out: &mut Vec<ClientRequ
         app.overlay = Some(Overlay::Confirm(ConfirmDialog {
             title: "Not a git repository".into(),
             message: format!(
-                "{} isn't a git repository — nebula projects are. Run git init in it?",
+                "{} isn't a git repository — {CLI_NAME} projects are. Run git init in it?",
                 path.display()
             ),
             action: PendingAction::InitProjectRepo(path),
@@ -3950,11 +3951,11 @@ fn open_selected_worktree(app: &mut App) {
 /// the twin of the DAEMON's line for `r`.
 const NO_OPEN_COMMAND: &str =
     "no open command for this worktree — set one in Settings (s) → Project, \
-                               or add .nebula.json with {\"open\": \"open http://localhost:3000\"}";
+                               or add .odyn.json with {\"open\": \"open http://localhost:3000\"}";
 
 /// Run `worktree`'s OPEN COMMAND once and say so: the project's **Open
 /// command** setting (Settings → Project) when it is set, else the
-/// checkout's `.nebula.json` `open`. The TUI runs it, not the DAEMON: it
+/// checkout's `.odyn.json` `open`. The TUI runs it, not the DAEMON: it
 /// opens a browser or an editor on the machine the user is sitting at.
 fn open_worktree(app: &mut App, worktree: &nebula_core::Worktree) {
     let main = app
@@ -4903,7 +4904,7 @@ fn confirm_close_terminal(name: &str, id: TerminalId) -> ConfirmDialog {
 /// it is cheap — the daemon keeps every session running.
 fn confirm_quit() -> ConfirmDialog {
     ConfirmDialog {
-        title: "Quit nebula".into(),
+        title: concat!("Quit ", nebula_core::cli_name!()).into(), // odyn:
         // Sized to the longest line, never wrapped: keep both under 52.
         message: "Leave the TUI?\nSessions keep running in the daemon.".into(),
         action: PendingAction::Quit,
@@ -4915,7 +4916,7 @@ fn confirm_quit() -> ConfirmDialog {
 pub(super) fn confirm_remove_project(name: &str, id: ProjectId) -> ConfirmDialog {
     ConfirmDialog {
         title: "Remove project".into(),
-        message: format!("Remove '{name}' from nebula? Nothing on disk is touched."),
+        message: format!("Remove '{name}' from {CLI_NAME}? Nothing on disk is touched."),
         action: PendingAction::RemoveProject(id),
         area: ratatui::layout::Rect::default(),
     }
@@ -15718,7 +15719,7 @@ diff --git a/src/c.rs b/src/c.rs
     /// is not.
     #[test]
     fn footer_shows_the_nebula_version_but_never_truncates_a_flash() {
-        let stamp = concat!("nebula v", env!("CARGO_PKG_VERSION"));
+        let stamp = concat!(nebula_core::cli_name!(), " v", env!("CARGO_PKG_VERSION"));
         let mut app = App::new();
         seed_tree(&mut app);
         let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
@@ -15749,7 +15750,7 @@ diff --git a/src/c.rs b/src/c.rs
     /// one.
     #[test]
     fn footer_flags_a_newer_release_beside_the_nameplate() {
-        let stamp = concat!("nebula v", env!("CARGO_PKG_VERSION"));
+        let stamp = concat!(nebula_core::cli_name!(), " v", env!("CARGO_PKG_VERSION"));
         let mut app = App::new();
         seed_tree(&mut app);
         let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
@@ -17890,7 +17891,7 @@ diff --git a/src/c.rs b/src/c.rs
     }
 
     /// `Shift+Enter` on a worktree fires its OPEN COMMAND — the project's
-    /// **Open command** setting first, else `.nebula.json`'s `open` — and
+    /// **Open command** setting first, else `.odyn.json`'s `open` — and
     /// with neither says where to put one, without Enter's drill-in. The
     /// key answers from the Sessions panel too, where the cursor's
     /// worktree is just as much the context, and `Shift+O` beside it.
@@ -17909,13 +17910,13 @@ diff --git a/src/c.rs b/src/c.rs
             assert!(
                 flash.contains("no open command")
                     && flash.contains("Settings")
-                    && flash.contains(".nebula.json"),
+                    && flash.contains(".odyn.json"),
                 "names both places: {flash}"
             );
             assert_eq!(app.focus, Focus::Worktrees, "not Enter's drill-in");
 
             std::fs::write(
-                dir.path().join(".nebula.json"),
+                dir.path().join(".odyn.json"),
                 r#"{"open": "open http://localhost:3000"}"#,
             )
             .unwrap();
@@ -18164,7 +18165,11 @@ diff --git a/src/c.rs b/src/c.rs
         assert_eq!(key_project.title, "Remove project");
         assert_eq!(
             key_project.message,
-            "Remove 'demo' from nebula? Nothing on disk is touched."
+            concat!(
+                "Remove 'demo' from ",
+                nebula_core::cli_name!(),
+                "? Nothing on disk is touched."
+            )
         );
         assert!(matches!(
             menu_project.action,
@@ -24205,7 +24210,7 @@ diff --git a/src/c.rs b/src/c.rs
         );
         assert!(text.contains("1.5 GB"), "subtree memory rendered:\n{text}");
         assert!(
-            text.contains("nebula daemon") && text.contains("40 MB"),
+            text.contains(concat!(nebula_core::cli_name!(), " daemon")) && text.contains("40 MB"),
             "daemon row rendered:\n{text}"
         );
         assert!(
@@ -24292,7 +24297,7 @@ diff --git a/src/c.rs b/src/c.rs
             pos("agent-1 (claude)") < pos("warm spares (2)")
                 && pos("warm spares (2)") < pos("├ claude · opus")
                 && pos("├ claude · opus") < pos("└ claude")
-                && pos("└ claude") < pos("nebula daemon"),
+                && pos("└ claude") < pos(concat!(nebula_core::cli_name!(), " daemon")),
             "live rows, then the spares tree, then nebula's own:\n{text}"
         );
         let leaf = text
@@ -24678,7 +24683,7 @@ diff --git a/src/c.rs b/src/c.rs
             cfg.editor = "nvim".into();
             cfg.save().unwrap();
             // What the overlays should capture: the setting, unless the
-            // test environment carries a NEBULA_EDITOR override.
+            // test environment carries a ODYN_EDITOR override.
             let expect = crate::config::Config::load().editor_command();
 
             let mut app = App::new();
@@ -28096,7 +28101,7 @@ diff --git a/src/c.rs b/src/c.rs
     /// the project, pre-filled with its stored command; Enter there writes
     /// `run_command` into that project's entry (and nothing else), the
     /// row reads it back, the tab on another project still reads
-    /// `.nebula.json`; ←/→ only explain themselves; Esc keeps the old
+    /// `.odyn.json`; ←/→ only explain themselves; Esc keeps the old
     /// value; an empty Enter puts the file back and drops the key. With
     /// no project in the tree the row reads `n/a`, and Enter opens nothing
     /// and says why.
@@ -28153,7 +28158,7 @@ diff --git a/src/c.rs b/src/c.rs
             let screen = draw_to_string(&mut app, 100, 40);
             assert!(screen.contains("Run command"), "{screen}");
             assert!(
-                screen.contains("[.nebula.json]"),
+                screen.contains("[.odyn.json]"),
                 "unset reads as the file: {screen}"
             );
 
@@ -28221,7 +28226,7 @@ diff --git a/src/c.rs b/src/c.rs
             open_on_row(&mut app, &mut out);
             let screen = draw_to_string(&mut app, 100, 40);
             assert!(screen.contains("/tmp/other"), "{screen}");
-            assert!(screen.contains("[.nebula.json]"), "{screen}");
+            assert!(screen.contains("[.odyn.json]"), "{screen}");
             press(&mut app, KeyCode::Esc, KeyModifiers::NONE, &mut out);
 
             // An empty Enter is the way back to the file — the entry goes.
@@ -28235,7 +28240,7 @@ diff --git a/src/c.rs b/src/c.rs
             assert_eq!(saved(&path)["projects"], serde_json::json!({}));
             let view = settings_view(&app);
             assert!(
-                matches!(&view.notice, Some((t, _)) if t.contains(".nebula.json")),
+                matches!(&view.notice, Some((t, _)) if t.contains(".odyn.json")),
                 "back to the file: {:?}",
                 view.notice
             );
@@ -31716,7 +31721,10 @@ diff --git a/src/c.rs b/src/c.rs
             "  j  - Move down",
             "the row above the bar, at the far left"
         );
-        assert!(rows[29].contains("nebula v"), "the bar itself is untouched");
+        assert!(
+            rows[29].contains(concat!(nebula_core::cli_name!(), " v")),
+            "the bar itself is untouched"
+        );
         let cell = &terminal.backend().buffer()[(2, 28)];
         assert_eq!(cell.symbol(), "j");
         assert_eq!(cell.bg, app.theme.sel_bg, "the key sits in a keycap");

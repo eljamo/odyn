@@ -24,7 +24,8 @@ const PI_DIR: &str = ".pi";
 const PI_AGENT_SUBDIR: &str = "agent";
 const EXTENSIONS_DIR: &str = "extensions";
 /// Namespaced so it can never collide with a user's own extension.
-const EXTENSION_FILE: &str = "nebula.ts";
+// odyn: named from `cli_name!()`.
+const EXTENSION_FILE: &str = concat!(nebula_core::cli_name!(), ".ts");
 /// pi's own override for its agent dir; honoured so an isolated pi (a test,
 /// a second profile) finds the extension where it looks for the rest.
 pub const AGENT_DIR_ENV: &str = "PI_CODING_AGENT_DIR";

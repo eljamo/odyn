@@ -100,7 +100,7 @@ pub struct TreeBrowser {
     pub root: PathBuf,
     /// Branch name for the pane title.
     pub branch: String,
-    /// Editor command Enter launches (NEBULA_EDITOR, then the `editor`
+    /// Editor command Enter launches (ODYN_EDITOR, then the `editor`
     /// setting, default vim), captured at open time.
     pub editor: String,
     pub nodes: Vec<TreeNode>,

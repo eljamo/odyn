@@ -17,7 +17,8 @@
 use std::time::Duration;
 
 /// GitHub's "latest release" page for this repo.
-pub const LATEST_URL: &str = "https://github.com/AgentSystemLabs/nebula/releases/latest";
+// odyn: the fork's releases.
+pub const LATEST_URL: &str = odyn::LATEST_URL;
 
 /// How often the check re-runs once the TUI is up; the first runs at start.
 pub const DEFAULT_INTERVAL: Duration = Duration::from_secs(60 * 60);
@@ -25,7 +26,7 @@ pub const DEFAULT_INTERVAL: Duration = Duration::from_secs(60 * 60);
 /// How long the probe may take before it is given up on.
 const TIMEOUT: Duration = Duration::from_secs(20);
 
-/// The check's cadence: `NEBULA_UPDATE_CHECK_SECS` when set, `None` when it
+/// The check's cadence: `ODYN_UPDATE_CHECK_SECS` when set, `None` when it
 /// is `0` (off — the e2e tests, whose footers must not depend on what
 /// GitHub has published), else [`DEFAULT_INTERVAL`].
 pub fn interval() -> Option<Duration> {

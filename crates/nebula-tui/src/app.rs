@@ -1505,7 +1505,7 @@ pub struct FileFinder {
     pub root: PathBuf,
     /// Branch name for the modal title.
     pub branch: String,
-    /// Editor command Enter launches (NEBULA_EDITOR, then the `editor`
+    /// Editor command Enter launches (ODYN_EDITOR, then the `editor`
     /// setting, default vim), captured at open time.
     pub editor: String,
     /// Paths relative to `root`, in git listing order.
@@ -1599,7 +1599,7 @@ pub struct GrepView {
     pub root: PathBuf,
     /// Branch name for the modal title.
     pub branch: String,
-    /// Editor command Enter launches (NEBULA_EDITOR, then the `editor`
+    /// Editor command Enter launches (ODYN_EDITOR, then the `editor`
     /// setting, default vim), captured at open time.
     pub editor: String,
     /// The search text; every edit re-runs the grep.

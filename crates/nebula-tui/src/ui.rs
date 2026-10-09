@@ -6,6 +6,7 @@ use crate::git_diff::{classify_diff_line, DiffLineKind};
 use crate::keymap::Action;
 use crate::text_input::{TextInput, TextView};
 use crate::theme::Theme;
+use nebula_core::CLI_NAME; // odyn: user-visible messages name the binary.
 use nebula_core::{AgentStatus, SessionRef};
 use ratatui::layout::{Constraint, Layout, Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -1064,10 +1065,16 @@ fn draw_overlay(f: &mut Frame, app: &mut App) {
                         (Act(&[ToggleFullScreen]), "full-screen / normal size"),
                         // The SHIFT PAIRS' rule (#93), once, for every
                         // letter above that has a shifted twin.
-                        (Lit("⇧ + letter"), "bigger, or outside nebula"),
+                        (
+                            Lit("⇧ + letter"),
+                            concat!("bigger, or outside ", nebula_core::cli_name!()),
+                        ), // odyn:
                         (Act(&[Hosts]), "ssh hosts (a: new, d: del)"),
                         (Act(&[Settings]), "settings; Hotkeys tab rebinds"),
-                        (Act(&[Metrics]), "memory: nebula + agents"),
+                        (
+                            Act(&[Metrics]),
+                            concat!("memory: ", nebula_core::cli_name!(), " + agents"),
+                        ), // odyn:
                         (Act(&[Quit, Help]), "quit / toggle this help"),
                     ],
                 ),
@@ -1538,7 +1545,7 @@ fn draw_overlay(f: &mut Frame, app: &mut App) {
                     }
                 }
                 rows.push(Row {
-                    name: "nebula daemon".into(),
+                    name: concat!(nebula_core::cli_name!(), " daemon").into(), // odyn:
                     context: String::new(),
                     pid: Some(snap.daemon_pid),
                     procs: 1,
@@ -1546,7 +1553,7 @@ fn draw_overlay(f: &mut Frame, app: &mut App) {
                     sref: None,
                 });
                 rows.push(Row {
-                    name: "nebula ui (this window)".into(),
+                    name: concat!(nebula_core::cli_name!(), " ui (this window)").into(), // odyn:
                     context: String::new(),
                     pid: Some(std::process::id()),
                     procs: 1,
@@ -1594,7 +1601,8 @@ fn draw_overlay(f: &mut Frame, app: &mut App) {
                 }
                 let nebula_bytes = snap.daemon_rss_bytes + view.client_rss_bytes;
                 lines.push(Line::from(vec![
-                    Span::styled(" nebula   ", header),
+                    // odyn: the name, padded to the column's width.
+                    Span::styled(format!(" {:<9}", nebula_core::CLI_NAME), header),
                     Span::styled(format!("{:<42}", "daemon + this ui"), dim),
                     Span::styled(format!("{:>9}", fmt_mem(nebula_bytes)), mem_style),
                 ]));
@@ -3732,7 +3740,7 @@ fn draw_terminal(f: &mut Frame, app: &mut App, area: Rect) {
             lines.push(Line::from(vec![
                 Span::styled("◆ ", Style::default().fg(th.accent)),
                 Span::styled(
-                    "nebula",
+                    nebula_core::CLI_NAME, // odyn:
                     Style::default().fg(th.text).add_modifier(Modifier::BOLD),
                 ),
             ]));
@@ -3975,9 +3983,17 @@ fn draw_footer_bar(f: &mut Frame, app: &mut App, area: Rect) {
     } else if let Some(Overlay::Hosts(view)) = &app.overlay {
         Span::styled(
             if view.input.is_some() {
-                "type user@host [dir]  Enter: connect (restarts nebula over ssh)  Esc: cancel"
+                concat!(
+                    "type user@host [dir]  Enter: connect (restarts ",
+                    nebula_core::cli_name!(),
+                    " over ssh)  Esc: cancel"
+                ) // odyn:
             } else {
-                "↑/↓: select  Enter: connect (restarts nebula over ssh)  a: new  d: remove  Esc: close"
+                concat!(
+                    "↑/↓: select  Enter: connect (restarts ",
+                    nebula_core::cli_name!(),
+                    " over ssh)  a: new  d: remove  Esc: close"
+                ) // odyn:
             },
             Style::default().fg(th.dim),
         )
@@ -4363,7 +4379,7 @@ fn draw_footer_bar(f: &mut Frame, app: &mut App, area: Rect) {
     // clipped key list still spells the keys that matter, in order. A
     // clipped *flash* loses the end of a sentence, so the nameplate steps
     // aside for one that would not otherwise fit.
-    let plate = format!("nebula v{}", env!("CARGO_PKG_VERSION"));
+    let plate = format!("{CLI_NAME} v{}", env!("CARGO_PKG_VERSION"));
     // A newer published release rides the nameplate as `⇡ v0.22.0`, in the
     // heads-up color: the version is already what this span says, so "and
     // a newer one exists" belongs beside it rather than anywhere else on

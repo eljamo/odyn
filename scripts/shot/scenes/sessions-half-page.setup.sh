@@ -7,11 +7,11 @@ mkdir -p "$WORK/data"
 cat > "$WORK/data/config.json" <<'JSON'
 {"prewarm_agents": false, "prewarm_sessions": false}
 JSON
-export NEBULA_SHOT_BIN="$BIN" NEBULA_SHOT_COUNTER="$RUNTIME/launches"
+export ODYN_SHOT_BIN="$BIN" ODYN_SHOT_COUNTER="$RUNTIME/launches"
 cat > "$RUNTIME/agent" <<'AGENT'
 #!/bin/sh
 # Stand-in agent for the sessions-half-page scenes: launch N takes title N.
-n=$(cat "$NEBULA_SHOT_COUNTER" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "$NEBULA_SHOT_COUNTER"
+n=$(cat "$ODYN_SHOT_COUNTER" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "$ODYN_SHOT_COUNTER"
 title=$(sed -n "${n}p" <<'TITLES'
 Login redirect loop
 Changelog by date
@@ -45,8 +45,8 @@ Mouse to the app
 Draft PRs hidden
 TITLES
 )
-[ -n "$title" ] && "$NEBULA_SHOT_BIN" rename "$title" >/dev/null 2>&1
+[ -n "$title" ] && "$ODYN_SHOT_BIN" rename "$title" >/dev/null 2>&1
 exec /bin/cat
 AGENT
 chmod +x "$RUNTIME/agent"
-export NEBULA_AGENT_CMD="$RUNTIME/agent"
+export ODYN_AGENT_CMD="$RUNTIME/agent"

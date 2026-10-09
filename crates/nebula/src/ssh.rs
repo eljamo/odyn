@@ -24,14 +24,23 @@ macro_rules! install_prelude {
         concat!(
             // sshd hands a remote command a bare PATH — no login shell runs,
             // so nothing the user configured applies. Prepend install.sh's
-            // default NEBULA_INSTALL_DIR, and append both Homebrew prefixes:
+            // default ODYN_INSTALL_DIR, and append both Homebrew prefixes:
             // on a macOS remote that is the only place ttyd (which
             // `nebula browser` needs) or a brew-installed nebula lives.
             "export PATH=\"$HOME/.local/bin:$PATH:/opt/homebrew/bin:/usr/local/bin\"; ",
-            "if ! command -v nebula >/dev/null 2>&1; then ",
+            // odyn: the remote runs the binary named `cli_name!()`.
+            "if ! command -v ",
+            nebula_core::cli_name!(),
+            " >/dev/null 2>&1; then ",
             "command -v curl >/dev/null 2>&1 || { ",
-            "echo \"nebula: curl is required on the remote to install nebula\" >&2; exit 127; }; ",
-            "echo \"nebula not found on remote; installing...\" >&2; ",
+            "echo \"",
+            nebula_core::cli_name!(),
+            ": curl is required on the remote to install ",
+            nebula_core::cli_name!(),
+            "\" >&2; exit 127; }; ",
+            "echo \"",
+            nebula_core::cli_name!(),
+            " not found on remote; installing...\" >&2; ",
             "curl -fsSL \"$1\" | sh || exit 1; ",
             "fi; "
         )
@@ -51,7 +60,7 @@ macro_rules! export_settings_bundle {
         concat!(
             "[ -z \"$",
             $n,
-            "\" ] || export NEBULA_IMPORT_BUNDLE=\"$",
+            "\" ] || export ODYN_IMPORT_BUNDLE=\"$",
             $n,
             "\"; "
         )
@@ -66,7 +75,8 @@ const REMOTE_SCRIPT: &str = concat!(
     install_prelude!(),
     "cd -- \"${2:-$HOME}\" || exit 1; ",
     export_settings_bundle!("3"),
-    "exec nebula"
+    "exec ",
+    nebula_core::cli_name!() // odyn:
 );
 
 pub fn run_ssh(host: &str, path: Option<&str>, sync_config: bool) -> Result<()> {
@@ -80,14 +90,17 @@ pub fn run_ssh(host: &str, path: Option<&str>, sync_config: bool) -> Result<()> 
     // natively. Only returns on failure.
     let err = Command::new("ssh").args(["-t", "--", host, &cmd]).exec();
     if err.kind() == std::io::ErrorKind::NotFound {
-        bail!("ssh not found on PATH — nebula ssh requires the OpenSSH client");
+        bail!(
+            "ssh not found on PATH — {} ssh requires the OpenSSH client",
+            nebula_core::CLI_NAME // odyn:
+        );
     }
     Err(err).context("failed to exec ssh")
 }
 
 fn remote_command(install_url: &str, path: Option<&str>, bundle: Option<&str>) -> String {
     let mut cmd = format!(
-        "sh -c '{}' nebula-ssh {}",
+        "sh -c '{}' odyn-ssh {}",
         REMOTE_SCRIPT,
         single_quote(install_url)
     );
@@ -121,7 +134,7 @@ mod tests {
     #[test]
     fn no_path_defaults_to_remote_home() {
         let cmd = remote_command(URL, None, None);
-        assert!(cmd.ends_with("nebula-ssh 'https://example.com/install.sh'"));
+        assert!(cmd.ends_with("odyn-ssh 'https://example.com/install.sh'"));
         assert!(cmd.contains("${2:-$HOME}"));
     }
 
@@ -141,7 +154,7 @@ mod tests {
     fn a_bundle_rides_after_the_start_dir() {
         let cmd = remote_command(URL, None, Some("eyJ4IjoxfQ=="));
         assert!(
-            cmd.ends_with("nebula-ssh 'https://example.com/install.sh' '' 'eyJ4IjoxfQ=='"),
+            cmd.ends_with("odyn-ssh 'https://example.com/install.sh' '' 'eyJ4IjoxfQ=='"),
             "{cmd}"
         );
         let cmd = remote_command(URL, Some("/srv/app"), Some("eyJ4IjoxfQ=="));
@@ -166,15 +179,15 @@ mod tests {
             let home = tempfile::tempdir().unwrap();
             let stub = home.path().join("stub");
             std::fs::create_dir(&stub).unwrap();
-            let nebula = stub.join("nebula");
+            let nebula = stub.join(nebula_core::CLI_NAME); // odyn:
             std::fs::write(
                 &nebula,
-                "#!/bin/sh\nprintf '%s' \"${NEBULA_IMPORT_BUNDLE-unset}\" > \"$SEEN\"\n",
+                "#!/bin/sh\nprintf '%s' \"${ODYN_IMPORT_BUNDLE-unset}\" > \"$SEEN\"\n",
             )
             .unwrap();
             std::fs::set_permissions(&nebula, std::fs::Permissions::from_mode(0o755)).unwrap();
             let seen = home.path().join("seen");
-            let mut args = vec!["-c", REMOTE_SCRIPT, "nebula-ssh", "file:///nonexistent", ""];
+            let mut args = vec!["-c", REMOTE_SCRIPT, "odyn-ssh", "file:///nonexistent", ""];
             args.extend(bundle);
             let status = Command::new("sh")
                 .args(&args)

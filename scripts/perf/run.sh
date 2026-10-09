@@ -3,7 +3,7 @@
 #
 # Drives the real TUI through a scripted session inside a private tmux, against an isolated daemon and a
 # realistically sized checkout (a local clone of this repository: a few hundred files, a vendored crate,
-# dirty files, three worktrees), with the INPUT LATENCY PROBE on (`NEBULA_PERF_LOG`, crates/nebula-tui/
+# dirty files, three worktrees), with the INPUT LATENCY PROBE on (`ODYN_PERF_LOG`, crates/nebula-tui/
 # src/perf.rs). `report.py` then prints, per step, how long the key's handler held the loop, how long the
 # key waited for its frame, and how long the screen took to settle. Never touches the real daemon.
 #
@@ -25,10 +25,10 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$HERE/../.." && pwd)"
 SCENARIO="${1:-$HERE/scenario.steps}"
 COLS="${COLS:-190}"; ROWS="${ROWS:-50}"
-BIN="${BIN:-$REPO/target/debug/nebula}"; case "$BIN" in /*) ;; *) BIN="$REPO/$BIN";; esac
+BIN="${BIN:-$REPO/target/debug/odyn}" # odyn:; case "$BIN" in /*) ;; *) BIN="$REPO/$BIN";; esac
 ID="$$"
 RUNTIME="/tmp/nperf-$ID"                                    # short on purpose (SUN_LEN)
-WORK="${TMPDIR:-/tmp}/nebula-perf/$ID"; mkdir -p "$WORK" "$RUNTIME"; chmod 700 "$RUNTIME"
+WORK="${TMPDIR:-/tmp}/odyn-perf/$ID"; mkdir -p "$WORK" "$RUNTIME"; chmod 700 "$RUNTIME"
 # The results outlive the run; the checkout it was measured against does not. `target/` is git-ignored
 # and `make clean` takes it, so that is where they go unless OUT says otherwise.
 OUT="${OUT:-$REPO/target/perf/$(date +%Y%m%d-%H%M%S)}"; mkdir -p "$OUT"
@@ -76,9 +76,9 @@ AGENT
 chmod +x "$WORK/bin/agent"
 printf '{"prewarm_agents":false,"prewarm_sessions":false}\n' > "$WORK/data/config.json"
 
-export NEBULA_RUNTIME_DIR="$RUNTIME" NEBULA_DATA_DIR="$WORK/data" NEBULA_AGENT_CMD="$WORK/bin/agent" \
-       NEBULA_UPDATE_CHECK_SECS=0 NEBULA_GH_FIXTURES="$REPO/scripts/shot/fixtures" \
-       PATH="$WORK/bin:$PATH" TERM=xterm-256color NEBULA_PERF_LOG="$OUT/perf.jsonl"
+export ODYN_RUNTIME_DIR="$RUNTIME" ODYN_DATA_DIR="$WORK/data" ODYN_AGENT_CMD="$WORK/bin/agent" \
+       ODYN_UPDATE_CHECK_SECS=0 ODYN_GH_FIXTURES="$REPO/scripts/shot/fixtures" \
+       PATH="$WORK/bin:$PATH" TERM=xterm-256color ODYN_PERF_LOG="$OUT/perf.jsonl"
 "$BIN" add "$DEMO" >/dev/null                                # registers the PROJECT (spawns the daemon)
 # A second, small project, so the Projects panel has somewhere to go.
 git init -q -b main "$WORK/tiny"

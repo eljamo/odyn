@@ -29,6 +29,7 @@ use std::time::{Duration, Instant};
 use crate::browser;
 use crate::ssh::{export_settings_bundle, install_prelude};
 use nebula_core::shell::single_quote;
+use nebula_core::CLI_NAME; // odyn:
 
 /// Both ends of the tunnel are loopback: the local listener ssh binds, and
 /// the address on the remote that ssh connects the other end to.
@@ -50,7 +51,12 @@ macro_rules! reuse_existing_ttyd {
     () => {
         concat!(
             "if curl -sI --max-time 2 \"http://127.0.0.1:$2/\" 2>/dev/null | grep -qi \"^server: ttyd\"; then ",
-            "echo \"nebula tunnel: a nebula browser is already serving on this host at port $2; reusing it ",
+            // odyn: the remote runs the binary named `cli_name!()`.
+            "echo \"",
+            nebula_core::cli_name!(),
+            " tunnel: a ",
+            nebula_core::cli_name!(),
+            " browser is already serving on this host at port $2; reusing it ",
             "(if it was started with --credential, the tab will ask for that)\" >&2; ",
             "exec sleep 2147483647; ",
             "fi; "
@@ -88,12 +94,24 @@ macro_rules! reuse_existing_ttyd {
 const REMOTE_SCRIPT: &str = concat!(
     install_prelude!(),
     reuse_existing_ttyd!(),
-    "nebula browser --help 2>/dev/null | grep -q -- --no-open || { ",
-    "echo \"nebula tunnel: the nebula on this host is too old to tunnel into; ",
-    "reach it with nebula ssh and run nebula upgrade there\" >&2; exit 1; }; ",
+    // odyn: the remote runs the binary named `cli_name!()`.
+    nebula_core::cli_name!(),
+    " browser --help 2>/dev/null | grep -q -- --no-open || { ",
+    "echo \"",
+    nebula_core::cli_name!(),
+    " tunnel: the ",
+    nebula_core::cli_name!(),
+    " on this host is too old to tunnel into; ",
+    "reach it with ",
+    nebula_core::cli_name!(),
+    " ssh and run ",
+    nebula_core::cli_name!(),
+    " upgrade there\" >&2; exit 1; }; ",
     "cd -- \"${3:-$HOME}\" || exit 1; ",
     export_settings_bundle!("4"),
-    "exec nebula browser --no-open --port \"$2\" >/dev/null"
+    "exec ",
+    nebula_core::cli_name!(),
+    " browser --no-open --port \"$2\" >/dev/null"
 );
 
 /// Everything `nebula tunnel` was asked for, straight off the CLI.
@@ -124,7 +142,7 @@ pub fn run_tunnel(opts: TunnelOpts) -> Result<()> {
     nebula_tui::hosts::record(&opts.host, opts.path.as_deref());
 
     println!(
-        "nebula tunnel: connecting to {} (localhost:{local} → its 127.0.0.1:{remote})",
+        "{CLI_NAME} tunnel: connecting to {} (localhost:{local} → its 127.0.0.1:{remote})",
         opts.host
     );
     let mut child = spawn_ssh(&opts, local, remote)?;
@@ -135,10 +153,10 @@ pub fn run_tunnel(opts: TunnelOpts) -> Result<()> {
 
     let url = format!("http://{addr}");
     if browser::open_url(&url) {
-        println!("nebula tunnel: {} is serving on {url}", opts.host);
+        println!("{CLI_NAME} tunnel: {} is serving on {url}", opts.host);
     } else {
         println!(
-            "nebula tunnel: {} is serving on {url} (open it yourself — no browser launched)",
+            "{CLI_NAME} tunnel: {} is serving on {url} (open it yourself — no browser launched)",
             opts.host
         );
     }
@@ -172,7 +190,7 @@ fn resolve_local_port(requested: Option<u16>) -> Result<u16> {
         None => {
             let port = browser::free_port(LOOPBACK)?;
             println!(
-                "nebula tunnel: {} is busy here — forwarding {port} instead",
+                "{CLI_NAME} tunnel: {} is busy here — forwarding {port} instead",
                 browser::DEFAULT_PORT
             );
             Ok(port)
@@ -209,7 +227,7 @@ fn spawn_ssh(opts: &TunnelOpts, local: u16, remote: u16) -> Result<Child> {
         .spawn()
         .map_err(|e| match e.kind() {
             std::io::ErrorKind::NotFound => {
-                anyhow!("ssh not found on PATH — nebula tunnel requires the OpenSSH client")
+                anyhow!("ssh not found on PATH — {CLI_NAME} tunnel requires the OpenSSH client")
             }
             _ => anyhow::Error::new(e).context("failed to start ssh"),
         })
@@ -230,7 +248,7 @@ fn remote_command(
     bundle: Option<&str>,
 ) -> String {
     let mut cmd = format!(
-        "sh -c '{}' nebula-tunnel {} {}",
+        "sh -c '{}' odyn-tunnel {} {}",
         REMOTE_SCRIPT,
         single_quote(install_url),
         port
@@ -288,7 +306,7 @@ fn wait_until_forwarded(child: &mut Child, addr: SocketAddr, host: &str) -> Resu
         if Instant::now() >= deadline {
             let _ = child.kill();
             bail!(
-                "{host} did not start serving within {}s — connect with `nebula ssh {host}` and check that ttyd is installed there",
+                "{host} did not start serving within {}s — connect with `{CLI_NAME} ssh {host}` and check that ttyd is installed there",
                 STARTUP_TIMEOUT.as_secs()
             );
         }
@@ -349,7 +367,10 @@ mod tests {
     #[test]
     fn the_remote_serves_without_opening_anything() {
         let cmd = remote_command(URL, 7681, None, None);
-        assert!(cmd.contains("nebula browser --no-open --port"), "{cmd}");
+        assert!(
+            cmd.contains(&format!("{CLI_NAME} browser --no-open --port")),
+            "{cmd}"
+        );
         assert!(cmd.ends_with("7681"), "{cmd}");
     }
 
@@ -372,7 +393,7 @@ mod tests {
     #[test]
     fn the_port_reaches_the_script_as_a_parameter() {
         let cmd = remote_command(URL, 9123, None, None);
-        assert!(cmd.contains("nebula-tunnel 'https://example.com/install.sh' 9123"));
+        assert!(cmd.contains("odyn-tunnel 'https://example.com/install.sh' 9123"));
         assert!(REMOTE_SCRIPT.contains("--port \"$2\""));
     }
 
@@ -388,7 +409,9 @@ mod tests {
                 nebula_core::env::IMPORT_BUNDLE
             ))
             .expect("exports the bundle");
-        let start = REMOTE_SCRIPT.find("exec nebula browser").unwrap();
+        let start = REMOTE_SCRIPT
+            .find(&format!("exec {CLI_NAME} browser"))
+            .unwrap();
         assert!(export < start, "{REMOTE_SCRIPT}");
     }
 
@@ -415,7 +438,9 @@ mod tests {
     fn an_existing_ttyd_on_the_remote_port_is_reused_before_anything_starts() {
         let probe = REMOTE_SCRIPT.find("curl -sI").expect("probes the port");
         let gate = REMOTE_SCRIPT.find("grep -q -- --no-open").unwrap();
-        let start = REMOTE_SCRIPT.find("exec nebula browser").unwrap();
+        let start = REMOTE_SCRIPT
+            .find(&format!("exec {CLI_NAME} browser"))
+            .unwrap();
         assert!(probe < gate && gate < start, "{REMOTE_SCRIPT}");
         assert!(REMOTE_SCRIPT.contains("http://127.0.0.1:$2/"));
         assert!(REMOTE_SCRIPT.contains("grep -qi \"^server: ttyd\""));
@@ -453,7 +478,7 @@ mod tests {
         let home = tempfile::tempdir().unwrap();
         let stub = home.path().join("stub");
         std::fs::create_dir(&stub).unwrap();
-        let nebula = stub.join("nebula");
+        let nebula = stub.join(CLI_NAME); // odyn:
         std::fs::write(&nebula, "#!/bin/sh\nexit 0\n").unwrap();
         #[cfg(unix)]
         {
@@ -465,7 +490,7 @@ mod tests {
             stub.display()
         );
         let child = Command::new("sh")
-            .args(["-c", REMOTE_SCRIPT, "nebula-tunnel", "file:///nonexistent"])
+            .args(["-c", REMOTE_SCRIPT, "odyn-tunnel", "file:///nonexistent"])
             .arg(port.to_string())
             .env("HOME", home.path())
             .env("PATH", path)
@@ -523,7 +548,7 @@ mod tests {
     #[test]
     fn a_remote_too_old_to_tunnel_is_named_as_such() {
         assert!(REMOTE_SCRIPT.contains("grep -q -- --no-open"));
-        assert!(REMOTE_SCRIPT.contains("nebula upgrade"));
+        assert!(REMOTE_SCRIPT.contains(&format!("{CLI_NAME} upgrade")));
     }
 
     /// Both ends of the forward are pinned to loopback: the remote ttyd is

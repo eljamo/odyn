@@ -1,7 +1,7 @@
 //! Claude Code's background sessions, as far as a nebula pane has to know
 //! them. `/background` (or `claude --bg`) hands a session to Claude's own
 //! daemon: the pane's CLI exits and the conversation carries on in a worker
-//! that inherited the pane's `NEBULA_*` env — so its hooks keep reporting
+//! that inherited the pane's `ODYN_*` env — so its hooks keep reporting
 //! against the same row, the forked session id included. `claude --resume
 //! <id>` then refuses ("Session … is running as a background session … Run
 //! `claude attach <short>` to open it"), which left the row a dead pane on

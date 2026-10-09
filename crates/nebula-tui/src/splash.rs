@@ -32,17 +32,12 @@ const RAMP: &[char] = &['.', ':', '·', '+', '*', '*', 'o', '@'];
 /// 256-color ramp under `RAMP`: deep blue -> violet -> magenta -> pink.
 const DUST: &[u8] = &[17, 54, 55, 92, 93, 129, 135, 177];
 /// Wordmark gradient, swept left to right.
-const MARK: &[u8] = &[99, 105, 141, 177, 213, 219];
+// odyn: the kiln's warm gradient replaces nebula's purple.
+const MARK: &[u8] = odyn_tui::MARK;
 
-/// 5-row block bitmaps for N E B U L A.
-const LETTERS: &[&[&str; 5]] = &[
-    &["#...#", "##..#", "#.#.#", "#..##", "#...#"],
-    &["####", "#...", "###.", "#...", "####"],
-    &["###.", "#..#", "###.", "#..#", "###."],
-    &["#..#", "#..#", "#..#", "#..#", ".##."],
-    &["#...", "#...", "#...", "#...", "####"],
-    &[".##.", "#..#", "####", "#..#", "#..#"],
-];
+/// 5-row block bitmaps for the wordmark.
+// odyn: O D Y N replaces N E B U L A.
+const LETTERS: &[&[&str; 5]] = odyn_tui::WORDMARK;
 
 fn hash(x: i32, y: i32, salt: u32) -> u32 {
     let mut h = (x as u32).wrapping_mul(374_761_393)
@@ -190,7 +185,7 @@ pub fn draw_splash(f: &mut Frame, app: &mut App, area: Rect) {
         lines.push(Line::from(vec![
             Span::styled("◆ ", Style::default().fg(th.accent)),
             Span::styled(
-                "nebula",
+                nebula_core::CLI_NAME, // odyn:
                 Style::default().fg(th.text).add_modifier(Modifier::BOLD),
             ),
         ]));
@@ -270,6 +265,11 @@ pub fn draw_splash(f: &mut Frame, app: &mut App, area: Rect) {
 /// (`ui::launcher_view`) are both drawn over it.
 pub fn draw_sky(buf: &mut Buffer, area: Rect, text: Rect, t: f32, accent: Color) {
     let fade = fade_at(t);
+    // odyn: the kiln replaces the galaxy. The galaxy code stays so upstream
+    // merges into it apply.
+    if odyn_tui::draw_sky(buf, area, text, t, fade, accent) {
+        return;
+    }
     // ---- galaxy centered in the sky above the text ----
     let above = text.y.saturating_sub(area.y).max(4);
     let cx = f32::from(area.x) + f32::from(area.width) / 2.0;

@@ -1,9 +1,9 @@
-// nebula's managed OpenCode plugin — written by nebula before every OpenCode
-// session it starts; edits here are overwritten. Inert outside nebula: without
-// the NEBULA_* session environment it registers no hooks, so an `opencode` you
+// odyn's managed OpenCode plugin — written by odyn before every OpenCode
+// session it starts; edits here are overwritten. Inert outside odyn: without
+// the ODYN_* session environment it registers no hooks, so an `opencode` you
 // run yourself in the same checkout never phones home.
 //
-// It maps OpenCode's server events onto the hook events nebula installs for
+// It maps OpenCode's server events onto the hook events odyn installs for
 // Claude Code and POSTs each one to the daemon's loopback hook receiver
 // (`/api/hooks/opencode`), fail-soft: an unreachable daemon costs a short
 // timeout, never the turn. The daemon answers `UserPromptSubmit` with an empty
@@ -11,9 +11,9 @@
 // Code and Codex read; here it rides that turn's system prompt through
 // OpenCode's `experimental.chat.system.transform` hook.
 
-const AGENT_ID = process.env.NEBULA_AGENT_ID;
-const API_URL = process.env.NEBULA_API_URL;
-const API_TOKEN = process.env.NEBULA_API_TOKEN ?? "";
+const AGENT_ID = process.env.ODYN_AGENT_ID;
+const API_URL = process.env.ODYN_API_URL;
+const API_TOKEN = process.env.ODYN_API_TOKEN ?? "";
 const TIMEOUT_MS = 3000;
 // OpenCode's question tool: the one that stops the turn to ask you something.
 const ASK_TOOL = "question";
@@ -23,7 +23,7 @@ type ServerEvent = { type: string; properties?: Record<string, any> };
 type MessagePart = { type: string; text?: string; synthetic?: boolean };
 type Hooks = Record<string, unknown>;
 
-export const NebulaPlugin = async ({ directory }: PluginInput): Promise<Hooks> => {
+export const OdynPlugin = async ({ directory }: PluginInput): Promise<Hooks> => {
   if (!AGENT_ID || !API_URL) return {};
 
   // Subagent sessions (a task tool's child, created with a parent) post

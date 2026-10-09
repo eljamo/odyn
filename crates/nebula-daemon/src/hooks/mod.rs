@@ -38,12 +38,19 @@ use tokio::sync::mpsc;
 /// carries it uses: the UserPromptSubmit context injection (claude/codex)
 /// and cursor's always-on project rule. Repeats on every prompt until a
 /// title sticks, so it has to read sanely on a session that already has one.
-pub const AUTO_TITLE_INSTRUCTION: &str = "[nebula] Before addressing the \
-user's request, run this shell command exactly once:\n\n  nebula rename \
+// odyn: the command name comes from `cli_name!()`.
+pub const AUTO_TITLE_INSTRUCTION: &str = concat!(
+    "[odyn] Before addressing the \
+user's request, run this shell command exactly once:\n\n  ",
+    nebula_core::cli_name!(),
+    " rename \
 <title>\n\nReplace <title> with 3-4 Title Case words describing the user's \
-request, unquoted (example: nebula rename Fix Login Redirect). If it reports \
+request, unquoted (example: ",
+    nebula_core::cli_name!(),
+    " rename Fix Login Redirect). If it reports \
 the session is already titled, accept that and move on. Then continue with \
-the request. Don't mention the rename to the user.";
+the request. Don't mention the rename to the user."
+);
 
 /// The instruction as a UserPromptSubmit hook's stdout. Codex only reads
 /// injected context out of this JSON envelope (its hook output schema is
@@ -654,7 +661,10 @@ mod tests {
         // reads as the documented equivalent of bare text.
         assert_eq!(body, auto_title_injection());
         assert!(body.contains("hookSpecificOutput"), "envelope: {body}");
-        assert!(body.contains("nebula rename"), "instruction: {body}");
+        assert!(
+            body.contains(&format!("{} rename", nebula_core::CLI_NAME)),
+            "instruction: {body}"
+        );
         let delivery = rx.recv().await.unwrap();
         assert_eq!(delivery.agent_id.as_str(), "pending");
         assert_eq!(delivery.event, HookEvent::UserPromptSubmit);
@@ -800,7 +810,7 @@ mod tests {
         for body in [
             r#"{"session_id":"s1","prompt":"   "}"#,
             r#"{"session_id":"s1"}"#,
-            r#"{"session_id":"s1","prompt":"[nebula] This session now runs inside a worktree"}"#,
+            r#"{"session_id":"s1","prompt":"[odyn] This session now runs inside a worktree"}"#,
         ] {
             post("UserPromptSubmit", body).await;
             let delivery = rx.recv().await.unwrap();

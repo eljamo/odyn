@@ -1,9 +1,9 @@
-// nebula's managed pi extension — written by nebula before every pi session
-// it starts; edits here are overwritten. Inert outside nebula: without the
-// NEBULA_* session environment it registers nothing, so a bare `pi` in the
+// odyn's managed pi extension — written by odyn before every pi session
+// it starts; edits here are overwritten. Inert outside odyn: without the
+// ODYN_* session environment it registers nothing, so a bare `pi` in the
 // same checkout never phones home.
 //
-// It mirrors the hook set nebula installs for Claude Code onto pi's extension
+// It mirrors the hook set odyn installs for Claude Code onto pi's extension
 // events and POSTs each one to the daemon's loopback hook receiver
 // (`/api/hooks/pi`), fail-soft: an unreachable daemon costs a short timeout,
 // never the turn. The daemon answers `UserPromptSubmit` with an empty body or
@@ -15,9 +15,9 @@ type SessionContext = {
   sessionManager: { getSessionId(): string };
 };
 
-const AGENT_ID = process.env.NEBULA_AGENT_ID;
-const API_URL = process.env.NEBULA_API_URL;
-const API_TOKEN = process.env.NEBULA_API_TOKEN ?? "";
+const AGENT_ID = process.env.ODYN_AGENT_ID;
+const API_URL = process.env.ODYN_API_URL;
+const API_TOKEN = process.env.ODYN_API_TOKEN ?? "";
 const TIMEOUT_MS = 3000;
 // pi's AskUserQuestion: the tool that stops the turn to ask you something.
 const ASK_TOOL = "ask_question";

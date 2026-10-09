@@ -276,7 +276,7 @@ pub fn available_models_from(cfg_dir: &Path, sys_dir: &Path) -> Option<Vec<Strin
 }
 
 /// TUI startup: adopt Claude Code's allowlist when one is on disk. Skipped
-/// when Claude is switched off (HARNESS TOGGLE) and under `NEBULA_AGENT_CMD`
+/// when Claude is switched off (HARNESS TOGGLE) and under `ODYN_AGENT_CMD`
 /// (tests, STUB AGENTS), so no test reads the developer's real settings.
 pub fn bootstrap(claude_enabled: bool) {
     if !claude_enabled || nebula_core::env::non_empty(nebula_core::env::AGENT_CMD).is_some() {

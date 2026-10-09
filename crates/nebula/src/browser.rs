@@ -20,6 +20,7 @@
 //! see `warn_if_exposed`.
 
 use anyhow::{anyhow, bail, Context, Result};
+use nebula_core::CLI_NAME; // odyn: user-visible messages name the binary.
 use std::ffi::{OsStr, OsString};
 use std::io::ErrorKind;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpListener, TcpStream};
@@ -47,16 +48,21 @@ const POLL_INTERVAL: Duration = Duration::from_millis(50);
 /// looks exactly as it always did; only the column count changes.
 const FONT_SIZE: u16 = 13;
 
-const MISSING_TTYD: &str = "\
-nebula browser needs ttyd, and it is not on your PATH.
+// odyn: the message names the binary from `cli_name!()`.
+const MISSING_TTYD: &str = concat!(
+    nebula_core::cli_name!(),
+    " browser needs ttyd, and it is not on your PATH.
 
-ttyd serves a command's terminal over HTTP; `nebula browser` points it at this
+ttyd serves a command's terminal over HTTP; `",
+    nebula_core::cli_name!(),
+    " browser` points it at this
 binary so the TUI renders in a browser tab. Install it, then try again:
 
   macOS          brew install ttyd
   Debian/Ubuntu  sudo apt install ttyd
   Arch           sudo pacman -S ttyd
-  elsewhere      https://github.com/tsl0922/ttyd#installation";
+  elsewhere      https://github.com/tsl0922/ttyd#installation"
+);
 
 /// Everything `nebula browser` was asked for, straight off the CLI.
 #[derive(Debug, Clone)]
@@ -93,12 +99,12 @@ pub fn run_browser(opts: BrowserOpts) -> Result<()> {
 
     let url = url_for(reachable_addr(opts.bind), port);
     if opts.open && open_url(&url) {
-        println!("nebula browser: serving on {url}");
+        println!("{CLI_NAME} browser: serving on {url}");
     } else {
-        println!("nebula browser: serving on {url} (open it yourself — no browser launched)");
+        println!("{CLI_NAME} browser: serving on {url} (open it yourself — no browser launched)");
     }
     if opts.bind.is_unspecified() {
-        println!("nebula browser: reachable on every interface of this host at port {port}.");
+        println!("{CLI_NAME} browser: reachable on every interface of this host at port {port}.");
     }
     println!("Ctrl+C to stop.");
 
@@ -135,9 +141,9 @@ fn warn_if_exposed(opts: &BrowserOpts) {
     if opts.bind.is_loopback() {
         return;
     }
-    eprintln!("nebula browser: WARNING — binding {} serves a live, writable terminal on this machine to the network.", opts.bind);
+    eprintln!("{CLI_NAME} browser: WARNING — binding {} serves a live, writable terminal on this machine to the network.", opts.bind);
     if opts.credential.is_none() {
-        eprintln!("nebula browser: there is no password on it. Restrict the port (firewall, security group, VPN) or pass --credential USER:PASSWORD.");
+        eprintln!("{CLI_NAME} browser: there is no password on it. Restrict the port (firewall, security group, VPN) or pass --credential USER:PASSWORD.");
     }
 }
 
@@ -166,7 +172,7 @@ fn resolve_port(requested: Option<u16>, bind: IpAddr) -> Result<u16> {
         None if probe(DEFAULT_PORT, bind).is_ok() => Ok(DEFAULT_PORT),
         None => {
             let port = free_port(bind)?;
-            println!("nebula browser: {DEFAULT_PORT} is busy — serving on {port} instead");
+            println!("{CLI_NAME} browser: {DEFAULT_PORT} is busy — serving on {port} instead");
             Ok(port)
         }
     }
@@ -261,7 +267,7 @@ fn ttyd_args(port: u16, opts: &BrowserOpts) -> Vec<String> {
 fn nebula_exe() -> OsString {
     std::env::current_exe()
         .map(OsString::from)
-        .unwrap_or_else(|_| "nebula".into())
+        .unwrap_or_else(|_| nebula_core::CLI_NAME.into()) // odyn:
 }
 
 /// Block until the address accepts a connection, so the browser never opens
