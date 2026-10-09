@@ -313,6 +313,15 @@ pub enum MenuAction {
     /// settings — `launcher::duplicate_agent`, what `⇧P` runs on the card
     /// under the cursor. Carries the id, as the row's other verbs do.
     DuplicateAgent(AgentId),
+    /// A card menu's **Move to…**: the MOVE PICKER of the checkouts
+    /// session `id` can move to, what `m` on the card opens.
+    MoveAgentPicker(AgentId),
+    /// A MOVE PICKER row, or a card dropped on another band: move the
+    /// session into `worktree` (`ClientRequest::MoveAgent`).
+    MoveAgent {
+        id: AgentId,
+        worktree: WorktreeId,
+    },
     EditLink(LinkId),
     DeleteLink(LinkId),
     DeleteWorktree(WorktreeId),
@@ -418,6 +427,22 @@ impl MenuItem {
             destructive: true,
         }
     }
+}
+
+/// A session card held under the pressed mouse button ([`App::card_drag`]).
+#[derive(Debug, Clone, PartialEq)]
+pub struct CardDrag {
+    pub agent: AgentId,
+    /// The cell the press landed on: the drag starts once the pointer
+    /// leaves it, so a plain click never becomes one.
+    pub from: (u16, u16),
+    pub active: bool,
+    /// The band under the pointer, when it is another checkout the card
+    /// can move to: where the release drops it.
+    pub over: Option<WorktreeId>,
+    /// The PROJECT TAB under the pointer instead: `over` is then that
+    /// project's first checkout, its root unless the card is already there.
+    pub over_tab: Option<ProjectId>,
 }
 
 #[derive(Debug, Clone)]
@@ -628,6 +653,12 @@ pub(crate) const CLOUD_LABEL: &str = " · cloud";
 /// Destructive action waiting behind a confirmation.
 #[derive(Debug, Clone, PartialEq)]
 pub enum PendingAction {
+    /// A project's stored `repo_path` is gone from disk. Answering yes
+    /// opens the path-completing prompt that sends `SetProjectPath`.
+    LocateProjectPath {
+        id: ProjectId,
+        old_path: std::path::PathBuf,
+    },
     /// AddProject aimed at a path that doesn't exist yet: create the
     /// directory, `git init` it (both daemon-side) and add it.
     CreateProjectDir(std::path::PathBuf),
@@ -645,6 +676,13 @@ pub enum PendingAction {
         terminals: Vec<TerminalId>,
     },
     DeleteAgent(AgentId),
+    /// A session card dropped on another band or PROJECT TAB, with the
+    /// **Confirm drag move** SETTING on: move it once the dialog is
+    /// answered.
+    MoveAgent {
+        id: AgentId,
+        worktree: WorktreeId,
+    },
     CloseTerminal(TerminalId),
     DeleteWorktree(WorktreeId),
     /// A row delete that empties a linked worktree — the last card of the
@@ -710,6 +748,12 @@ pub struct HelpView {
 #[derive(Debug, Clone, PartialEq)]
 pub enum PromptKind {
     AddProject,
+    /// Point an existing project at its new main checkout after its
+    /// original `repo_path` disappeared from disk.
+    SetProjectPath {
+        id: ProjectId,
+        old_path: std::path::PathBuf,
+    },
     NewWorktree {
         project: ProjectId,
         /// Random `<adj>-<noun>-<verb>` name minted when the prompt
@@ -910,7 +954,10 @@ impl PromptDialog {
 
     /// Does Tab complete filesystem paths in this prompt?
     pub fn completes_paths(&self) -> bool {
-        matches!(self.kind, PromptKind::AddProject)
+        matches!(
+            self.kind,
+            PromptKind::AddProject | PromptKind::SetProjectPath { .. }
+        )
     }
 
     /// The task prompts — the Claude Cloud launch task, a message to a live
@@ -2056,6 +2103,13 @@ pub enum PendingIntent {
         kind: PromptKind,
         text: String,
         note: String,
+    },
+    /// `SetProjectPath` succeeded: re-key this client's project settings
+    /// from the old path to the new path and tell the user what moved.
+    ProjectPathSet {
+        project: ProjectId,
+        old_path: std::path::PathBuf,
+        new_path: std::path::PathBuf,
     },
     /// A menu's **Run** / **Stop run** (`StartRun` / `StopRun`): once the
     /// DAEMON has done it, flash what happened in `branch`.
@@ -3418,6 +3472,9 @@ pub struct App {
     /// mouse-down, so the edge tracks the pointer instead of jumping by
     /// one depending on which of the two grab rows was caught.
     pub launcher_pane_drag: Option<i32>,
+    /// A session card pressed on the grid, which a drag carries onto
+    /// another band to move the session there (`MoveAgent`).
+    pub card_drag: Option<CardDrag>,
     /// That edge is under the mouse, or being dragged: its grip lights up.
     /// Only ever set in terminals that report plain mouse motion;
     /// elsewhere the grip rests until a drag takes hold.
@@ -3438,6 +3495,15 @@ pub struct App {
     /// one at a time by `event_loop::launcher::close_tab`, and remembered
     /// across restarts.
     pub launcher_tabs: Vec<ProjectId>,
+    /// Missing-project prompts dismissed in this TUI run. A redraw never
+    /// prompts on its own, but this also keeps a project switch from asking
+    /// again after the user said no.
+    pub dismissed_repath_projects: std::collections::HashSet<ProjectId>,
+    /// Unit tests often seed fake `/tmp/...` projects without backing
+    /// directories. Production always prompts; tests opt into that behavior
+    /// when the missing-path flow is what they are exercising.
+    #[cfg(test)]
+    pub prompt_missing_project_paths: bool,
     /// Every PROJECT TAB has been closed: nebula is back on the SPLASH it
     /// opens on before there is any project, with the projects themselves
     /// and their sessions untouched. Set by closing the last tab
@@ -3940,9 +4006,13 @@ impl App {
             launcher_scroll_in: None,
             launcher_reveal: false,
             launcher_pane_drag: None,
+            card_drag: None,
             hover_launcher_pane: false,
             hover_crumb: None,
             launcher_tabs: Vec::new(),
+            dismissed_repath_projects: std::collections::HashSet::new(),
+            #[cfg(test)]
+            prompt_missing_project_paths: false,
             projects_closed: false,
             launcher_tab_cursor: None,
             launcher_tabs_more: Vec::new(),
@@ -4651,6 +4721,7 @@ impl App {
     /// with no button named is still the drag.
     pub fn mouse_held(&self) -> bool {
         let splitter = self.launcher_pane_drag.is_some()
+            || self.card_drag.is_some()
             || match &self.overlay {
                 Some(Overlay::Diff(view)) => view.files_drag.is_some(),
                 Some(Overlay::Tree(view)) => view.files_drag.is_some(),

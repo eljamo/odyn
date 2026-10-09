@@ -7,7 +7,7 @@ use std::path::PathBuf;
 
 /// Bump on any breaking change to these enums. The daemon refuses mismatched
 /// clients; the client then offers a kill-and-restart of the old daemon.
-pub const PROTOCOL_VERSION: u32 = 45;
+pub const PROTOCOL_VERSION: u32 = 46;
 
 /// Max IPC frame size (length prefix sanity bound).
 pub const MAX_FRAME_LEN: u32 = 4 * 1024 * 1024;
@@ -77,6 +77,17 @@ pub enum ClientRequest {
         req_id: u64,
         id: ProjectId,
         name: String,
+    },
+    /// Point a project at the folder its repo now lives in, after the user
+    /// renamed or moved it on disk. `path` must be the repo's main checkout
+    /// and not another project's. Every worktree row inside the old folder
+    /// moves with it, git's own links are repaired, and a row still named
+    /// after the old folder takes the new folder's name. Nothing on disk is
+    /// moved: the folder is already where `path` says.
+    SetProjectPath {
+        req_id: u64,
+        id: ProjectId,
+        path: PathBuf,
     },
     CreateWorktree {
         req_id: u64,
@@ -266,6 +277,17 @@ pub enum ClientRequest {
     RestartAgent {
         req_id: u64,
         id: AgentId,
+    },
+    /// The user moved a session's card onto another checkout, of its own
+    /// project or another one: the card menu's **Move to…**, or a drag
+    /// onto another band or project tab.
+    /// The row moves at once and a live session follows, resumed there:
+    /// straight away when idle, at its turn's end when mid-turn. Answered
+    /// with `Ack`.
+    MoveAgent {
+        req_id: u64,
+        id: AgentId,
+        worktree: WorktreeId,
     },
     /// Queue a message on the Claude Cloud session a row launched
     /// (`claude -p <message> --cloud <id>`). Fire-and-forget by nature: the

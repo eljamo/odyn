@@ -3457,6 +3457,7 @@ fn handle_key(app: &mut App, key: KeyEvent, out: &mut Vec<ClientRequest>) {
         Action::OpenPullRequest => launcher::open_pull_request(app, out),
         Action::OpenIssue => launcher::open_issue(app, out),
         Action::DuplicateSession => launcher::duplicate_session(app),
+        Action::MoveSession => launcher::move_session(app),
         Action::OpenGhosttyTab => open_ghostty_tab(app),
         // Shift+Enter / Shift+O: the selected worktree's OPEN COMMAND, from
         // any panel — the cursor's worktree is the context wherever the
@@ -3518,6 +3519,11 @@ pub(crate) fn open_prompt(app: &mut App, kind: PromptKind) {
             "Open project".into(),
             "a folder with a git repository — Enter opens it".into(),
             add_project_prefill(app),
+        ),
+        PromptKind::SetProjectPath { old_path, .. } => (
+            "Locate project".into(),
+            format!("new folder for {}", old_path.display()).into(),
+            repath_prefill(old_path),
         ),
         PromptKind::NewWorktree { suggestion, .. } => (
             "New worktree".into(),
@@ -3684,6 +3690,49 @@ pub(crate) fn open_prompt(app: &mut App, kind: PromptKind) {
         dialog.hover = dialog.dirs.iter().position(|d| d.name == name);
     }
     app.overlay = Some(Overlay::Prompt(dialog));
+}
+
+fn repath_prefill(old_path: &std::path::Path) -> String {
+    let home = nebula_core::env::home_dir();
+    let parent = old_path.parent().filter(|p| p.exists());
+    match (parent, home.as_deref()) {
+        (Some(parent), Some(home)) => match parent.strip_prefix(home) {
+            Ok(rest) if rest.as_os_str().is_empty() => "~/".to_string(),
+            Ok(rest) => format!("~/{}/", rest.display()),
+            Err(_) => format!("{}/", parent.display()),
+        },
+        (Some(parent), None) => format!("{}/", parent.display()),
+        (None, Some(_)) => "~/".to_string(),
+        (None, None) => String::new(),
+    }
+}
+
+pub(super) fn prompt_for_missing_project_path(app: &mut App, id: &ProjectId) -> bool {
+    #[cfg(test)]
+    if !app.prompt_missing_project_paths {
+        return false;
+    }
+    let Some(project) = app.tree.projects.iter().find(|p| &p.id == id) else {
+        return false;
+    };
+    if project.repo_path.exists() || app.dismissed_repath_projects.contains(id) {
+        return false;
+    }
+    app.overlay = Some(Overlay::Confirm(ConfirmDialog {
+        title: "Project folder not found".into(),
+        message: format!(
+            "The original directory for '{}' is no longer found:\n{}\n\nPoint this project to its new folder?",
+            project.name,
+            project.repo_path.display()
+        ),
+        action: PendingAction::LocateProjectPath {
+            id: id.clone(),
+            old_path: project.repo_path.clone(),
+        },
+        area: ratatui::layout::Rect::default(),
+    }));
+    app.dirty = true;
+    true
 }
 
 /// Where the open-project prompt starts: the parent of the repo nebula was
@@ -5118,6 +5167,7 @@ fn menu_items_for_session(a: &nebula_core::Agent) -> Vec<MenuItem> {
             MenuItem::new("Follow-up prompt", MenuAction::FollowUp),
             MenuItem::new("Restart", MenuAction::RestartAgent(a.id.clone())),
             MenuItem::new("Duplicate", MenuAction::DuplicateAgent(a.id.clone())),
+            MenuItem::new("Move to…", MenuAction::MoveAgentPicker(a.id.clone())),
             MenuItem::new("Rename", MenuAction::RenameAgent(a.id.clone())),
             MenuItem::new("Archive", MenuAction::ArchiveAgent(a.id.clone())),
             MenuItem::destructive("Delete", MenuAction::DeleteAgent(a.id.clone())),
@@ -5901,6 +5951,9 @@ pub(crate) fn handle_overlay_key(app: &mut App, key: KeyEvent, out: &mut Vec<Cli
                 // reopens the overlay, a preset delete the presets list —
                 // not the panels.
                 let to_settings = matches!(confirm.action, PendingAction::ResetSettings);
+                if let PendingAction::LocateProjectPath { id, .. } = &confirm.action {
+                    app.dismissed_repath_projects.insert(id.clone());
+                }
                 let to_presets = match &confirm.action {
                     PendingAction::DeleteAgentPreset {
                         index,
@@ -6516,6 +6569,16 @@ fn save_config(app: &mut App, cfg: &crate::config::Config) -> bool {
     }
 }
 
+fn rekey_project_config(app: &mut App, old_path: &std::path::Path, new_path: &std::path::Path) {
+    let mut cfg = crate::config::Config::load();
+    if !cfg.rekey_project(old_path, new_path) {
+        return;
+    }
+    if save_config(app, &cfg) {
+        apply_config(app, &cfg);
+    }
+}
+
 fn apply_setting_at(app: &mut App, tab: usize, index: usize, delta: i32) {
     if let Some(spec) = crate::config::setting_at(tab, index) {
         // A PROJECT TAB row edits the selected project's entry — every
@@ -6838,6 +6901,20 @@ fn submit_prompt(app: &mut App, prompt: PromptDialog, out: &mut Vec<ClientReques
     }
     match prompt.kind {
         PromptKind::AddProject => open_folder(app, shellexpand_home(&value), out),
+        PromptKind::SetProjectPath { id, old_path } => {
+            let typed = shellexpand_home(&value);
+            let path = std::fs::canonicalize(&typed).unwrap_or(typed);
+            let intent = PendingIntent::ProjectPathSet {
+                project: id.clone(),
+                old_path: old_path.clone(),
+                new_path: path.clone(),
+            };
+            send_with(app, out, intent, |req_id| ClientRequest::SetProjectPath {
+                req_id,
+                id,
+                path,
+            });
+        }
         PromptKind::NewWorktree {
             project,
             suggestion,
@@ -7002,6 +7079,10 @@ fn submit_prompt(app: &mut App, prompt: PromptDialog, out: &mut Vec<ClientReques
 
 fn run_pending_action(app: &mut App, action: PendingAction, out: &mut Vec<ClientRequest>) {
     match action {
+        PendingAction::LocateProjectPath { id, old_path } => {
+            app.dismissed_repath_projects.remove(&id);
+            open_prompt(app, PromptKind::SetProjectPath { id, old_path });
+        }
         PendingAction::CreateProjectDir(path) | PendingAction::InitProjectRepo(path) => {
             send_with(app, out, PendingIntent::SelectCreatedProject, |req_id| {
                 ClientRequest::AddProject {
@@ -7022,6 +7103,7 @@ fn run_pending_action(app: &mut App, action: PendingAction, out: &mut Vec<Client
             }
         }
         PendingAction::DeleteAgent(id) => delete_agent(app, id, out),
+        PendingAction::MoveAgent { id, worktree } => launcher::move_agent(app, id, worktree, out),
         PendingAction::CloseTerminal(id) => close_terminal(app, id, out),
         PendingAction::DeleteLink(id) => {
             send(app, out, |req_id| ClientRequest::DeleteLink { req_id, id });
@@ -7240,6 +7322,8 @@ fn run_menu_action(app: &mut App, action: MenuAction, out: &mut Vec<ClientReques
         }
         MenuAction::SendCloudMessage(id) => open_prompt(app, PromptKind::CloudMessage { id }),
         MenuAction::DuplicateAgent(id) => launcher::duplicate_agent(app, id),
+        MenuAction::MoveAgentPicker(id) => launcher::open_move_picker(app, id),
+        MenuAction::MoveAgent { id, worktree } => launcher::move_agent(app, id, worktree, out),
         MenuAction::RenameAgent(id) => open_prompt(app, PromptKind::RenameAgent { id }),
         MenuAction::ArchiveAgent(id) => {
             archive_agent(app, id, out);
@@ -7550,8 +7634,9 @@ fn restore_session(app: &mut App, out: &mut Vec<ClientRequest>) {
     }
 }
 
-/// Land the selection on `select_when_seen` — a session just created, or
-/// moved into another worktree of this project: directly when its row is
+/// Land the selection on `select_when_seen`: a session just created, or
+/// one moved into another worktree (of another project too, whose grid
+/// it then opens). Directly when its row is
 /// visible under the selected worktree, else by switching to the worktree it
 /// landed under first. Clears the pending follow once it lands; a no-op
 /// until the session's upsert has arrived.
@@ -7588,6 +7673,19 @@ fn land_pending_selection(app: &mut App, out: &mut Vec<ClientRequest>) {
             .map(|t| t.worktree_id.clone()),
     };
     if let Some(wt_id) = landed_worktree {
+        // Moved into another project (the MOVE PICKER, a drop on a
+        // PROJECT TAB): the grid goes there with it.
+        let project = app
+            .tree
+            .worktrees
+            .iter()
+            .find(|w| w.id == wt_id)
+            .map(|w| w.project_id.clone());
+        if let Some(project) = project {
+            if app.selected_project().map(|p| &p.id) != Some(&project) {
+                select_project_row_by_id(app, &project);
+            }
+        }
         if select_worktree_by_id(app, &wt_id, out) {
             if let Some(index) = app
                 .visible_session_rows()
@@ -9780,6 +9878,7 @@ fn handle_mouse(app: &mut App, mouse: MouseEvent, out: &mut Vec<ClientRequest>) 
             app.term_selection = None;
             app.next_drag_autoscroll = None;
             app.term_mouse_grab = None;
+            app.card_drag = None;
             match app.hit_at(mouse.column, mouse.row) {
                 Some(HitTarget::LauncherPaneSplitter) => {
                     // A second press on the edge within the double-click
@@ -9805,7 +9904,13 @@ fn handle_mouse(app: &mut App, mouse: MouseEvent, out: &mut Vec<ClientRequest>) 
                 // worktree; a second click is Enter, down into the PANE
                 // beside the cards — which comes back first if it was
                 // folded away.
-                Some(HitTarget::LauncherCard(at)) => launcher::click_card(app, at, out),
+                // The press also arms a drag of the card onto another
+                // band, which moves its session there. Armed first: the
+                // card is found by the grid as drawn, before the click.
+                Some(HitTarget::LauncherCard(at)) => {
+                    launcher::press_card(app, at, (mouse.column, mouse.row));
+                    launcher::click_card(app, at, out);
+                }
                 // A BAND's rule: the cursor lands on the band, as `j`/`k`
                 // walking onto it do.
                 Some(HitTarget::LauncherBand(i)) => launcher::click_band(app, i, out),
@@ -9950,7 +10055,9 @@ fn handle_mouse(app: &mut App, mouse: MouseEvent, out: &mut Vec<ClientRequest>) 
             app.dirty = true;
         }
         MouseEventKind::Drag(MouseButton::Left) => {
-            if let Some(grab) = app.launcher_pane_drag {
+            if app.card_drag.is_some() {
+                launcher::drag_card(app, (mouse.column, mouse.row));
+            } else if let Some(grab) = app.launcher_pane_drag {
                 let at = app.launcher_pane_side().along(mouse.column, mouse.row);
                 app.set_launcher_pane(at + grab);
                 // A press that became a drag is not the first half of a
@@ -9983,6 +10090,8 @@ fn handle_mouse(app: &mut App, mouse: MouseEvent, out: &mut Vec<ClientRequest>) 
             let pane_ended = app.launcher_pane_drag.take().is_some();
             if pane_ended {
                 app.dirty = true;
+            } else if app.card_drag.is_some() {
+                launcher::drop_card(app, out);
             } else if let Some(sref) = app.term_mouse_grab.take() {
                 // The release closes the program's button — except under
                 // press-only tracking (`?9h`), which has no release report.
@@ -10374,6 +10483,19 @@ fn handle_server_event(app: &mut App, event: ServerEvent, out: &mut Vec<ClientRe
                     app.flash = Some(note);
                 }
                 (
+                    Some(PendingIntent::ProjectPathSet {
+                        project,
+                        old_path,
+                        new_path,
+                    }),
+                    _,
+                ) => {
+                    app.dismissed_repath_projects.remove(&project);
+                    rekey_project_config(app, &old_path, &new_path);
+                    app.bring_tab_forward(&project);
+                    app.flash = Some(format!("project folder updated: {}", new_path.display()));
+                }
+                (
                     Some(PendingIntent::RunToggled {
                         branch,
                         started: true,
@@ -10508,8 +10630,8 @@ fn handle_server_event(app: &mut App, event: ServerEvent, out: &mut Vec<ClientRe
             // moved elsewhere) hands the cursor — and the terminal pane —
             // to its neighbor.
             reconcile_selection(app, before, out);
-            // Fix the selection onto a session we just created — or follow
-            // one we just moved into another worktree of this project.
+            // Fix the selection onto a session we just created, or follow
+            // one we just moved into another worktree or project.
             land_pending_selection(app, out);
             // ...and onto a project we just added.
             if let Some(pid) = app.select_project_when_seen.clone() {
@@ -10570,6 +10692,11 @@ fn handle_server_event(app: &mut App, event: ServerEvent, out: &mut Vec<ClientRe
             if let Some(term) = app.term.as_mut().filter(|t| t.sref == session) {
                 term.refused = Some(message);
             }
+            if app.overlay.is_none() {
+                if let Some(project) = app.project_of_session(&session).cloned() {
+                    prompt_for_missing_project_path(app, &project);
+                }
+            }
             app.dirty = true;
         }
         ServerEvent::Error { req_id, message } => {
@@ -10601,6 +10728,20 @@ fn handle_server_event(app: &mut App, event: ServerEvent, out: &mut Vec<ClientRe
                 }
                 Some(PendingIntent::ReopenPromptOnError { kind, text, .. }) => {
                     reopen_prompt_with(app, kind, text);
+                }
+                Some(PendingIntent::ProjectPathSet {
+                    project,
+                    old_path,
+                    new_path,
+                }) => {
+                    reopen_prompt_with(
+                        app,
+                        PromptKind::SetProjectPath {
+                            id: project,
+                            old_path,
+                        },
+                        new_path.display().to_string(),
+                    );
                 }
                 // The worktree the QUICK PROMPT wanted to cut first was
                 // refused (a fetch that failed, a branch that exists):
@@ -12472,6 +12613,142 @@ mod tests {
         let text = buffer_text(&terminal);
         assert!(text.contains("new session"), "{text}");
         assert!(!text.contains("open a folder"), "{text}");
+    }
+
+    #[test]
+    fn opening_a_project_whose_folder_is_missing_offers_to_locate_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let gone = tmp.path().join("moved-away");
+        let mut app = App::new();
+        app.prompt_missing_project_paths = true;
+        seed_worktree_at(&mut app, &gone);
+        let mut out = Vec::new();
+
+        launcher::open_project(&mut app, &ProjectId("p1".into()), &mut out);
+        assert!(out.is_empty(), "{out:?}");
+        let Some(Overlay::Confirm(confirm)) = &app.overlay else {
+            panic!("expected locate confirm, got {:?}", app.overlay);
+        };
+        assert_eq!(confirm.title, "Project folder not found");
+        assert!(confirm.message.contains(&gone.display().to_string()));
+        assert!(matches!(
+            &confirm.action,
+            PendingAction::LocateProjectPath { id, old_path }
+                if id == &ProjectId("p1".into()) && old_path == &gone
+        ));
+
+        press(&mut app, KeyCode::Char('n'), KeyModifiers::NONE, &mut out);
+        assert!(app.overlay.is_none());
+        assert!(
+            app.dismissed_repath_projects
+                .contains(&ProjectId("p1".into())),
+            "n dismisses it for this TUI run"
+        );
+        launcher::open_project(&mut app, &ProjectId("p1".into()), &mut out);
+        assert!(app.overlay.is_none(), "dismissed projects do not nag");
+    }
+
+    #[test]
+    fn locating_a_missing_project_sends_set_project_path_and_reopens_on_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let gone = tmp.path().join("old");
+        let moved = tmp.path().join("new");
+        std::fs::create_dir_all(&moved).unwrap();
+        let moved_canon = std::fs::canonicalize(&moved).unwrap();
+        let mut app = App::new();
+        app.prompt_missing_project_paths = true;
+        seed_worktree_at(&mut app, &gone);
+        let mut out = Vec::new();
+
+        launcher::open_project(&mut app, &ProjectId("p1".into()), &mut out);
+        press(&mut app, KeyCode::Char('y'), KeyModifiers::NONE, &mut out);
+        let Some(Overlay::Prompt(prompt)) = &mut app.overlay else {
+            panic!("expected locate prompt, got {:?}", app.overlay);
+        };
+        assert!(matches!(
+            prompt.kind,
+            PromptKind::SetProjectPath {
+                id: ProjectId(ref id),
+                ..
+            } if id == "p1"
+        ));
+        prompt.input.set_text(moved.display().to_string());
+        prompt.refresh_dirs();
+        press(&mut app, KeyCode::Enter, KeyModifiers::NONE, &mut out);
+        let (req_id, path) = match out.as_slice() {
+            [ClientRequest::SetProjectPath { req_id, path, .. }] => (*req_id, path.clone()),
+            other => panic!("expected SetProjectPath, got {other:?}"),
+        };
+        assert_eq!(path, moved_canon);
+
+        hse(
+            &mut app,
+            ServerEvent::Error {
+                req_id: Some(req_id),
+                message: "not a git repository".into(),
+            },
+        );
+        let Some(Overlay::Prompt(prompt)) = &app.overlay else {
+            panic!("error reopens the locate prompt, got {:?}", app.overlay);
+        };
+        assert_eq!(prompt.input.as_str(), moved_canon.display().to_string());
+        assert_eq!(app.flash.as_deref(), Some("not a git repository"));
+    }
+
+    #[test]
+    fn successful_project_repath_rekeys_project_settings() {
+        let tmp = tempfile::tempdir().unwrap();
+        let gone = tmp.path().join("old");
+        let moved = tmp.path().join("new");
+        std::fs::create_dir_all(&moved).unwrap();
+        let moved_canon = std::fs::canonicalize(&moved).unwrap();
+        let config_path = tmp.path().join("config.json");
+        std::fs::write(
+            &config_path,
+            format!(
+                r#"{{"projects":{{"{}":{{"run_command":"npm run dev"}}}}}}"#,
+                gone.display()
+            ),
+        )
+        .unwrap();
+
+        crate::config::with_config_path(config_path.clone(), || {
+            let mut app = App::new();
+            app.prompt_missing_project_paths = true;
+            seed_worktree_at(&mut app, &gone);
+            let mut out = Vec::new();
+
+            launcher::open_project(&mut app, &ProjectId("p1".into()), &mut out);
+            press(&mut app, KeyCode::Char('y'), KeyModifiers::NONE, &mut out);
+            if let Some(Overlay::Prompt(prompt)) = &mut app.overlay {
+                prompt.input.set_text(moved.display().to_string());
+                prompt.refresh_dirs();
+            } else {
+                panic!("expected locate prompt");
+            }
+            press(&mut app, KeyCode::Enter, KeyModifiers::NONE, &mut out);
+            let req_id = match out.as_slice() {
+                [ClientRequest::SetProjectPath { req_id, .. }] => *req_id,
+                other => panic!("expected SetProjectPath, got {other:?}"),
+            };
+            hse(
+                &mut app,
+                ServerEvent::Ack {
+                    req_id,
+                    created: None,
+                },
+            );
+
+            let cfg = crate::config::Config::load();
+            assert_eq!(
+                cfg.project_text_value(&gone, crate::config::SettingKind::RunCommand),
+                ""
+            );
+            assert_eq!(
+                cfg.project_text_value(&moved_canon, crate::config::SettingKind::RunCommand),
+                "npm run dev"
+            );
+        });
     }
 
     /// A tempdir holding `ws/alpha` (a git repo) and `ws/beta` (not one),
