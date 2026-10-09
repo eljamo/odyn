@@ -1169,6 +1169,7 @@ dependencies = [
  "axum",
  "nebula-core",
  "nix 0.31.3",
+ "parking_lot",
  "portable-pty",
  "rand 0.10.2",
  "rmp-serde",

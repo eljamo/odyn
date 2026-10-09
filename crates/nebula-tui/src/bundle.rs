@@ -808,7 +808,9 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&p.config).unwrap(), "{ broken");
 
         let err = import(&p, &json!({"theme": "ocean"})).unwrap_err();
-        assert!(err.to_string().contains(&format!("not a {CLI_NAME} settings bundle")));
+        assert!(err
+            .to_string()
+            .contains(&format!("not a {CLI_NAME} settings bundle")));
     }
 
     #[test]
