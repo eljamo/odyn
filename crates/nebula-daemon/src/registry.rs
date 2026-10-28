@@ -865,18 +865,25 @@ fn login_shell_wrap(shell: &str, program: &str, args: &[String]) -> (String, Vec
 /// [`login_shell_wrap`] for a line that is already shell syntax — a RUN
 /// TERMINAL's `.odyn.json` `run`, pipes and `&&` and all — behind the
 /// same prelude.
+///
+/// fish gets the prelude in its own syntax: there a bare `exec </dev/tty`
+/// is `exec` with no command, which opens the `exec` man page in a pager
+/// that waits on the PTY for ever, and `unset` is not a command. So fish
+/// drops the overrides with `set -e`, and the redirect goes on a `begin`
+/// block around the line, which reaches every command in it.
 fn login_shell_line(shell: &str, line: &str) -> (String, Vec<String>) {
-    let mut cmdline = String::from("exec </dev/tty; unset");
-    for name in env::PANE_COLOR_OVERRIDES {
-        cmdline.push(' ');
-        cmdline.push_str(name);
-    }
-    cmdline.push_str("; export TERM=");
-    cmdline.push_str(env::PANE_TERM);
-    cmdline.push_str(" COLORTERM=");
-    cmdline.push_str(env::PANE_COLORTERM);
-    cmdline.push_str("; ");
-    cmdline.push_str(line);
+    let overrides = env::PANE_COLOR_OVERRIDES.join(" ");
+    let (term, colorterm) = (env::PANE_TERM, env::PANE_COLORTERM);
+    let cmdline = if Path::new(shell).file_name() == Some("fish".as_ref()) {
+        format!(
+            "set -e {overrides}; set -gx TERM {term}; set -gx COLORTERM {colorterm}; \
+             begin; {line}; end </dev/tty"
+        )
+    } else {
+        format!(
+            "exec </dev/tty; unset {overrides}; export TERM={term} COLORTERM={colorterm}; {line}"
+        )
+    };
     let mut args = vec!["-c".to_string(), LOGIN_SHELL_STDIN_SHIM.to_string()];
     args.push("nebula-login-shell".to_string());
     args.push(shell.to_string());
@@ -2158,6 +2165,45 @@ mod tests {
             .env("NO_COLOR", "1")
             .env("FORCE_COLOR", "0")
             .env("TERM", "foot")
+            .output()
+            .unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout),
+            "xterm-256color|truecolor|unset|unset",
+            "stderr: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    /// fish runs its prelude to the end — no `exec` man page in a pager —
+    /// restates the pane like the POSIX one, and runs a whole `&&` line.
+    /// Skipped where there is no fish.
+    #[test]
+    fn login_shell_line_speaks_fish_to_fish() {
+        if std::process::Command::new("fish")
+            .arg("--version")
+            .stdout(std::process::Stdio::null())
+            .status()
+            .is_err()
+        {
+            return;
+        }
+        let (_, args) = login_shell_line(
+            "/opt/homebrew/bin/fish",
+            r#"true && printf '%s|%s|%s|%s' "$TERM" "$COLORTERM" (set -q NO_COLOR; and echo set; or echo unset) (set -q FORCE_COLOR; and echo set; or echo unset)"#,
+        );
+        assert!(!args[7].contains("exec </dev/tty"), "{}", args[7]);
+        let out = std::process::Command::new("fish")
+            .args(["--no-config", "-c"])
+            .arg(
+                args[7]
+                    .strip_suffix(" </dev/tty")
+                    .expect("the line's block reopens the PTY"),
+            )
+            .env("NO_COLOR", "1")
+            .env("FORCE_COLOR", "0")
+            .env("TERM", "foot")
+            .stdin(std::process::Stdio::null())
             .output()
             .unwrap();
         assert_eq!(

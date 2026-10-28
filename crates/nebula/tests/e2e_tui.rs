@@ -55,6 +55,13 @@ impl TuiHarness {
     /// a stub `gh` on PATH so the pull-request row can be driven without a
     /// GitHub account.
     fn spawn_with_env(extra_env: &[(&str, String)]) -> Self {
+        Self::spawn_with_config(extra_env, None)
+    }
+
+    /// [`Self::spawn_with_env`] with `config` as the DATA DIR's
+    /// `config.json` before the TUI starts, for a test that needs a
+    /// SETTING off its default.
+    fn spawn_with_config(extra_env: &[(&str, String)], config: Option<serde_json::Value>) -> Self {
         // Socket paths must stay under SUN_LEN (~104 bytes) — keep the
         // runtime dir short. Tests share one process, so a per-harness
         // sequence keeps each test on its own daemon.
@@ -65,6 +72,10 @@ impl TuiHarness {
         let data_dir = PathBuf::from(format!("/tmp/nebtui-data-{pid}-{seq}"));
         let _ = std::fs::remove_dir_all(&runtime_dir);
         let _ = std::fs::remove_dir_all(&data_dir);
+        if let Some(config) = config {
+            std::fs::create_dir_all(&data_dir).unwrap();
+            std::fs::write(data_dir.join("config.json"), config.to_string()).unwrap();
+        }
         let repos = tempfile::tempdir().unwrap();
 
         let pty = native_pty_system()
@@ -882,7 +893,12 @@ fn tui_drag_past_the_pane_top_autoscrolls_and_copies_the_run() {
         stub_bin.path().display(),
         std::env::var("PATH").unwrap_or_default()
     );
-    let mut tui = TuiHarness::spawn_with_env(&[("PATH", path)]);
+    // The test measures the PANE under the GRID; the default puts it on
+    // the right.
+    let mut tui = TuiHarness::spawn_with_config(
+        &[("PATH", path)],
+        Some(serde_json::json!({"session_pane": "bottom"})),
+    );
     let repo = tui.make_repo("drag-proj");
 
     tui.wait_for_text("create your first project");
@@ -895,13 +911,14 @@ fn tui_drag_past_the_pane_top_autoscrolls_and_copies_the_run() {
     tui.send(ENTER);
     tui.wait_for_text("row 60");
 
-    // The pane's first content row is two below its TERMINAL header;
-    // `row 58` sits near the bottom of the pane.
+    // The pane's first content row is two below its header, the row
+    // with the full-screen button `⤢`; `row 58` sits near the bottom of
+    // the pane.
     let (header_row, content_top, row58, col58) = {
         let parser = tui.parser.lock().unwrap();
         let screen = parser.screen();
-        let (header_row, _) = find_text(screen, "SESSION")
-            .unwrap_or_else(|| panic!("the pane header:\n{}", tui.screen_text()));
+        let (header_row, _) = find_text(screen, "⤢")
+            .unwrap_or_else(|| panic!("the pane header:\n{}", screen.contents()));
         let (row58, col58) = find_text(screen, "row 58").expect("row 58 on screen");
         (header_row, header_row + 2, row58, col58)
     };
