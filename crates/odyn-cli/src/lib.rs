@@ -6,6 +6,8 @@ use odyn::CLI_NAME;
 
 /// The name upstream's help text uses.
 const UPSTREAM: &str = "nebula";
+/// The prefix of upstream's environment variables, as in `NEBULA_LOG`.
+const UPSTREAM_ENV: &str = "NEBULA_";
 
 /// Returns `cmd` with its help text, and every subcommand's, naming odyn:
 /// the descriptions (`about`, `long_about`), each argument's help, and the
@@ -46,7 +48,8 @@ fn rename_arg(arg: Arg) -> Arg {
 /// Renames "nebula" (and "Nebula") where it is a whole word: the command, or
 /// the product in prose. A name inside a file name or a path stays, because
 /// that is the real name on disk: `.nebula.json`, `nebula-settings.json`,
-/// `~/dotfiles/nebula`. `NEBULA_*` variables stay too.
+/// `~/dotfiles/nebula`. A `NEBULA_*` variable takes odyn's prefix
+/// (`NEBULA_LOG` → `ODYN_LOG`), because odyn reads only its own.
 ///
 /// Example blocks line up their descriptions in one column. Renames before a
 /// line's first run of two or more spaces shift that column, so the line is
@@ -79,23 +82,38 @@ fn rename_line(line: &str) -> String {
     head + &tail
 }
 
-/// Renames each whole-word "nebula" in `text`, returning the result and how
-/// many it renamed.
+/// Renames each whole-word "nebula" and each `NEBULA_` variable prefix in
+/// `text`, returning the result and how many it renamed.
 fn rename_words(text: &str) -> (String, usize) {
     let mut out = String::with_capacity(text.len());
     let mut count = 0;
     let mut rest = text;
-    // Both spellings, without lowercasing: that can move byte offsets.
-    let next_at = |s: &str| match (s.find(UPSTREAM), s.find("Nebula")) {
-        (Some(a), Some(b)) => Some(a.min(b)),
-        (a, b) => a.or(b),
+    // Each spelling, without lowercasing: that can move byte offsets.
+    let next_at = |s: &str| {
+        [UPSTREAM, "Nebula", UPSTREAM_ENV]
+            .into_iter()
+            .filter_map(|needle| s.find(needle))
+            .min()
     };
     while let Some(at) = next_at(rest) {
         let (before, from) = rest.split_at(at);
-        let word = &from[..UPSTREAM.len()];
-        let after = &from[UPSTREAM.len()..];
         out.push_str(before);
         let prev = out.chars().last();
+        if let Some(after) = from.strip_prefix(UPSTREAM_ENV) {
+            let var = !prev.is_some_and(|c| c.is_alphanumeric() || c == '_')
+                && after.starts_with(|c: char| c.is_ascii_uppercase());
+            if var {
+                out.push_str(&CLI_NAME.to_ascii_uppercase());
+                out.push('_');
+                count += 1;
+            } else {
+                out.push_str(UPSTREAM_ENV);
+            }
+            rest = after;
+            continue;
+        }
+        let word = &from[..UPSTREAM.len()];
+        let after = &from[UPSTREAM.len()..];
         let next = after.chars().next();
         let next2 = after.chars().nth(1);
         let whole = !prev.is_some_and(|c| c.is_alphanumeric() || "._-/".contains(c))
@@ -190,10 +208,34 @@ mod tests {
     }
 
     #[test]
-    fn leaves_file_names_paths_and_variables() {
+    fn leaves_file_names_and_paths() {
         let text = "write nebula-settings.json, read .nebula.json, \
-                    ~/dotfiles/nebula and NEBULA_LOG, call nebula_core";
+                    ~/dotfiles/nebula, call nebula_core";
         assert_eq!(rename(text), text);
+    }
+
+    #[test]
+    fn renames_variables_and_leaves_lookalikes() {
+        let env = CLI_NAME.to_ascii_uppercase();
+        assert_eq!(
+            rename("unless the current NEBULA_AGENT_ID (`$NEBULA_LOG`) belongs"),
+            format!("unless the current {env}_AGENT_ID (`${env}_LOG`) belongs")
+        );
+        // Not a variable: no name after the prefix, or the prefix is
+        // inside a longer word.
+        let text = "a NEBULA_ prefix, MY_NEBULA_LOG";
+        assert_eq!(rename(text), text);
+    }
+
+    #[test]
+    fn a_renamed_variable_keeps_the_description_column() {
+        let input = padded("NEBULA_LOG=debug nebula", "log more", 35);
+        let expected = padded(
+            &format!("{}_LOG=debug {CLI_NAME}", CLI_NAME.to_ascii_uppercase()),
+            "log more",
+            35,
+        );
+        assert_eq!(rename(&input), expected);
     }
 
     #[test]
