@@ -8,12 +8,16 @@ pub mod claude_catalogue;
 pub mod completion;
 pub mod config;
 pub mod cursor_catalogue;
+pub mod delete_check;
 pub mod diff_tree;
 pub mod dropped_files;
 pub mod event_loop;
 pub mod file_tabs;
+pub mod filter_list;
 pub mod fuzzy;
 pub mod git_diff;
+pub mod git_log;
+pub mod graphics;
 pub mod grep_search;
 pub mod hosts;
 pub mod ipc;
@@ -37,6 +41,7 @@ pub mod pull_request;
 pub mod quick_prompt;
 pub mod remote;
 pub mod review;
+pub mod review_modal;
 pub mod splash;
 pub mod syntax;
 pub mod terminal_tail;
@@ -112,6 +117,46 @@ pub fn run_spawn(
     runtime()?.block_on(ipc::spawn_sibling_for_current_agent(
         &task, kind, worktree, base,
     ))
+}
+
+pub fn run_sessions(json: bool) -> Result<()> {
+    runtime()?.block_on(ipc::list_sessions(json))
+}
+
+pub fn run_read_session(session: &str, lines: u32) -> Result<()> {
+    runtime()?.block_on(ipc::read_session(session, lines))
+}
+
+pub fn run_ask_session(session: &str, question: String, timeout: u64, wait: bool) -> Result<()> {
+    runtime()?.block_on(ipc::ask_session(session, &question, timeout, wait))
+}
+
+pub fn run_orchestrator_list(json: bool) -> Result<()> {
+    runtime()?.block_on(ipc::orchestrator_list(json))
+}
+
+pub fn run_orchestrator_read(session: &str, bytes: u32) -> Result<()> {
+    runtime()?.block_on(ipc::orchestrator_read(session, bytes))
+}
+
+pub fn run_orchestrator_send(session: &str, prompt: String) -> Result<()> {
+    runtime()?.block_on(ipc::orchestrator_send(session, &prompt))
+}
+
+pub fn run_orchestrator_spawn(
+    project: &str,
+    worktree: Option<&str>,
+    base: Option<String>,
+    kind: nebula_core::AgentKind,
+    task: String,
+) -> Result<()> {
+    runtime()?.block_on(ipc::orchestrator_spawn(
+        project, worktree, base, kind, &task,
+    ))
+}
+
+pub fn run_orchestrator_review(session: &str, tabs: Vec<nebula_core::ReviewTabKind>) -> Result<()> {
+    runtime()?.block_on(ipc::orchestrator_review(session, tabs))
 }
 
 /// `nebula add <dir>` / bare `nebula <dir>` — register a directory as a

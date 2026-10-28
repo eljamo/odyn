@@ -87,10 +87,11 @@
   falling back to `origin/HEAD` in a repo that has no branch of that name.
 - **Worktrees made outside nebula show up anyway — WORKTREE SYNC.** Every 2 s the DAEMON mtime-probes
   the git files a worktree operation touches — the repo's shared `.git/HEAD`, the `.git/worktrees`
-  directory, and each linked checkout's own `HEAD` — and only when the newest of those stamps has moved
-  does it spend a `git worktree list` and reconcile the rows. So an agent that runs `git worktree add`
-  itself, a `git checkout` you did in another terminal, or a worktree someone removed lands on the
-  grid within a couple of seconds without a restart, while an idle repo costs nothing but a few
+  directory, and each linked checkout's own `HEAD` — and only when the newest of those stamps has moved,
+  or a registered checkout's directory has disappeared, does it spend a `git worktree list` and
+  reconcile the rows. So an agent that runs `git worktree add` itself, a `git checkout` you did in
+  another terminal, or a worktree someone removed (with `git worktree remove` or a plain `rm -rf`)
+  lands on the grid within a couple of seconds without a restart, while an idle repo costs nothing but a few
   `stat` calls (`NEBULA_WORKTREE_SYNC_MS` overrides the 2 s beat; the e2e tests turn it down to
   100 ms). This structural sync is the *only* git polling the DAEMON does — the pull request lookups
   further down are the TUI's own.
@@ -159,6 +160,11 @@
   suppresses the idle notification that normally un-sticks one, so nebula also reads the CLI's terminal
   progress-bar escapes (OSC 9;4) straight off the PTY. That signal survives a cancel, and it stays busy
   while a permission prompt is open — so it can't mark an agent done while it is actually waiting on you.
+- **Codex's terminal lifecycle also reports completion.** Codex 0.163.0 uses OSC 7501 with
+  `state=working:app=codex` and `state=idle:app=codex` rather than OSC 9;4. Nebula reads these through
+  the same busy/idle path, so a finished response leaves yellow even when its hooks are awaiting trust.
+  `blocked` counts as busy; `clear` releases terminal ownership and is ignored. Completion still goes
+  through the STOP GATE when subagents are tracked.
 - **…and the IDLE PROMPT, which is a hold rather than a finish.** Claude posts a
   `Notification{idle_prompt}` after roughly 60 s parked at the input box with nobody touching the
   keyboard, and that is the notification which un-sticks a turn that ended without a `Stop` — a
@@ -280,7 +286,12 @@
   session in the directory its transcript recorded, the old checkout. Cursor and OpenCode resume silent
   and wait for your next prompt (`opencode --session <id> --prompt "<note>"` loads the session but never
   submits the note); Muse reboots fresh with no note (no resume flag mapped). The restart is the only way there: an agent CLI can't `cd` out of the
-  directory it was started in.
+  directory it was started in. When the restart can't bring the conversation back — no session id stored, a
+  Claude session id with no transcript behind it, or a resume that dies within its first seconds and is
+  restarted fresh — the
+  CLIs that take the note (Claude, Codex, Pi) open instead on one saying the conversation could not be
+  carried over, and the agent asks you to restate the request rather than guessing at it. (Pi creates a
+  missing session instead of failing, so a lost Pi session is not detected.)
 - **Ask the agent for another session and it starts one.** Tell a Claude session "start a new nebula
   session that fixes the login redirect" and it runs `nebula spawn "<task>"`: the daemon starts a second
   agent beside it — same worktree, same harness, model and effort unless `--kind claude|codex|cursor|pi|muse|grok|opencode`
@@ -292,17 +303,19 @@
   that branch — cut first, from the same base `nebula worktree` uses, when there is none — while the
   one you asked from stays in its own checkout. Claude learns this from the same appended system
   prompt as the worktree rule, plus a `Bash(nebula spawn:*)` permission.
-- **Ask the agent to show you a file and it opens in nebula.** Say "open it" or "show me the examples"
-  and the session runs `nebula open <file>…`; every TUI attached to the daemon raises its file tabs on
-  them — a modal with one tab per file, the focused one previewed with syntax highlighting (a
-  markdown file as a rendered page), `Enter`
+- **Ask the agent to show you a file, image or diagram and it opens in nebula.** Say "open it",
+  "show me the examples" or "show the diagram" and the session runs `nebula open <file>…`; every TUI
+  attached to the daemon raises its file tabs on them — a modal with one tab per file, the focused one
+  previewed with syntax highlighting, rendered Markdown, inline images or Mermaid diagrams, `Enter`
   editing it in place — so the agent puts the file in front of you instead of pasting it into the
   reply. Only when you ask: the appended prompt forbids opening anything unprompted, so an agent that
-  wants you to look at its work names the path and waits. And text only: the CLI resolves the paths
-  against the session's own directory and refuses a path that isn't there or isn't a text file (a NUL
-  byte in its first 8 KiB, git's own test — a terminal has nothing to show for a PNG); the daemon only
-  checks the caller is a known session and passes the agent's checkout along as the editor's working
-  directory. Same appended prompt, plus a `Bash(nebula open:*)` permission.
+  wants you to look at its work names the path and waits. The CLI resolves paths against the session's
+  own directory and accepts text, supported local images and Mermaid diagrams (`.mmd` or `mermaid`
+  fences in Markdown); unrelated binaries are refused before IPC. Images are decoded locally (no remote
+  fetching) and drawn with the inline graphics setting's portable half-block renderer; Mermaid uses a
+  local `mmdc` when one is on PATH and otherwise shows the source plus a one-line install hint. The
+  daemon only checks the caller is a known session and passes the agent's checkout along as the
+  editor's working directory. Same appended prompt, plus a `Bash(nebula open:*)` permission.
 - **Everything persists in SQLite** (`~/.local/share/nebula/nebula.db` or the platform equivalent):
   projects, worktrees, agents (with kind + CLI session ids), links, and your last selection.
 - **Sessions warm up, then get reaped.** The daemon can pre-spawn an agent CLI in the selected worktree
@@ -351,8 +364,11 @@ quit, and why a machine with no `gh` — or one that is unauthenticated, or poin
 remote — just shows no rows instead of an error. The selected project is asked about most: its
 selected worktree's pull request and its open list on every tick, one process each, and its other
 checkouts on a sweep that takes one of them per tick — so every band learns whether its branch
-has merged without the cursor ever visiting it (the ROOT WORKTREE is left out; nobody deletes it over a
-merge). Nothing is stacked while a call is in flight, and each is abandoned after 20 s. The other
+has merged without the cursor ever visiting it. A merged or closed answer is kept only when it still
+belongs to that checkout: the PR head branch must match the checkout branch, the repo's default branch
+never wears a merged PR, and the checkout must have no commits beyond the PR's recorded head SHA. That
+keeps an old PR from `main` into `dev` from turning today's `main` purple. Nothing is stacked while a
+call is in flight, and each is abandoned after 20 s. The other
 projects' open pull requests and open issues are swept too, one project per tick on the five-minute
 beat, so a project switched to shows lists minutes old at worst. The selected
 worktree and the open list settle onto a steady 15 s beat; the swept checkouts onto 5 min, since a

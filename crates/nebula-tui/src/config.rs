@@ -42,8 +42,12 @@ pub const PANE_SIDES: &[&str] = &[
 /// the most recent few shown until Tab opens the rest
 /// ([`crate::launcher::LIST_RECENT`]) — then the NESTED layout: each
 /// worktree a header, and under it, along a rail, a full-width card per
-/// session and terminal, every worktree open until Tab folds it.
-pub const WORKTREE_LAYOUTS: &[&str] = &["cards", "list", "nested"];
+/// session and terminal, every worktree open until Tab folds it — then
+/// COLUMNS: projects, worktrees and sessions beside the pane.
+pub const WORKTREE_LAYOUTS: &[&str] = &["cards", "list", "nested", "columns"];
+
+/// Inline graphics choices (Settings → Appearance).
+pub const INLINE_GRAPHICS: &[&str] = crate::graphics::INLINE_GRAPHICS_MODES;
 
 /// The **Preset text** choices (Settings → Sessions), in the order the row
 /// cycles them: the [`PresetText`] sides by label.
@@ -395,14 +399,17 @@ pub enum SettingKind {
     FeedbackSound,
     PresetText,
     DeleteEmptyWorktree,
+    AutoCleanupMerged,
     ShowAllWorktrees,
     Theme,
     Animations,
     BlackBackground,
     HideCardMarks,
     HighlightCurrentCard,
+    SourceControlGraph,
     SessionPane,
     WorktreeLayout,
+    InlineGraphics,
     ExpandAllWorktrees,
     CardIssueNumber,
     HideDraftPrs,
@@ -501,6 +508,7 @@ impl SettingKind {
             | SettingKind::QuickPromptNewWorktree => (2026, 9, 22),
             // v0.38.0, then rows not yet in a release
             SettingKind::DeleteEmptyWorktree
+            | SettingKind::AutoCleanupMerged
             | SettingKind::ShowAllWorktrees
             | SettingKind::HideCardMarks
             | SettingKind::WorktreeLayout
@@ -509,6 +517,7 @@ impl SettingKind {
             SettingKind::HighlightCurrentCard => (2026, 9, 28),
             SettingKind::AskBeforeArchive => (2026, 10, 3),
             SettingKind::ConfirmDragMove => (2026, 10, 2),
+            SettingKind::SourceControlGraph | SettingKind::InlineGraphics => (2026, 10, 9),
         }
     }
 
@@ -630,6 +639,12 @@ pub const SETTINGS_TABS: &[SettingsTab] = &[
                 group: "",
             },
             SettingSpec {
+                kind: SettingKind::AutoCleanupMerged,
+                label: "Auto-clean merged worktrees",
+                hint: "When a linked worktree's PR is safely detected as merged, archive idle sessions and remove the worktree (root/default/base branches are never touched)",
+                group: "",
+            },
+            SettingSpec {
                 kind: SettingKind::ShowAllWorktrees,
                 label: "Show all worktrees",
                 hint: "Every worktree gets a band on the grid, even an empty one (d deletes it); deleting a last card keeps the worktree unless Delete emptied worktree is on",
@@ -683,6 +698,12 @@ pub const SETTINGS_TABS: &[SettingsTab] = &[
                 group: "",
             },
             SettingSpec {
+                kind: SettingKind::InlineGraphics,
+                label: "Inline graphics",
+                hint: "Render images and Mermaid diagrams inline: auto, protocol names, halfblocks, or off",
+                group: "",
+            },
+            SettingSpec {
                 kind: SettingKind::ExpandAllWorktrees,
                 label: "Expand all worktrees",
                 hint: "Show every worktree's sessions and terminals at once, with no Tab to open one (off = one worktree opens at a time, with Tab)",
@@ -710,6 +731,12 @@ pub const SETTINGS_TABS: &[SettingsTab] = &[
                 kind: SettingKind::HideDraftPrs,
                 label: "Draft pull requests",
                 hint: "Show or hide draft pull requests in / search; checkouts always stay",
+                group: "",
+            },
+            SettingSpec {
+                kind: SettingKind::SourceControlGraph,
+                label: "Show commit graph",
+                hint: "Add the read-only git commit graph under the g diff view's changed files",
                 group: "",
             },
         ]),
@@ -943,6 +970,82 @@ fn grouped(
     rows
 }
 
+/// SETTINGS SEARCH (`/` in the overlay): the rows of every tab that hold
+/// each word of `query`, any case, in strip order, each paired with the
+/// tab it lives on. A section opens under a header naming where its rows
+/// live (`Hotkeys · Panes`, or the bare tab title for ungrouped rows), so
+/// a match never has to be read out of context. A row's text is its tab,
+/// section, label and hint, plus the chords a Hotkeys row answers to, so
+/// `^f` finds what Ctrl+F does. Empty for a query with no words.
+pub fn search_rows(
+    cfg: &Config,
+    keymap: &crate::keymap::Keymap,
+    query: &str,
+) -> Vec<(usize, SettingsRow)> {
+    let words: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();
+    let mut out = Vec::new();
+    if words.is_empty() {
+        return out;
+    }
+    for (tab, spec) in SETTINGS_TABS.iter().enumerate() {
+        let mut group = String::new();
+        let mut header: Option<String> = None;
+        for row in settings_rows(tab) {
+            let index = match &row {
+                SettingsRow::Header(title) => {
+                    group = title.clone();
+                    continue;
+                }
+                SettingsRow::Setting(i) | SettingsRow::Hotkey(i) => *i,
+                SettingsRow::Blank | SettingsRow::Project => continue,
+            };
+            let text = format!(
+                "{} {group} {}",
+                spec.title,
+                search_text(cfg, keymap, tab, index)
+            )
+            .to_lowercase();
+            if !words.iter().all(|w| text.contains(w.as_str())) {
+                continue;
+            }
+            let title = if group.is_empty() {
+                spec.title.to_string()
+            } else {
+                format!("{} · {group}", spec.title)
+            };
+            if header.as_deref() != Some(title.as_str()) {
+                if !out.is_empty() {
+                    out.push((tab, SettingsRow::Blank));
+                }
+                out.push((tab, SettingsRow::Header(title.clone())));
+                header = Some(title);
+            }
+            out.push((tab, row));
+        }
+    }
+    out
+}
+
+/// What [`search_rows`] matches a row against, past its tab and section:
+/// its label and hint, and a Hotkeys row's chords.
+fn search_text(cfg: &Config, keymap: &crate::keymap::Keymap, tab: usize, index: usize) -> String {
+    match SETTINGS_TABS.get(tab).map(|t| t.body) {
+        Some(TabBody::Hotkeys) => crate::keymap::spec_at(index)
+            .map(|s| format!("{} {} {}", s.label, keymap.display_at(index), s.hint))
+            .unwrap_or_default(),
+        Some(TabBody::Agents) => {
+            let label = match AGENTS_HEAD.get(index) {
+                Some(spec) => spec.label,
+                None => cfg.agent_row(index).map_or("", |(_, field)| field.label()),
+            };
+            format!("{label} {}", cfg.agent_hint_by_index(index))
+        }
+        _ => setting_at(tab, index)
+            .map(|s| format!("{} {}", s.label, s.hint))
+            .unwrap_or_default(),
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
 pub struct Config {
@@ -1043,6 +1146,12 @@ pub struct Config {
     /// [`Config::show_all_worktrees`] on too: only the question is that
     /// setting's to drop.
     pub delete_empty_worktree: bool,
+    /// AUTO-CLEAN MERGED WORKTREES: when the PR row for a linked worktree is
+    /// a trustworthy merge, ask the daemon to archive idle sessions there
+    /// and remove the checkout from disk. Off by default; root/default/base
+    /// branches, dirty checkouts, active sessions and mismatched heads are
+    /// skipped.
+    pub auto_cleanup_merged: bool,
     /// SHOW ALL WORKTREES: every checkout of the project gets a BAND on
     /// the grid, one with nothing running in it too — an overview of the
     /// checkouts, any of them a place to aim `p`/`n` at. On by default.
@@ -1095,6 +1204,12 @@ pub struct Config {
     /// [`Config::worktree_layout_word`], so a word off the list is the
     /// cards.
     pub worktree_layout: String,
+    /// INLINE GRAPHICS: images and Mermaid diagrams in file previews.
+    /// `off` shows source/hints only; enabled values currently use the
+    /// Unicode half-block renderer, which works in native terminals,
+    /// ttyd/xterm.js and over ssh. Protocol names are accepted as stable
+    /// config values for future native protocol renderers.
+    pub inline_graphics: String,
     /// EXPAND ALL WORKTREES: every BAND on the GRID laid out open at once
     /// — each worktree's sessions and terminals wrapped into rows under
     /// its rule, every entry of the compact LIST listed — so there is no
@@ -1124,6 +1239,10 @@ pub struct Config {
     /// the SESSIONS PANEL — those describe work you have, not work you are
     /// browsing. Off by default: a config predating the key hides nothing.
     pub hide_draft_prs: bool,
+    /// SOURCE CONTROL GRAPH: when on, the `g` DIFF VIEWER reads a
+    /// read-only commit graph under the changed files. Off by default, and
+    /// with it off the DIFF VIEWER does not run `git log` or `rev-list`.
+    pub source_control_graph: bool,
     /// RETIRED with the line counts always drawn. Through 0.37 the **Card
     /// line counts** SETTING (Settings → Appearance, off by default)
     /// switched each card's `+3 files` to `+3 files +120 -45`. Every card
@@ -1454,6 +1573,7 @@ impl Default for Config {
             feedback_sound: "Sosumi".into(),
             preset_text: PresetText::DEFAULT.as_str().into(),
             delete_empty_worktree: false,
+            auto_cleanup_merged: false,
             show_all_worktrees: true,
             theme: "default".into(),
             animations: true,
@@ -1462,10 +1582,12 @@ impl Default for Config {
             highlight_current_card: true,
             session_pane: crate::launcher::PaneSide::default().as_str().into(),
             worktree_layout: WORKTREE_LAYOUTS[0].into(),
+            inline_graphics: crate::graphics::DEFAULT_INLINE_GRAPHICS.into(),
             expand_all_worktrees: false,
             hide_card_prompt: false,
             card_issue_number: true,
             hide_draft_prs: false,
+            source_control_graph: false,
             card_line_changes: false,
             skip_session_naming: false,
             confirm_on_archive: false,
@@ -1647,6 +1769,11 @@ impl Config {
         self.worktree_layout_word() == "nested"
     }
 
+    /// `worktree_layout` says the three-column layout rather than the cards.
+    pub fn columns_layout(&self) -> bool {
+        self.worktree_layout_word() == "columns"
+    }
+
     /// The **Worktree layout** in force, as one of [`WORKTREE_LAYOUTS`]:
     /// the stored word when it is on the list, else the cards.
     pub fn worktree_layout_word(&self) -> &'static str {
@@ -1656,6 +1783,14 @@ impl Config {
             .copied()
             .find(|word| word.eq_ignore_ascii_case(stored))
             .unwrap_or(WORKTREE_LAYOUTS[0])
+    }
+
+    pub fn inline_graphics_label(&self) -> &'static str {
+        crate::graphics::mode_label(&self.inline_graphics)
+    }
+
+    pub fn graphics_mode(&self) -> crate::graphics::GraphicsMode {
+        crate::graphics::graphics_mode(self.inline_graphics_label())
     }
 
     /// The editor the file overlays launch: `ODYN_EDITOR` when set,
@@ -2291,6 +2426,7 @@ impl Config {
             SettingKind::FeedbackSound => self.feedback_sound.clone(),
             SettingKind::PresetText => self.preset_text().as_str().into(),
             SettingKind::DeleteEmptyWorktree => on_off(self.delete_empty_worktree).into(),
+            SettingKind::AutoCleanupMerged => on_off(self.auto_cleanup_merged).into(),
             SettingKind::ShowAllWorktrees => on_off(self.show_all_worktrees).into(),
             SettingKind::AskBeforeArchive => on_off(self.ask_before_archive).into(),
             SettingKind::Theme => self.theme.clone(),
@@ -2300,9 +2436,11 @@ impl Config {
             SettingKind::HighlightCurrentCard => on_off(self.highlight_current_card).into(),
             SettingKind::SessionPane => self.pane_side().as_str().into(),
             SettingKind::WorktreeLayout => self.worktree_layout_word().into(),
+            SettingKind::InlineGraphics => self.inline_graphics_label().into(),
             SettingKind::ExpandAllWorktrees => on_off(self.expand_all_worktrees).into(),
             SettingKind::CardIssueNumber => on_off(self.card_issue_number).into(),
             SettingKind::HideDraftPrs => shown_hidden(self.hide_draft_prs).into(),
+            SettingKind::SourceControlGraph => on_off(self.source_control_graph).into(),
             // A project row with no project to speak of: what one without
             // an entry would show.
             SettingKind::RunCommand | SettingKind::OpenCommand => {
@@ -2383,6 +2521,9 @@ impl Config {
             SettingKind::DeleteEmptyWorktree => {
                 self.delete_empty_worktree = !self.delete_empty_worktree;
             }
+            SettingKind::AutoCleanupMerged => {
+                self.auto_cleanup_merged = !self.auto_cleanup_merged;
+            }
             SettingKind::ShowAllWorktrees => {
                 self.show_all_worktrees = !self.show_all_worktrees;
             }
@@ -2414,6 +2555,10 @@ impl Config {
                 let now = self.worktree_layout_word();
                 self.worktree_layout = cycle_choice(now, WORKTREE_LAYOUTS, step).into();
             }
+            SettingKind::InlineGraphics => {
+                self.inline_graphics =
+                    cycle_choice(self.inline_graphics_label(), INLINE_GRAPHICS, step).into();
+            }
             SettingKind::ExpandAllWorktrees => {
                 self.expand_all_worktrees = !self.expand_all_worktrees;
             }
@@ -2422,6 +2567,9 @@ impl Config {
             }
             SettingKind::HideDraftPrs => {
                 self.hide_draft_prs = !self.hide_draft_prs;
+            }
+            SettingKind::SourceControlGraph => {
+                self.source_control_graph = !self.source_control_graph;
             }
             // One project's, not the file's, and typed: see `set_project_text`.
             SettingKind::RunCommand | SettingKind::OpenCommand => {}
@@ -2838,6 +2986,10 @@ mod tests {
         (
             "0.44.0",
             include_str!("../../nebula-core/fixtures/config-0.44.0.json"),
+        ),
+        (
+            "0.45.0",
+            include_str!("../../nebula-core/fixtures/config-0.45.0.json"),
         ),
     ];
 
@@ -3541,6 +3693,27 @@ mod tests {
         assert!(cfg.delete_empty_worktree);
     }
 
+    /// AUTO-CLEAN MERGED WORKTREES is opt-in, sits on the Sessions tab, and
+    /// persists under its own key.
+    #[test]
+    fn auto_cleanup_merged_is_off_by_default_and_toggles() {
+        let mut cfg = Config::default();
+        assert!(!cfg.auto_cleanup_merged);
+        let (tab, row) = locate(SettingKind::AutoCleanupMerged).unwrap();
+        assert_eq!(SETTINGS_TABS[tab].title, "Sessions");
+        assert_eq!(cfg.value_label(SettingKind::AutoCleanupMerged), "off");
+        cfg.cycle(tab, row, 0);
+        assert!(cfg.auto_cleanup_merged);
+        assert_eq!(cfg.value_label(SettingKind::AutoCleanupMerged), "on");
+        cfg.cycle(tab, row, -1);
+        assert!(!cfg.auto_cleanup_merged, "←/→ toggle it like Enter does");
+
+        let cfg: Config = serde_json::from_str("{}").unwrap();
+        assert!(!cfg.auto_cleanup_merged, "a missing key reads as off");
+        let cfg: Config = serde_json::from_str(r#"{"auto_cleanup_merged": true}"#).unwrap();
+        assert!(cfg.auto_cleanup_merged);
+    }
+
     /// SHOW ALL WORKTREES starts on — every checkout gets a band — sits
     /// on the Sessions tab beside the delete it changes, toggles like any
     /// bool, and a config predating the key reads as on.
@@ -3677,6 +3850,21 @@ mod tests {
         assert!(!legacy.hide_draft_prs);
     }
 
+    #[test]
+    fn source_control_graph_defaults_off_and_toggles_on_the_appearance_tab() {
+        let mut cfg = Config::default();
+        assert!(!cfg.source_control_graph);
+        assert_eq!(cfg.value_label(SettingKind::SourceControlGraph), "off");
+
+        let (tab, row) = locate(SettingKind::SourceControlGraph).unwrap();
+        assert_eq!(SETTINGS_TABS[tab].title, "Appearance");
+        cfg.cycle(tab, row, 0);
+        assert!(cfg.source_control_graph);
+        assert_eq!(cfg.value_label(SettingKind::SourceControlGraph), "on");
+        cfg.cycle(tab, row, 1);
+        assert!(!cfg.source_control_graph);
+    }
+
     /// CARD PROMPT: retired with every card carrying its last prompt. The
     /// key an older build wrote (`hide_card_prompt`, off by default) still
     /// loads to what it wrote and is written back as stored, but no tab
@@ -3771,8 +3959,13 @@ mod tests {
         assert_eq!(SETTINGS_TABS[tab].title, "Appearance");
         assert_eq!(
             locate(SettingKind::WorktreeLayout),
-            Some((tab, row - 1)),
+            Some((tab, row - 2)),
             "under the layout it opens"
+        );
+        assert_eq!(
+            locate(SettingKind::InlineGraphics),
+            Some((tab, row - 1)),
+            "after the graphics row"
         );
         cfg.cycle(tab, row, 0);
         assert!(cfg.expand_all_worktrees);
@@ -3792,10 +3985,37 @@ mod tests {
         assert!(!legacy.expand_all_worktrees, "a missing key reads as off");
     }
 
+    #[test]
+    fn inline_graphics_defaults_to_auto_cycles_and_persists() {
+        let mut cfg = Config::default();
+        assert_eq!(cfg.inline_graphics_label(), "auto");
+        assert_eq!(cfg.value_label(SettingKind::InlineGraphics), "auto");
+        assert_eq!(
+            cfg.graphics_mode(),
+            crate::graphics::GraphicsMode::Halfblocks
+        );
+
+        let (tab, row) = locate(SettingKind::InlineGraphics).unwrap();
+        assert_eq!(SETTINGS_TABS[tab].title, "Appearance");
+        cfg.cycle(tab, row, 1);
+        assert_eq!(cfg.inline_graphics, "kitty");
+        cfg.cycle(tab, row, -1);
+        assert_eq!(cfg.inline_graphics, "auto");
+        cfg.inline_graphics = "off".into();
+        assert_eq!(cfg.graphics_mode(), crate::graphics::GraphicsMode::Off);
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        cfg.save_to(&path).unwrap();
+        let raw = std::fs::read_to_string(&path).unwrap();
+        assert!(raw.contains(r#""inline_graphics": "off""#), "{raw}");
+        assert_eq!(load_from(&path).inline_graphics, "off");
+    }
+
     /// CARD LINE COUNTS: retired with every card counting its lines. The
     /// key an older build wrote (`card_line_changes`, off by default) still
     /// loads to what it wrote and is written back as stored, but no tab
-    /// shows it any more — Appearance ends on DRAFT PULL REQUESTS.
+    /// shows it any more — Appearance carries later source-control settings.
     #[test]
     fn card_line_counts_is_retired_but_still_round_trips() {
         assert!(
@@ -3823,8 +4043,8 @@ mod tests {
         );
         assert_eq!(
             rows.last().map(|r| r.kind),
-            Some(SettingKind::HideDraftPrs),
-            "Appearance ends on DRAFT PULL REQUESTS"
+            Some(SettingKind::SourceControlGraph),
+            "Appearance ends on SOURCE CONTROL GRAPH"
         );
     }
 
@@ -3981,14 +4201,15 @@ mod tests {
     }
 
     /// The **Worktree layout**: the cards out of the box, cycled from its
-    /// Appearance row to the compact list, on to the nested layout and
-    /// round to the cards again, persisted under `worktree_layout`. A
+    /// Appearance row to the compact list, on to the nested layout, then
+    /// columns, and round to the cards again, persisted under `worktree_layout`. A
     /// config predating the key, or holding a word off the list, reads as
     /// the cards.
     #[test]
     fn worktree_layout_defaults_to_cards_cycles_and_persists() {
         let mut cfg = Config::default();
         assert!(!cfg.list_layout());
+        assert!(!cfg.columns_layout());
         let (tab, row) = locate(SettingKind::WorktreeLayout).unwrap();
         assert_eq!(SETTINGS_TABS[tab].title, "Appearance");
         assert_eq!(cfg.value_label(SettingKind::WorktreeLayout), "cards");
@@ -4014,19 +4235,24 @@ mod tests {
         assert!(!odd.list_layout(), "a word off the list");
         assert_eq!(odd.value_label(SettingKind::WorktreeLayout), "cards");
 
-        // The third choice: one step on from the list, and one more wraps
-        // round to the cards.
+        // The third and fourth choices: one step on from the list reaches
+        // nested, another reaches columns, and one more wraps to cards.
         let mut cfg = Config::default();
         cfg.cycle(tab, row, 1);
         cfg.cycle(tab, row, 1);
-        assert!(cfg.nested_layout() && !cfg.list_layout());
+        assert!(cfg.nested_layout() && !cfg.list_layout() && !cfg.columns_layout());
         assert_eq!(cfg.value_label(SettingKind::WorktreeLayout), "nested");
         cfg.save_to(&path).unwrap();
         assert!(load_from(&path).nested_layout());
         cfg.cycle(tab, row, 1);
+        assert!(cfg.columns_layout());
+        assert_eq!(cfg.value_label(SettingKind::WorktreeLayout), "columns");
+        cfg.save_to(&path).unwrap();
+        assert!(load_from(&path).columns_layout());
+        cfg.cycle(tab, row, 1);
         assert_eq!(cfg.value_label(SettingKind::WorktreeLayout), "cards");
         cfg.cycle(tab, row, -1);
-        assert!(cfg.nested_layout(), "and back from the cards");
+        assert!(cfg.columns_layout(), "and back from the cards");
     }
 
     /// The QUICK PROMPT's focus toggle: off unless the user turns it on,

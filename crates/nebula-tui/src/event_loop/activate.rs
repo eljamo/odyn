@@ -33,13 +33,13 @@ use nebula_core::{AgentId, ClientRequest, SessionRef, WorktreeId};
 /// goes and the row's action runs. A row that is not there (a click on a
 /// blank line) does nothing.
 pub(super) fn menu_row(app: &mut App, index: usize, out: &mut Vec<ClientRequest>) {
-    let Some(Overlay::Menu(menu)) = &app.overlay else {
+    let Some(Overlay::Menu(menu)) = &app.modals.overlay else {
         return;
     };
     let Some(action) = menu.items.get(index).map(|item| item.action.clone()) else {
         return;
     };
-    app.overlay = None;
+    app.modals.overlay = None;
     run_menu_action(app, action, out);
 }
 
@@ -49,7 +49,7 @@ pub(super) fn menu_row(app: &mut App, index: usize, out: &mut Vec<ClientRequest>
 /// browser for a pull request, an attach for a session waiting on you),
 /// which a click follows too; the two chords name theirs.
 pub(super) fn palette_row(app: &mut App, landing: Option<Landing>, out: &mut Vec<ClientRequest>) {
-    let Some(Overlay::Palette(palette)) = &app.overlay else {
+    let Some(Overlay::Palette(palette)) = &app.modals.overlay else {
         return;
     };
     let Some(target) = palette.selected_target().cloned() else {
@@ -57,7 +57,7 @@ pub(super) fn palette_row(app: &mut App, landing: Option<Landing>, out: &mut Vec
     };
     let attaches = palette.enter_attaches;
     let landing = landing.unwrap_or_else(|| Landing::for_enter_on(app, &target, attaches));
-    app.overlay = None;
+    app.modals.overlay = None;
     jump_to_target(app, target, landing, out);
 }
 
@@ -65,9 +65,9 @@ pub(super) fn palette_row(app: &mut App, landing: Option<Landing>, out: &mut Vec
 /// Enter on a typed destination: nebula leaves this machine's UI for a
 /// fresh `nebula ssh` at it (the daemon and its sessions stay up).
 pub(super) fn host(app: &mut App, entry: crate::hosts::HostEntry) {
-    app.overlay = None;
-    app.pending_ssh = Some(entry);
-    app.should_quit = true;
+    app.modals.overlay = None;
+    app.chrome.pending_ssh = Some(entry);
+    app.chrome.should_quit = true;
 }
 
 /// The METRICS modal's selected row — Enter, or a click on the row the
@@ -75,22 +75,22 @@ pub(super) fn host(app: &mut App, entry: crate::hosts::HostEntry) {
 /// session. Nebula's own rows (the daemon, this UI) carry no session and
 /// do nothing.
 pub(super) fn metrics_row(app: &mut App, out: &mut Vec<ClientRequest>) {
-    let Some(Overlay::Metrics(view)) = &app.overlay else {
+    let Some(Overlay::Metrics(view)) = &app.modals.overlay else {
         return;
     };
     let Some(Some(sref)) = view.rows.get(view.selected).cloned() else {
         return;
     };
-    app.overlay = None;
+    app.modals.overlay = None;
     open_session(app, sref, out);
 }
 
-/// Move the DIFF modal's file cursor to `index` (clamped) and read that
-/// file's diff when the cursor actually moved — ↑/↓ and a click on a file
-/// row alike.
+/// Move the DIFF modal's sidebar cursor to `index` (clamped) and read the
+/// right pane when the cursor actually moved — ↑/↓ and a click on a row
+/// alike.
 pub(super) fn diff_file(view: &mut DiffView, index: i64) {
-    if view.select(index) {
-        crate::git_diff::load_selected_diff(view);
+    if view.side_select(index) {
+        crate::git_log::load_selected(view);
     }
 }
 
@@ -99,23 +99,37 @@ pub(super) fn diff_file(view: &mut DiffView, index: i64) {
 /// or unfolds as well. On a file's row that is all there is to choose, so
 /// in the flat list this is `diff_file`.
 pub(super) fn diff_row(view: &mut DiffView, index: i64) {
-    let moved = view.select(index);
-    if view.toggle_dir(view.cursor()) || moved {
-        crate::git_diff::load_selected_diff(view);
+    let moved = view.side_select(index);
+    let changed = match view.place {
+        crate::app::Place::ChangesHeader | crate::app::Place::GraphHeader => {
+            view.fold_section(None)
+        }
+        crate::app::Place::Changes => view.toggle_dir(view.cursor()),
+        crate::app::Place::Graph => crate::git_log::fold(view, None),
+    };
+    if changed || moved {
+        crate::git_log::load_selected(view);
     }
 }
 
-/// `→` / `←` in the DIFF modal's tree: open or fold the directory under the
-/// cursor, stepping into an open one or out to the parent's row, and read
-/// whatever the cursor came to rest on.
-pub(super) fn diff_tree_step(view: &mut DiffView, inward: bool) {
-    let moved = if inward {
-        view.expand_selected()
-    } else {
-        view.collapse_selected()
+/// `→` / `←` in the DIFF modal: unfold or fold the section, commit or tree
+/// directory under the cursor, and read whatever the cursor came to rest on.
+pub(super) fn diff_fold(view: &mut DiffView, inward: bool) {
+    let moved = match view.place {
+        crate::app::Place::ChangesHeader | crate::app::Place::GraphHeader => {
+            view.fold_section(Some(inward))
+        }
+        crate::app::Place::Changes => {
+            if inward {
+                view.expand_selected()
+            } else {
+                view.collapse_selected()
+            }
+        }
+        crate::app::Place::Graph => crate::git_log::fold(view, Some(inward)),
     };
     if moved {
-        crate::git_diff::load_selected_diff(view);
+        crate::git_log::load_selected(view);
     }
 }
 
@@ -125,7 +139,7 @@ pub(super) fn diff_tree_step(view: &mut DiffView, inward: bool) {
 /// reads a diff.
 pub(super) fn diff_tree_toggled(view: &mut DiffView) {
     if view.toggle_tree() {
-        crate::git_diff::load_selected_diff(view);
+        crate::git_log::load_selected(view);
     }
 }
 
@@ -133,8 +147,12 @@ pub(super) fn diff_tree_toggled(view: &mut DiffView) {
 /// Esc: the file list narrows, and when that moved the cursor onto another
 /// file its diff is read.
 pub(super) fn diff_filter_changed(view: &mut DiffView) {
-    if view.apply_filter() {
-        crate::git_diff::load_selected_diff(view);
+    let changed = view.apply_filter();
+    if let Some(log) = &mut view.log {
+        log.apply_filter(&view.filter);
+    }
+    if changed || matches!(view.place, crate::app::Place::Graph) {
+        crate::git_log::load_selected(view);
     }
 }
 
@@ -160,7 +178,7 @@ pub(super) fn worktrees_row(app: &mut App, out: &mut Vec<ClientRequest>) {
         .or_else(|| app.selected_worktree_issue().map(|i| i.url.clone()));
     match link {
         Some(url) => open_link(app, &url, out),
-        None => app.focus = Focus::Sessions,
+        None => app.nav.focus = Focus::Sessions,
     }
 }
 
@@ -180,8 +198,8 @@ pub(super) fn cloud_link(app: &mut App, out: &mut Vec<ClientRequest>) -> bool {
 /// FOCUS and the input lock.
 pub(super) fn attach(app: &mut App, sref: SessionRef, out: &mut Vec<ClientRequest>) {
     attach_now(app, sref, out);
-    app.focus = Focus::Terminal;
-    app.term_locked = true;
+    app.nav.focus = Focus::Terminal;
+    app.pane.term_locked = true;
 }
 
 /// The FOLLOW-UP CHEVRON chosen — `Space` on the card, a click on the
@@ -199,25 +217,30 @@ pub(super) fn follow_up(app: &mut App) {
         return;
     };
     if let SessionRow::Agent(a) = &row {
-        if app.follow_up.as_ref().is_some_and(|f| f.agent == a.id) {
-            app.follow_up = None;
-            app.dirty = true;
+        if app
+            .modals
+            .follow_up
+            .as_ref()
+            .is_some_and(|f| f.agent == a.id)
+        {
+            app.modals.follow_up = None;
+            app.chrome.dirty = true;
             return;
         }
     }
     if let Some(why) = no_follow_up(app, &row) {
-        app.flash = Some(why);
+        app.chrome.flash = Some(why);
         return;
     }
     let SessionRow::Agent(a) = row else {
         return;
     };
-    app.follow_up = Some(FollowUp {
+    app.modals.follow_up = Some(FollowUp {
         agent: a.id,
         input: crate::text_input::TextInput::multiline(),
     });
-    app.focus = Focus::Sessions;
-    app.dirty = true;
+    app.nav.focus = Focus::Sessions;
+    app.chrome.dirty = true;
 }
 
 /// Why `row` takes no follow-up, or None when it does. Both composers
@@ -258,11 +281,11 @@ pub(super) fn delete_worktree(app: &mut App, id: &WorktreeId) {
         return;
     };
     if w.is_main {
-        app.flash = Some("cannot delete the main checkout".into());
+        app.chrome.flash = Some("cannot delete the main checkout".into());
         return;
     }
     if app.is_placeholder_worktree(id) {
-        app.flash = Some(WORKTREE_STILL_CREATING.into());
+        app.chrome.flash = Some(WORKTREE_STILL_CREATING.into());
         return;
     }
     let live_here = app
@@ -277,7 +300,7 @@ pub(super) fn delete_worktree(app: &mut App, id: &WorktreeId) {
             .iter()
             .filter(|t| &t.worktree_id == id)
             .count();
-    app.overlay = Some(Overlay::Confirm(ConfirmDialog {
+    app.modals.overlay = Some(Overlay::Confirm(ConfirmDialog {
         title: "Delete worktree".into(),
         message: format!(
             "Delete worktree '{}' from disk? {live_here} session(s) will be killed.",

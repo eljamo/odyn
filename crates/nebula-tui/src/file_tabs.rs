@@ -17,6 +17,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent,
 use ratatui::layout::{Position, Rect};
 
 use crate::app::{App, Overlay};
+use crate::graphics::{MermaidDiagram, VisualPreview};
 use crate::markdown::Rendered;
 use crate::syntax::{Highlighter, TokenKind};
 use crate::tree_browser::Preview;
@@ -67,6 +68,8 @@ pub struct FileTabsView {
     /// The page flowed for the last drawn width, written back during draw
     /// (see [`Rendered`]).
     pub rendered: Option<Rendered>,
+    pub visual: Option<VisualPreview>,
+    pub mermaid_diagrams: Vec<MermaidDiagram>,
     /// Top visible preview line.
     pub scroll: u16,
     /// Inner height of the preview, written back during draw so paging
@@ -120,6 +123,8 @@ impl FileTabsView {
             markdown: false,
             pretty: true,
             rendered: None,
+            visual: None,
+            mermaid_diagrams: Vec::new(),
             scroll: 0,
             view_height: 0,
             area: Rect::default(),
@@ -182,6 +187,8 @@ impl FileTabsView {
         self.preview_is_file = preview.is_file;
         self.markdown = preview.markdown;
         self.rendered = None;
+        self.visual = preview.visual;
+        self.mermaid_diagrams = preview.mermaid_diagrams;
         self.preview_line_count = preview.lines.len();
         self.preview_lines = preview.lines;
         self.preview_text = preview.text;
@@ -253,6 +260,8 @@ fn placeholder(text: &str) -> Preview {
         text: text.to_string(),
         is_file: false,
         markdown: false,
+        visual: None,
+        mermaid_diagrams: Vec::new(),
     }
 }
 
@@ -284,13 +293,13 @@ pub(crate) fn open(app: &mut App, root: PathBuf, paths: Vec<PathBuf>) {
     if paths.is_empty() {
         return;
     }
-    if let Some(vim) = &mut app.vim {
+    if let Some(vim) = &mut app.pane.vim {
         vim.embedded = false;
     }
     let editor = crate::config::Config::load().editor_command();
-    let view = FileTabsView::with_jobs(root, editor, paths, app.view_jobs.clone());
-    app.overlay = Some(Overlay::FileTabs(view));
-    app.dirty = true;
+    let view = FileTabsView::with_jobs(root, editor, paths, app.jobs.view_jobs.clone());
+    app.modals.overlay = Some(Overlay::FileTabs(view));
+    app.chrome.dirty = true;
 }
 
 /// What a key means, decided from where the cursor is (the SETTINGS
@@ -312,7 +321,7 @@ enum Cmd {
 }
 
 pub(crate) fn handle_key(app: &mut App, key: KeyEvent) {
-    let Some(Overlay::FileTabs(view)) = &app.overlay else {
+    let Some(Overlay::FileTabs(view)) = &app.modals.overlay else {
         return;
     };
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
@@ -361,10 +370,10 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) {
 /// key or the mouse asked for it.
 fn run(app: &mut App, cmd: Cmd) {
     match cmd {
-        Cmd::Close => app.overlay = None,
+        Cmd::Close => app.modals.overlay = None,
         Cmd::Edit => open_in_editor(app),
         other => {
-            let Some(Overlay::FileTabs(view)) = &mut app.overlay else {
+            let Some(Overlay::FileTabs(view)) = &mut app.modals.overlay else {
                 return;
             };
             match other {
@@ -379,14 +388,14 @@ fn run(app: &mut App, cmd: Cmd) {
             }
         }
     }
-    app.dirty = true;
+    app.chrome.dirty = true;
 }
 
 /// Mouse inside the modal (a click outside already closed it): a tab label
 /// switches to that tab and parks the cursor on the strip, a click in the
 /// body puts it in the preview, and the wheel scrolls the preview.
 pub(crate) fn handle_mouse(app: &mut App, mouse: MouseEvent, pos: Position) {
-    let Some(Overlay::FileTabs(view)) = &mut app.overlay else {
+    let Some(Overlay::FileTabs(view)) = &mut app.modals.overlay else {
         return;
     };
     // The mouse only names commands — the keys' own (`run`).
@@ -413,14 +422,14 @@ pub(crate) fn handle_mouse(app: &mut App, mouse: MouseEvent, pos: Position) {
     for cmd in cmds {
         run(app, cmd);
     }
-    app.dirty = true;
+    app.chrome.dirty = true;
 }
 
 /// Enter: the editor opens on the focused file, embedded where the preview
 /// was — the modal and its tabs stay put underneath, and quitting the
 /// editor (or Ctrl+Q) lands back on the strip with the file re-read.
 fn open_in_editor(app: &mut App) {
-    let Some(Overlay::FileTabs(view)) = &app.overlay else {
+    let Some(Overlay::FileTabs(view)) = &app.modals.overlay else {
         return;
     };
     let Some(tab) = view.selected() else {
@@ -436,7 +445,7 @@ fn open_in_editor(app: &mut App) {
         crate::event_loop::vim_size_guess(app)
     };
     if crate::event_loop::spawn_editor_modal(app, &editor, &root, &path, 1, size) {
-        if let Some(vim) = &mut app.vim {
+        if let Some(vim) = &mut app.pane.vim {
             vim.embedded = true;
         }
     }
@@ -469,7 +478,7 @@ mod tests {
     }
 
     fn view_in(app: &App) -> &FileTabsView {
-        match &app.overlay {
+        match &app.modals.overlay {
             Some(Overlay::FileTabs(v)) => v,
             other => panic!("expected the file tabs, got {other:?}"),
         }
@@ -536,7 +545,7 @@ mod tests {
         let mut app = App::new();
         let mut view = FileTabsView::new(dir.path().to_path_buf(), "vi".into(), vec![a]);
         view.view_height = 10; // as a draw would have written back
-        app.overlay = Some(Overlay::FileTabs(view));
+        app.modals.overlay = Some(Overlay::FileTabs(view));
 
         key(&mut app, KeyCode::Down, KeyModifiers::NONE);
         assert!(!view_in(&app).on_tabs, "↓ drops into the preview");
@@ -550,7 +559,7 @@ mod tests {
             view_in(&app).on_tabs,
             "Esc from the preview lands on the strip"
         );
-        assert!(app.overlay.is_some());
+        assert!(app.modals.overlay.is_some());
 
         key(&mut app, KeyCode::Down, KeyModifiers::NONE);
         key(&mut app, KeyCode::Home, KeyModifiers::NONE);
@@ -558,7 +567,7 @@ mod tests {
         assert!(view_in(&app).on_tabs, "↑ off the top steps onto the strip");
 
         key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
-        assert!(app.overlay.is_none(), "Esc from the strip closes");
+        assert!(app.modals.overlay.is_none(), "Esc from the strip closes");
     }
 
     #[test]
@@ -568,7 +577,7 @@ mod tests {
             .map(|i| write(dir.path(), &format!("f{i}.md"), &format!("file {i}\n")))
             .collect();
         let mut app = App::new();
-        app.overlay = Some(Overlay::FileTabs(FileTabsView::new(
+        app.modals.overlay = Some(Overlay::FileTabs(FileTabsView::new(
             dir.path().to_path_buf(),
             "vi".into(),
             files,
@@ -596,7 +605,7 @@ mod tests {
         let a = write(dir.path(), "a.md", "# alpha\n\n- one\n");
         let b = write(dir.path(), "b.rs", "fn main() {}\n");
         let mut app = App::new();
-        app.overlay = Some(Overlay::FileTabs(FileTabsView::new(
+        app.modals.overlay = Some(Overlay::FileTabs(FileTabsView::new(
             dir.path().to_path_buf(),
             "vi".into(),
             vec![a, b],
@@ -643,7 +652,7 @@ mod tests {
             "# Alpha title\n\n- one item\n\n| k | v |\n|---|---|\n| x | y |\n",
         );
         let mut app = App::new();
-        app.overlay = Some(Overlay::FileTabs(FileTabsView::new(
+        app.modals.overlay = Some(Overlay::FileTabs(FileTabsView::new(
             dir.path().to_path_buf(),
             "vi".into(),
             vec![a],
@@ -702,7 +711,7 @@ mod tests {
         view.tab_hits = vec![(12, 18), (19, 25)];
         view.body_area = Rect::new(11, 8, 78, 20);
         view.view_height = 20;
-        app.overlay = Some(Overlay::FileTabs(view));
+        app.modals.overlay = Some(Overlay::FileTabs(view));
         let click = |app: &mut App, col: u16, row: u16| {
             handle_mouse(
                 app,

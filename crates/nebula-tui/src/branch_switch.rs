@@ -51,7 +51,8 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Clear, Paragraph};
 use ratatui::Frame;
 
-use crate::app::{clamp_selection, window_start, App, Focus, Overlay};
+use crate::app::{clamp_selection, App, Focus, Overlay};
+use crate::filter_list::{FilterList, FilterMatch};
 use crate::git_diff::{git_command, DiffFile};
 use crate::text_input::TextInput;
 use crate::theme::Theme;
@@ -96,24 +97,7 @@ fn cells(s: &str) -> usize {
 /// `s` cut to `max` cells with a `…` marking the cut — `ui::truncate` by
 /// cells rather than chars, so wide text can't push past its budget.
 fn fit(s: &str, max: usize) -> String {
-    if cells(s) <= max {
-        return s.to_string();
-    }
-    let mut out = String::new();
-    let mut used = 0;
-    let mut buf = [0u8; 4];
-    for c in s.chars() {
-        let w = cells(c.encode_utf8(&mut buf));
-        if used + w + 1 > max {
-            break;
-        }
-        out.push(c);
-        used += w;
-    }
-    if max > 0 {
-        out.push('…');
-    }
-    out
+    crate::ui::fit_to_width(s, max)
 }
 
 // ---- git ----
@@ -982,13 +966,8 @@ pub struct BranchSwitchView {
     pub current: String,
     /// Sessions running in the checkout — they will see its files change.
     pub live_sessions: usize,
-    pub query: TextInput,
-    pub branches: Vec<Branch>,
-    /// Indices into `branches` with their matched char positions, best
-    /// first.
-    pub matches: Vec<(usize, Vec<usize>)>,
-    /// Index into `matches`.
-    pub selected: usize,
+    /// Branches plus the live fuzzy query/cursor over them.
+    pub list: FilterList<Branch>,
     /// Whether the user has moved the cursor or typed: from then on a
     /// landing listing keeps the cursor on its branch.
     pub touched: bool,
@@ -1001,7 +980,6 @@ pub struct BranchSwitchView {
     pub status: Option<Status>,
     /// Rects from the last draw, for the mouse.
     pub area: Rect,
-    pub list_area: Rect,
     pub choices_area: Rect,
 }
 
@@ -1019,10 +997,7 @@ impl BranchSwitchView {
             project_name,
             current,
             live_sessions,
-            query: TextInput::new(),
-            branches: Vec::new(),
-            matches: Vec::new(),
-            selected: 0,
+            list: FilterList::default(),
             touched: false,
             listed: false,
             list_error: None,
@@ -1031,33 +1006,34 @@ impl BranchSwitchView {
             stage: Stage::Pick,
             status: None,
             area: Rect::default(),
-            list_area: Rect::default(),
             choices_area: Rect::default(),
         }
     }
 
     pub fn selected_branch(&self) -> Option<&Branch> {
-        let (i, _) = self.matches.get(self.selected)?;
-        self.branches.get(*i)
+        self.list.selected()
     }
 
     /// HEAD sits on no branch: a listing landed and no row is current.
     pub fn detached(&self) -> bool {
         self.listed
             && self.list_error.is_none()
-            && !self.branches.is_empty()
-            && !self.branches.iter().any(|b| b.current)
+            && !self.list.items.is_empty()
+            && !self.list.items.iter().any(|b| b.current)
     }
 
     /// Re-rank against the query, list order breaking ties. The cursor is
     /// only clamped; callers decide where it goes.
     pub fn apply_filter(&mut self) {
-        self.matches = crate::fuzzy::rank_by(
-            self.query.as_str(),
-            self.branches.iter().map(|b| b.name.as_str()),
+        self.list.matches = crate::fuzzy::rank_by(
+            self.list.query.as_str(),
+            self.list.items.iter().map(|b| b.name.as_str()),
             |i, _| i,
-        );
-        self.selected = clamp_selection(self.selected as i64, self.matches.len());
+        )
+        .into_iter()
+        .map(|(item, positions)| FilterMatch { item, positions })
+        .collect();
+        self.list.cursor = clamp_selection(self.list.cursor as i64, self.list.matches.len());
     }
 
     /// Where the cursor starts: the best match for a query, and with none
@@ -1065,11 +1041,12 @@ impl BranchSwitchView {
     /// checkout is on, not one another worktree holds — so `c` `Enter`
     /// goes somewhere.
     fn home_selection(&mut self) {
-        self.selected = if self.query.as_str().trim().is_empty() {
-            self.matches
+        self.list.cursor = if self.list.query.as_str().trim().is_empty() {
+            self.list
+                .matches
                 .iter()
-                .position(|(i, _)| {
-                    let b = &self.branches[*i];
+                .position(|m| {
+                    let b = &self.list.items[m.item];
                     !b.current && b.checked_out_at.is_none()
                 })
                 .unwrap_or(0)
@@ -1087,21 +1064,22 @@ impl BranchSwitchView {
         } else {
             None
         };
-        self.branches = branches;
+        self.list.items = branches;
         self.listed = true;
         self.apply_filter();
         match keep.and_then(|name| {
-            self.matches
+            self.list
+                .matches
                 .iter()
-                .position(|(i, _)| self.branches[*i].name == name)
+                .position(|m| self.list.items[m.item].name == name)
         }) {
-            Some(i) => self.selected = i,
+            Some(i) => self.list.cursor = i,
             None => self.home_selection(),
         }
     }
 
     pub fn select(&mut self, index: i64) {
-        self.selected = clamp_selection(index, self.matches.len());
+        self.list.select(index);
         self.touched = true;
     }
 
@@ -1122,16 +1100,16 @@ impl BranchSwitchView {
 /// row), on the project's root.
 pub(crate) fn open_branch_switch(app: &mut App) {
     let Some(project) = app.selected_project().map(|p| p.id.clone()) else {
-        app.flash = Some("switch branch: select a project first".into());
+        app.chrome.flash = Some("switch branch: select a project first".into());
         return;
     };
     let on_checkout = matches!(
-        app.focus,
+        app.nav.focus,
         Focus::Worktrees | Focus::Sessions | Focus::Terminal
     );
     let target = match app.selected_worktree().filter(|_| on_checkout) {
         Some(w) if !w.is_main => {
-            app.flash = Some(
+            app.chrome.flash = Some(
                 "switch branch is for the ⌂ root checkout — a worktree stays on the branch it was cut for"
                     .into(),
             );
@@ -1142,7 +1120,9 @@ pub(crate) fn open_branch_switch(app: &mut App) {
     };
     match target {
         Some(id) => open_for(app, &id),
-        None => app.flash = Some("switch branch: the project has no root checkout yet".into()),
+        None => {
+            app.chrome.flash = Some("switch branch: the project has no root checkout yet".into())
+        }
     }
 }
 
@@ -1207,16 +1187,16 @@ pub(crate) fn open_for(app: &mut App, worktree: &WorktreeId) {
         w.branch.clone(),
         live,
     );
-    if let Some(cached) = app.branch_switch.lists.get(&w.id) {
+    if let Some(cached) = app.jobs.branch_switch.lists.get(&w.id) {
         view.set_branches(recurrent(cached, &w.branch));
     }
-    if let Some(job) = app.branch_switch.switching.get(&w.id) {
+    if let Some(job) = app.jobs.branch_switch.switching.get(&w.id) {
         view.stage = Stage::Working(job.clone());
     }
-    app.overlay = Some(Overlay::BranchSwitch(view));
+    app.modals.overlay = Some(Overlay::BranchSwitch(view));
     request_list(app, w.id.clone(), w.path.clone());
     request_fetch(app, w.id, w.path, false);
-    app.dirty = true;
+    app.chrome.dirty = true;
 }
 
 /// List the branches and count the changes, off the loop (inline in the
@@ -1229,9 +1209,9 @@ fn request_list(app: &mut App, worktree: WorktreeId, root: PathBuf) {
         land_answer(app, Answer::Listed { worktree, list });
         return;
     }
-    let tx = app.branch_switch.tx.clone();
-    if tx.is_some() && !app.branch_switch.listing.insert(worktree.clone()) {
-        app.branch_switch.relist.insert(worktree);
+    let tx = app.jobs.branch_switch.tx.clone();
+    if tx.is_some() && !app.jobs.branch_switch.listing.insert(worktree.clone()) {
+        app.jobs.branch_switch.relist.insert(worktree);
         return;
     }
     let ask = move |send: &mut dyn FnMut(Answer)| {
@@ -1263,10 +1243,10 @@ fn request_list(app: &mut App, worktree: WorktreeId, root: PathBuf) {
 /// Refresh the remotes in the background: skipped while one runs, within
 /// [`FETCH_GAP`] of the last unless `force`d, and in the unit tests.
 fn request_fetch(app: &mut App, worktree: WorktreeId, root: PathBuf, force: bool) {
-    let Some(tx) = app.branch_switch.tx.clone() else {
+    let Some(tx) = app.jobs.branch_switch.tx.clone() else {
         return;
     };
-    let shared = &mut app.branch_switch;
+    let shared = &mut app.jobs.branch_switch;
     let recent = shared
         .fetched
         .get(&worktree)
@@ -1285,7 +1265,7 @@ fn request_fetch(app: &mut App, worktree: WorktreeId, root: PathBuf, force: bool
 
 /// The open modal, when it is `worktree`'s.
 fn view_for<'a>(app: &'a mut App, worktree: &WorktreeId) -> Option<&'a mut BranchSwitchView> {
-    match &mut app.overlay {
+    match &mut app.modals.overlay {
         Some(Overlay::BranchSwitch(view)) if &view.worktree == worktree => Some(view),
         _ => None,
     }
@@ -1296,7 +1276,8 @@ pub(crate) fn land_answer(app: &mut App, answer: Answer) {
     match answer {
         Answer::Listed { worktree, list } => {
             if let Ok(list) = &list {
-                app.branch_switch
+                app.jobs
+                    .branch_switch
                     .lists
                     .insert(worktree.clone(), list.clone());
             }
@@ -1314,19 +1295,19 @@ pub(crate) fn land_answer(app: &mut App, answer: Answer) {
             }
         }
         Answer::Changes { worktree, changes } => {
-            app.branch_switch.listing.remove(&worktree);
+            app.jobs.branch_switch.listing.remove(&worktree);
             let root = view_for(app, &worktree).map(|view| {
                 view.changes = changes;
                 view.root.clone()
             });
-            if app.branch_switch.relist.remove(&worktree) {
+            if app.jobs.branch_switch.relist.remove(&worktree) {
                 if let Some(root) = root {
                     request_list(app, worktree, root);
                 }
             }
         }
         Answer::Fetched { worktree, ok } => {
-            app.branch_switch.fetching.remove(&worktree);
+            app.jobs.branch_switch.fetching.remove(&worktree);
             let root = view_for(app, &worktree).map(|view| {
                 view.fetch_failed = !ok;
                 view.root.clone()
@@ -1341,16 +1322,16 @@ pub(crate) fn land_answer(app: &mut App, answer: Answer) {
             outcome,
         } => land_switch(app, worktree, request, outcome),
     }
-    app.dirty = true;
+    app.chrome.dirty = true;
 }
 
 fn land_switch(app: &mut App, worktree: WorktreeId, request: u64, outcome: Outcome) {
     // Only the running job's answer counts.
-    match app.branch_switch.switching.get(&worktree) {
+    match app.jobs.branch_switch.switching.get(&worktree) {
         Some(job) if job.request == request => {}
         _ => return,
     }
-    let Some(job) = app.branch_switch.switching.remove(&worktree) else {
+    let Some(job) = app.jobs.branch_switch.switching.remove(&worktree) else {
         return;
     };
     let from = app
@@ -1363,7 +1344,7 @@ fn land_switch(app: &mut App, worktree: WorktreeId, request: u64, outcome: Outco
     // Whether the modal is still showing this job: `Esc` hides it while git
     // works, and the answer then goes to the footer.
     let showing = matches!(
-        &app.overlay,
+        &app.modals.overlay,
         Some(Overlay::BranchSwitch(v))
             if v.worktree == worktree && matches!(&v.stage, Stage::Working(j) if j.request == request)
     );
@@ -1375,22 +1356,23 @@ fn land_switch(app: &mut App, worktree: WorktreeId, request: u64, outcome: Outco
             if let Some(w) = app.tree.worktrees.iter_mut().find(|w| w.id == worktree) {
                 w.branch = branch.clone();
             }
-            app.branch_switch.lists.remove(&worktree);
+            app.jobs.branch_switch.lists.remove(&worktree);
             if app
+                .jobs
                 .git_changes
                 .as_ref()
                 .is_some_and(|(id, _)| id == &worktree)
             {
-                app.git_changes = None;
+                app.jobs.git_changes = None;
             }
-            app.worktree_changes.remove(&worktree);
-            app.worktree_lines.remove(&worktree);
-            app.pull_requests.remove(&worktree);
-            app.pr_recheck.remove(&worktree);
+            app.jobs.worktree_changes.remove(&worktree);
+            app.jobs.worktree_lines.remove(&worktree);
+            app.github.pull_requests.remove(&worktree);
+            app.github.pr_recheck.remove(&worktree);
             if view_for(app, &worktree).is_some() {
-                app.overlay = None;
+                app.modals.overlay = None;
             }
-            app.flash = Some(match note {
+            app.chrome.flash = Some(match note {
                 Some(note) => format!("⌂ root is on {branch} · {note}"),
                 None => format!("⌂ root is on {branch}"),
             });
@@ -1413,7 +1395,7 @@ fn land_switch(app: &mut App, worktree: WorktreeId, request: u64, outcome: Outco
             }
         }
         Outcome::Dirty { files, .. } => {
-            app.flash = Some(format!(
+            app.chrome.flash = Some(format!(
                 "not switched: {from} has {} — c to choose what happens to them",
                 changes_text(files.len())
             ));
@@ -1448,7 +1430,7 @@ fn land_switch(app: &mut App, worktree: WorktreeId, request: u64, outcome: Outco
             }
         }
         Outcome::Failed(error) | Outcome::Stopped(error) => {
-            app.flash = Some(format!("switch branch failed: {error}"))
+            app.chrome.flash = Some(format!("switch branch failed: {error}"))
         }
     }
 }
@@ -1471,10 +1453,10 @@ fn start_switch(
     files: Vec<DiffFile>,
     keys: Vec<String>,
 ) {
-    let Some(Overlay::BranchSwitch(view)) = &mut app.overlay else {
+    let Some(Overlay::BranchSwitch(view)) = &mut app.modals.overlay else {
         return;
     };
-    let shared = &mut app.branch_switch;
+    let shared = &mut app.jobs.branch_switch;
     if shared.switching.contains_key(&view.worktree) {
         view.status = Some(Status::error(
             "a switch is already running in this checkout",
@@ -1521,20 +1503,20 @@ fn start_switch(
             );
         }
     }
-    app.dirty = true;
+    app.chrome.dirty = true;
 }
 
 // ---- keys and mouse ----
 
 /// `Enter` on the list.
 fn activate_selected(app: &mut App) {
-    let Some(Overlay::BranchSwitch(view)) = &mut app.overlay else {
+    let Some(Overlay::BranchSwitch(view)) = &mut app.modals.overlay else {
         return;
     };
     let Some(branch) = view.selected_branch().cloned() else {
         // Nothing matches: create the typed branch off the current one, as
         // an IDE's switcher offers to.
-        let name = view.query.as_str().trim().to_string();
+        let name = view.list.query.as_str().trim().to_string();
         if view.listed && !name.is_empty() {
             let target = Branch::new_local(name);
             start_switch(app, target, Carry::Create, Vec::new(), Vec::new());
@@ -1558,7 +1540,7 @@ fn activate_selected(app: &mut App) {
 
 /// `Ctrl+r`: fetch the remotes now, past the minute's gap, and list again.
 fn refresh(app: &mut App) {
-    let Some(Overlay::BranchSwitch(view)) = &mut app.overlay else {
+    let Some(Overlay::BranchSwitch(view)) = &mut app.modals.overlay else {
         return;
     };
     view.fetch_failed = false;
@@ -1569,7 +1551,7 @@ fn refresh(app: &mut App) {
 
 /// Pick one of the [`CHOICES`] on the DIRTY prompt.
 fn choose(app: &mut App, choice: Choice) {
-    let Some(Overlay::BranchSwitch(view)) = &mut app.overlay else {
+    let Some(Overlay::BranchSwitch(view)) = &mut app.modals.overlay else {
         return;
     };
     let detached = view.detached();
@@ -1618,22 +1600,22 @@ fn choose(app: &mut App, choice: Choice) {
 
 /// Keys in the BRANCH SWITCHER.
 pub(crate) fn handle_key(app: &mut App, key: KeyEvent) {
-    let Some(Overlay::BranchSwitch(view)) = &mut app.overlay else {
+    let Some(Overlay::BranchSwitch(view)) = &mut app.modals.overlay else {
         return;
     };
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-    app.dirty = true;
+    app.chrome.dirty = true;
     match &mut view.stage {
         Stage::Pick => {
-            let page = view.list_area.height.max(1) as i64;
-            let selected = view.selected as i64;
+            let page = view.list.list_area.height.max(1) as i64;
+            let selected = view.list.cursor as i64;
             match key.code {
                 // Two-stage, like every fuzzy overlay: the query first.
-                KeyCode::Esc if !view.query.as_str().is_empty() => {
-                    view.query.clear();
+                KeyCode::Esc if !view.list.query.as_str().is_empty() => {
+                    view.list.query.clear();
                     view.requery();
                 }
-                KeyCode::Esc => app.overlay = None,
+                KeyCode::Esc => app.modals.overlay = None,
                 // j/k stay typeable in the query; Ctrl+n/p mirror ↑/↓.
                 KeyCode::Down => view.select(selected + 1),
                 KeyCode::Up => view.select(selected - 1),
@@ -1644,7 +1626,7 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) {
                 KeyCode::Char('r') if ctrl => refresh(app),
                 KeyCode::Enter => activate_selected(app),
                 _ => {
-                    if view.query.handle_key(&key).changed() {
+                    if view.list.query.handle_key(&key).changed() {
                         view.requery();
                     }
                 }
@@ -1711,8 +1693,9 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) {
         // back), and the result lands in the footer.
         Stage::Working(_) => {
             if key.code == KeyCode::Esc {
-                app.overlay = None;
-                app.flash = Some("still switching — c shows it, the result lands here".into());
+                app.modals.overlay = None;
+                app.chrome.flash =
+                    Some("still switching — c shows it, the result lands here".into());
             }
         }
     }
@@ -1723,7 +1706,7 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) {
 pub(crate) fn paste(view: &mut BranchSwitchView, text: &str) -> bool {
     match &mut view.stage {
         Stage::Pick => {
-            view.query.insert_str(text);
+            view.list.query.insert_str(text);
             view.requery();
             true
         }
@@ -1741,10 +1724,10 @@ pub(crate) fn paste(view: &mut BranchSwitchView, text: &str) -> bool {
 /// CONTEXT MENU's rule for rows that are actions. A click outside closes
 /// (`overlay_close`).
 pub(crate) fn handle_mouse(app: &mut App, mouse: MouseEvent, pos: Position) {
-    let Some(Overlay::BranchSwitch(view)) = &mut app.overlay else {
+    let Some(Overlay::BranchSwitch(view)) = &mut app.modals.overlay else {
         return;
     };
-    app.dirty = true;
+    app.chrome.dirty = true;
     let delta = match mouse.kind {
         MouseEventKind::ScrollUp => -1,
         MouseEventKind::ScrollDown => 1,
@@ -1754,12 +1737,9 @@ pub(crate) fn handle_mouse(app: &mut App, mouse: MouseEvent, pos: Position) {
     match &mut view.stage {
         Stage::Pick => {
             if delta != 0 {
-                view.select(view.selected as i64 + delta);
+                view.select(view.list.cursor as i64 + delta);
             } else if click {
-                let first = window_start(view.selected, view.list_area.height as usize);
-                if let Some(index) =
-                    crate::list_hit::row_at(view.list_area, first, view.matches.len(), pos)
-                {
+                if let Some(index) = view.list.hit(pos) {
                     view.select(index as i64);
                 }
             }
@@ -1923,7 +1903,6 @@ pub(crate) fn draw(f: &mut Frame, app: &mut App, view: &BranchSwitchView, th: Th
 
     let mut list_area = Rect::default();
     let mut choices_area = Rect::default();
-    let mut selected = view.selected;
     match &view.stage {
         Stage::Dirty {
             target,
@@ -1945,13 +1924,13 @@ pub(crate) fn draw(f: &mut Frame, app: &mut App, view: &BranchSwitchView, th: Th
             ..
         } => draw_commit(f, view, target, files, message, body, th),
         Stage::Pick | Stage::Working(_) => {
-            (list_area, selected) = draw_list(f, view, body, th);
+            list_area = draw_list(f, view, body, th);
         }
     }
 
     // The status line: what's running, else what just went wrong or right,
     // else what the user should know before switching.
-    let fetching = app.branch_switch.fetching.contains(&view.worktree);
+    let fetching = app.jobs.branch_switch.fetching.contains(&view.worktree);
     let (text, color) = if let Stage::Working(job) = &view.stage {
         let doing = match job.carry {
             Carry::Stash => "stashing and switching",
@@ -1985,7 +1964,7 @@ pub(crate) fn draw(f: &mut Frame, app: &mut App, view: &BranchSwitchView, th: Th
             parts.push("couldn't reach the remotes (^r tries again)".into());
         }
         // With rows on screen, a failed refresh would otherwise go unseen.
-        if let (Some(e), false) = (&view.list_error, view.branches.is_empty()) {
+        if let (Some(e), false) = (&view.list_error, view.list.items.is_empty()) {
             parts.push(format!("couldn't refresh the list: {e}"));
         }
         (parts.join(" · "), th.dim)
@@ -1997,20 +1976,20 @@ pub(crate) fn draw(f: &mut Frame, app: &mut App, view: &BranchSwitchView, th: Th
     );
 
     // Write-back (draw works on a clone).
-    if let Some(Overlay::BranchSwitch(v)) = &mut app.overlay {
+    if let Some(Overlay::BranchSwitch(v)) = &mut app.modals.overlay {
         v.area = area;
-        v.list_area = list_area;
+        v.list.list_area = list_area;
+        v.list.sync_scroll(list_area.height as usize);
         v.choices_area = choices_area;
-        v.selected = selected;
     }
 }
 
 /// The PICK stage: the query row, then the list. Returns the list's rect
 /// and the clamped cursor.
-fn draw_list(f: &mut Frame, view: &BranchSwitchView, body: Rect, th: Theme) -> (Rect, usize) {
+fn draw_list(f: &mut Frame, view: &BranchSwitchView, body: Rect, th: Theme) -> Rect {
     if let Some(query_area) = row_rect(body, 0) {
         let line = search_line(
-            &view.query,
+            &view.list.query,
             "type to filter branches and remotes…",
             query_area,
             th,
@@ -2018,13 +1997,13 @@ fn draw_list(f: &mut Frame, view: &BranchSwitchView, body: Rect, th: Theme) -> (
         f.render_widget(Paragraph::new(line), query_area);
     }
     let list = crate::ui::below_first_row(body);
-    if view.matches.is_empty() {
-        let query = view.query.as_str().trim();
+    if view.list.matches.is_empty() {
+        let query = view.list.query.as_str().trim();
         let text = match (&view.list_error, view.listed) {
-            (_, true) if view.branches.is_empty() && view.list_error.is_none() => {
+            (_, true) if view.list.items.is_empty() && view.list_error.is_none() => {
                 "no branches".to_string()
             }
-            (Some(e), _) if view.branches.is_empty() => format!("couldn't list branches: {e}"),
+            (Some(e), _) if view.list.items.is_empty() => format!("couldn't list branches: {e}"),
             (_, false) => "reading branches…".into(),
             _ if !query.is_empty() => format!(
                 "{NO_MATCHES} — Enter creates \"{query}\" off {}",
@@ -2034,23 +2013,26 @@ fn draw_list(f: &mut Frame, view: &BranchSwitchView, body: Rect, th: Theme) -> (
         };
         empty_list_row(f, list, &fit(&text, list.width as usize), th);
     }
-    let selected = view.selected.min(view.matches.len().saturating_sub(1));
-    let start = window_start(selected, list.height as usize);
+    let selected = view
+        .list
+        .cursor
+        .min(view.list.matches.len().saturating_sub(1));
+    let start = view.list.window_start(list.height as usize);
     let now = crate::app::now_ms() / 1000;
-    for (row, (i, (index, positions))) in view.matches.iter().enumerate().skip(start).enumerate() {
+    for (row, (i, m)) in view.list.matches.iter().enumerate().skip(start).enumerate() {
         let Some(row_area) = row_rect(list, row) else {
             break;
         };
         let spans = branch_row(
-            &view.branches[*index],
-            positions,
+            &view.list.items[m.item],
+            &m.positions,
             list.width as usize,
             now,
             th,
         );
         render_row(f, row_area, spans, i == selected, true, th);
     }
-    (list, selected)
+    list
 }
 
 /// One `M  path` line of the changed files.
@@ -2871,14 +2853,14 @@ mod tests {
     }
 
     fn view(app: &App) -> &BranchSwitchView {
-        match &app.overlay {
+        match &app.modals.overlay {
             Some(Overlay::BranchSwitch(view)) => view,
             other => panic!("no branch switcher: {other:?}"),
         }
     }
 
     fn view_mut(app: &mut App) -> &mut BranchSwitchView {
-        match &mut app.overlay {
+        match &mut app.modals.overlay {
             Some(Overlay::BranchSwitch(view)) => view,
             other => panic!("no branch switcher: {other:?}"),
         }
@@ -2887,10 +2869,10 @@ mod tests {
     fn screen(app: &mut App, w: u16, h: u16) -> String {
         let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
         term.draw(|f| {
-            let Some(Overlay::BranchSwitch(v)) = app.overlay.clone() else {
+            let Some(Overlay::BranchSwitch(v)) = app.modals.overlay.clone() else {
                 panic!("no switcher");
             };
-            draw(f, app, &v, app.theme);
+            draw(f, app, &v, app.chrome.theme);
         })
         .unwrap();
         let buf = term.backend().buffer().clone();
@@ -2936,16 +2918,16 @@ mod tests {
         );
 
         type_text(&mut app, "rel");
-        assert_eq!(view(&app).matches.len(), 1);
+        assert_eq!(view(&app).list.matches.len(), 1);
         assert_eq!(view(&app).selected_branch().unwrap().name, "release-1.2");
         key(&mut app, KeyCode::Esc);
         assert_eq!(
-            view(&app).query.as_str(),
+            view(&app).list.query.as_str(),
             "",
             "the first Esc clears the query"
         );
         key(&mut app, KeyCode::Esc);
-        assert!(app.overlay.is_none(), "the second closes");
+        assert!(app.modals.overlay.is_none(), "the second closes");
     }
 
     #[test]
@@ -2956,11 +2938,11 @@ mod tests {
         open_for(&mut app, &w1());
         type_text(&mut app, "feat");
         key(&mut app, KeyCode::Enter);
-        assert!(app.overlay.is_none(), "{:?}", app.overlay);
+        assert!(app.modals.overlay.is_none(), "{:?}", app.modals.overlay);
         assert_eq!(head(&repo), "feature");
         assert_eq!(app.tree.worktrees[0].branch, "feature");
-        assert_eq!(app.flash.as_deref(), Some("⌂ root is on feature"));
-        assert!(app.branch_switch.switching.is_empty());
+        assert_eq!(app.chrome.flash.as_deref(), Some("⌂ root is on feature"));
+        assert!(app.jobs.branch_switch.switching.is_empty());
     }
 
     #[test]
@@ -2970,11 +2952,11 @@ mod tests {
         let mut app = app_on(&repo);
         open_for(&mut app, &w1());
         type_text(&mut app, "brand-new");
-        assert!(view(&app).matches.is_empty());
+        assert!(view(&app).list.matches.is_empty());
         assert!(screen(&mut app, 110, 30).contains("Enter creates \"brand-new\" off main"));
         key(&mut app, KeyCode::Enter);
         assert_eq!(head(&repo), "brand-new");
-        assert_eq!(app.flash.as_deref(), Some("⌂ root is on brand-new"));
+        assert_eq!(app.chrome.flash.as_deref(), Some("⌂ root is on brand-new"));
     }
 
     #[test]
@@ -3021,7 +3003,10 @@ mod tests {
             "{:?}",
             view(&app).stage
         );
-        assert!(app.branch_switch.switching.is_empty(), "the ask is over");
+        assert!(
+            app.jobs.branch_switch.switching.is_empty(),
+            "the ask is over"
+        );
         let text = screen(&mut app, 110, 30);
         assert!(text.contains("main has 1 uncommitted change"), "{text}");
         assert!(
@@ -3037,9 +3022,9 @@ mod tests {
         );
         key(&mut app, KeyCode::Enter);
         key(&mut app, KeyCode::Char('s'));
-        assert!(app.overlay.is_none());
+        assert!(app.modals.overlay.is_none());
         assert_eq!(head(&repo), "feature");
-        assert!(app.flash.as_deref().unwrap().contains("stashed"));
+        assert!(app.chrome.flash.as_deref().unwrap().contains("stashed"));
     }
 
     #[test]
@@ -3082,7 +3067,7 @@ mod tests {
         type_text(&mut app, "save my work");
         assert!(screen(&mut app, 110, 30).contains("save my work"));
         key(&mut app, KeyCode::Enter);
-        assert!(app.overlay.is_none(), "{:?}", app.overlay);
+        assert!(app.modals.overlay.is_none(), "{:?}", app.modals.overlay);
         assert_eq!(head(&repo), "feature");
         assert_eq!(
             git(&repo, &["log", "-1", "--format=%s", "main"]),
@@ -3127,7 +3112,7 @@ mod tests {
             keys: fingerprints(&repo, &files),
             files,
         };
-        app.branch_switch.switching.insert(w1(), job.clone());
+        app.jobs.branch_switch.switching.insert(w1(), job.clone());
         view_mut(&mut app).stage = Stage::Working(job);
         land_answer(
             &mut app,
@@ -3163,8 +3148,8 @@ mod tests {
             files: Vec::new(),
             keys: Vec::new(),
         };
-        app.branch_switch.switching.insert(w1(), job);
-        app.branch_switch.requests = 7;
+        app.jobs.branch_switch.switching.insert(w1(), job);
+        app.jobs.branch_switch.requests = 7;
 
         open_for(&mut app, &w1());
         assert!(matches!(view(&app).stage, Stage::Working(ref j) if j.request == 7));
@@ -3181,10 +3166,10 @@ mod tests {
         assert!(status.text.contains("already running"), "{status:?}");
         assert_eq!(head(&repo), "main");
 
-        let running = app.branch_switch.switching[&w1()].clone();
+        let running = app.jobs.branch_switch.switching[&w1()].clone();
         view_mut(&mut app).stage = Stage::Working(running);
         key(&mut app, KeyCode::Esc);
-        assert!(app.overlay.is_none(), "Esc hides the working modal");
+        assert!(app.modals.overlay.is_none(), "Esc hides the working modal");
 
         // A stale answer is nobody's.
         land_answer(
@@ -3195,7 +3180,7 @@ mod tests {
                 outcome: Outcome::Failed("stale".into()),
             },
         );
-        assert!(app.branch_switch.switching.contains_key(&w1()));
+        assert!(app.jobs.branch_switch.switching.contains_key(&w1()));
 
         let files = vec![DiffFile {
             path: "a.txt".into(),
@@ -3213,9 +3198,9 @@ mod tests {
                 },
             },
         );
-        assert!(app.branch_switch.switching.is_empty());
+        assert!(app.jobs.branch_switch.switching.is_empty());
         assert_eq!(
-            app.flash.as_deref(),
+            app.chrome.flash.as_deref(),
             Some("not switched: main has 1 uncommitted change — c to choose what happens to them")
         );
     }
@@ -3226,18 +3211,19 @@ mod tests {
         let mut main = local("main");
         main.current = true;
         let rows = vec![main, local("feature"), local("other")];
-        app.branch_switch.lists.insert(w1(), rows);
+        app.jobs.branch_switch.lists.insert(w1(), rows);
         app.tree.worktrees[0].branch = "feature".into();
         open_for(&mut app, &w1());
         let v = view(&app);
         let current: Vec<&str> = v
-            .branches
+            .list
+            .items
             .iter()
             .filter(|b| b.current)
             .map(|b| b.name.as_str())
             .collect();
         assert_eq!(current, ["feature"], "an agent switched it meanwhile");
-        assert_eq!(v.branches[0].name, "feature", "current leads");
+        assert_eq!(v.list.items[0].name, "feature", "current leads");
         assert_eq!(v.selected_branch().unwrap().name, "main");
 
         // Untouched, a landing listing sends the cursor home; moved, it
@@ -3264,7 +3250,7 @@ mod tests {
 
     #[test]
     fn a_wide_subject_never_pushes_the_tag_and_age_off_the_row() {
-        let th = App::new().theme;
+        let th = App::new().chrome.theme;
         let mut branch = remote("origin/修复-login");
         branch.subject =
             "✨ 修复登录重定向 ✨ 修复登录重定向 ✨ 修复登录重定向 ✨ 修复登录重定向".into();

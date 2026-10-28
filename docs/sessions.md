@@ -311,7 +311,17 @@ is one key from there: `p` opens the QUICK PROMPT, focused, so the first thing y
   worktree's own confirm; the root's band says no `d`, since the root is never deleted. With the
   setting on, deleting a worktree's last card never asks about the worktree: the band stays,
   empty, until its own `d` — unless **Delete emptied worktree** is on, which still deletes the
-  worktree with its last card. Each band is a
+  worktree with its last card. "Nothing running" counts nebula's own sessions only: an agent
+  whose session lives in another checkout can be working in this one through absolute paths.
+  So every confirm that would take a worktree off disk first runs the **DELETE CHECK** and lists
+  what it finds under the question — processes whose working directory is inside the checkout
+  (other than its own sessions, which the confirm already counts), uncommitted changes and how
+  recently the newest was written, and commits its base lacks (or, on a detached HEAD, commits
+  no branch holds). `Enter` waits for the check — up to ten seconds — so the delete is never
+  confirmed ahead of it; a check that fails or runs out of time says so rather than reading as
+  clean. The dialog itself waits for the check (the footer says `checking 'feat' for work in
+  progress…`), so it opens once, already filled in; only a check still out after five seconds
+  opens it early, with `Checking…` (`Esc` cancels throughout). Each band is a
   titled rule over one row of cards: the rule names the checkout in its scope color (`↳ feat`,
   `⌂ main` for the root — the project is the grid's own scope, named once in the header), with
   that checkout's uncommitted changes right behind the branch in the warning color (`↳ feat +3
@@ -353,6 +363,11 @@ is one key from there: `p` opens the QUICK PROMPT, focused, so the first thing y
   above` on the row of air under the PROJECT TABS once the top has scrolled off, `↓ 3 more below`
   on a row kept under the cards while there is more past the bottom — the row stays as air once the
   grid is scrolled to its end, and neither appears on a grid that fits.
+  Turn on **Auto-clean merged worktrees** in Settings → Sessions (`auto_cleanup_merged`) to have
+  nebula remove linked checkouts after their PR lands. It is off by default and guarded: the ROOT
+  WORKTREE, the repo's default branch, branches used as the base of open PRs, dirty checkouts,
+  checkouts with untracked files, moved heads, running terminals and sessions mid-turn are skipped
+  with a short notice instead.
 - **Walking it.** `j` and `k` walk the bands — the rule of the band under the cursor takes the
   accent and its branch goes bold, its remembered card (the session it was last left on, else its
   first) is raised out of the row — a heavy accent frame (`┏━┓`, a weight no status frame takes) over
@@ -388,6 +403,7 @@ is one key from there: `p` opens the QUICK PROMPT, focused, so the first thing y
   time, as with the cards. A band that already lists everything has nothing to open, and `Tab`
   there says so. `j` and `k` walk the lines as one column, off a band's last line onto the next
   band's first; `Enter` and a click work on a line as on a card.
+- **The columns layout.** **Worktree layout** → `columns` brings back the project/worktree/session shape as one of the existing worktree layouts, not a separate Layout setting. The body is three row lists beside the same session pane: PROJECTS on the left, WORKTREES in the middle, SESSIONS on the right. `Tab`/`Shift+Tab` (or left/right focus keys) move between columns, `j`/`k` walk the focused column, and `Enter` uses the same project, worktree, PR/issue, session, link and terminal actions as the rest of nebula. PR and issue rows still read in the pane, missing project folders still use the locate flow, AskQuestion/needs-feedback rows keep the red status dot, and moving a session uses the `m` picker; card drag is a grid-only gesture and is disabled in columns. The old `hide_projects`, `hide_worktrees`, `hide_sessions`, `recent_prompts` and `recent_prompts_count` config keys are read only for this layout.
 - **The nested layout.** **Worktree layout** → `nested` draws the grid as a list of threads, one
   per worktree, with no header, no card border and no blank line between threads. Threads are
   sorted by their latest prompt, the one that moved last on top. The first prompt run in a

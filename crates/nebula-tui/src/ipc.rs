@@ -5,7 +5,9 @@ use anyhow::{bail, Context, Result};
 use nebula_core::codec::{read_frame, write_frame};
 use nebula_core::CLI_NAME; // odyn:
 use nebula_core::{
-    env, paths, AgentId, AgentKind, ClientRequest, EnterOutcome, ServerEvent, PROTOCOL_VERSION,
+    env, paths, Agent, AgentId, AgentKind, ClientRequest, EnterOutcome, Link, Project, ProjectId,
+    ReviewTabKind, ServerEvent, SessionRef, SessionSummary, TerminalId, TerminalTab, Worktree,
+    WorktreeId, PROTOCOL_VERSION,
 };
 use std::time::Duration;
 use tokio::net::UnixStream;
@@ -13,6 +15,7 @@ use tokio::net::UnixStream;
 /// Request id for the one-shot CLIs: each opens a fresh connection, sends a
 /// single request and waits for its reply, so there is never a second id.
 const ONE_SHOT_REQ_ID: u64 = 1;
+const SESSION_CONTEXT_PROTOCOL: u32 = 50;
 /// The daemon hung up mid-request — the message every one-shot client shows.
 const CLOSED_BEFORE_REPLY: &str = "daemon closed the connection before replying";
 /// How often the connect and shutdown waits re-check the daemon.
@@ -21,6 +24,7 @@ const POLL_STEP: Duration = Duration::from_millis(50);
 pub struct Connection {
     pub stream: UnixStream,
     pub daemon_pid: u32,
+    pub protocol_version: u32,
 }
 
 /// Connect, auto-spawning `current_exe() daemon` when nothing is listening.
@@ -117,7 +121,20 @@ async fn handshake(mut stream: UnixStream) -> Result<Connection> {
     )
     .await?;
     match read_frame::<ServerEvent, _>(&mut stream).await? {
-        Some(ServerEvent::HelloOk { daemon_pid, .. }) => Ok(Connection { stream, daemon_pid }),
+        Some(ServerEvent::HelloOk {
+            protocol_version,
+            daemon_pid,
+        }) => {
+            if nebula_core::protocol_compatible_with(protocol_version) {
+                Ok(Connection {
+                    stream,
+                    daemon_pid,
+                    protocol_version,
+                })
+            } else {
+                bail!(version_skew_message(protocol_version, listener_pid))
+            }
+        }
         Some(ServerEvent::Incompatible {
             daemon_protocol_version,
         }) => bail!(version_skew_message(daemon_protocol_version, listener_pid)),
@@ -208,9 +225,13 @@ fn daemon_exe_path(pid: i32) -> Option<String> {
 pub struct IpcChannels {
     pub tx: tokio::sync::mpsc::Sender<ClientRequest>,
     pub rx: tokio::sync::mpsc::Receiver<ServerEvent>,
+    /// The protocol the DAEMON said it speaks, so a request it would not
+    /// know is never sent to it.
+    pub protocol_version: u32,
 }
 
 pub fn split_connection(conn: Connection) -> IpcChannels {
+    let protocol_version = conn.protocol_version;
     let (read_half, mut write_half) = conn.stream.into_split();
     let (event_tx, event_rx) = tokio::sync::mpsc::channel::<ServerEvent>(1024);
     let (req_tx, mut req_rx) = tokio::sync::mpsc::channel::<ClientRequest>(256);
@@ -236,6 +257,7 @@ pub fn split_connection(conn: Connection) -> IpcChannels {
     IpcChannels {
         tx: req_tx,
         rx: event_rx,
+        protocol_version,
     }
 }
 
@@ -280,6 +302,16 @@ async fn await_reply(conn: &mut Connection, req_id: u64) -> Result<Reply> {
             None => bail!("{CLOSED_BEFORE_REPLY}"),
         }
     }
+}
+
+fn require_protocol(conn: &Connection, needed: u32, command: &str) -> Result<()> {
+    if conn.protocol_version < needed {
+        bail!(
+            "`{CLI_NAME} {command}` needs daemon protocol v{needed}, but the running daemon speaks v{} — run `{CLI_NAME} kill` and relaunch",
+            conn.protocol_version
+        );
+    }
+    Ok(())
 }
 
 /// [`await_reply`] for the callers where the daemon declining *is* the
@@ -413,15 +445,14 @@ pub async fn open_files_for_current_agent(files: &[String]) -> Result<()> {
         if !path.is_file() {
             bail!("can't open {file}: not a file");
         }
-        // A terminal shows text: a tab of a PNG's bytes shows nobody
-        // anything, so the file is refused here — the model names the
-        // path in its reply instead — by git's NUL-in-the-head test.
-        let text = crate::tree_browser::is_text_file(&path)
+        // The preview pane can render text, local images and Mermaid
+        // diagrams. Other binaries are refused here, before IPC.
+        let openable = crate::tree_browser::is_openable_file(&path)
             .with_context(|| format!("can't open {file}: unreadable"))?;
-        if !text {
+        if !openable {
             bail!(
-                "can't open {file}: not a text file — {CLI_NAME} shows text only (no images, PDFs or \
-                 other binaries); name the path in your reply instead"
+                "can't open {file}: unsupported binary file — {CLI_NAME} opens text, images and \
+                 Mermaid diagrams; name this path in your reply instead"
             );
         }
         resolved.push(path);
@@ -449,6 +480,430 @@ pub async fn open_files_for_current_agent(files: &[String]) -> Result<()> {
          each, with a preview and an editor. Don't paste their contents into your reply; carry on."
     );
     Ok(())
+}
+
+async fn session_context_connection(command: &str) -> Result<Connection> {
+    let sock = paths::socket_path();
+    let Ok(stream) = try_connect(&sock).await else {
+        bail!("no {CLI_NAME} daemon is running");
+    };
+    let conn = handshake(stream).await?;
+    require_protocol(&conn, SESSION_CONTEXT_PROTOCOL, command)?;
+    Ok(conn)
+}
+
+async fn fetch_sessions(conn: &mut Connection) -> Result<Vec<SessionSummary>> {
+    let req_id = ONE_SHOT_REQ_ID;
+    write_frame(&mut conn.stream, &ClientRequest::ListSessions { req_id }).await?;
+    loop {
+        match read_frame::<ServerEvent, _>(&mut conn.stream).await? {
+            Some(ServerEvent::SessionList {
+                req_id: r,
+                sessions,
+            }) if r == req_id => return Ok(sessions),
+            Some(ServerEvent::Error {
+                req_id: Some(r),
+                message,
+            }) if r == req_id => bail!("{message}"),
+            Some(_) => continue,
+            None => bail!("{CLOSED_BEFORE_REPLY}"),
+        }
+    }
+}
+
+pub async fn list_sessions(json: bool) -> Result<()> {
+    let mut conn = session_context_connection("sessions").await?;
+    let sessions = fetch_sessions(&mut conn).await?;
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({ "sessions": sessions }))?
+        );
+    } else {
+        print_session_summaries(&sessions);
+    }
+    Ok(())
+}
+
+pub async fn read_session(session: &str, lines: u32) -> Result<()> {
+    let mut conn = session_context_connection("read").await?;
+    let req_id = ONE_SHOT_REQ_ID;
+    write_frame(
+        &mut conn.stream,
+        &ClientRequest::ReadSession {
+            req_id,
+            target: session.to_string(),
+            max_lines: lines,
+        },
+    )
+    .await?;
+    loop {
+        match read_frame::<ServerEvent, _>(&mut conn.stream).await? {
+            Some(ServerEvent::SessionText {
+                req_id: r, text, ..
+            }) if r == req_id => {
+                print!("{text}");
+                return Ok(());
+            }
+            Some(ServerEvent::Error {
+                req_id: Some(r),
+                message,
+            }) if r == req_id => bail!("{message}"),
+            Some(_) => continue,
+            None => bail!("{CLOSED_BEFORE_REPLY}"),
+        }
+    }
+}
+
+pub async fn ask_session(
+    session: &str,
+    question: &str,
+    timeout_secs: u64,
+    wait: bool,
+) -> Result<()> {
+    let mut conn = session_context_connection("ask").await?;
+    let question = question.trim();
+    if question.is_empty() {
+        bail!("question is empty");
+    }
+    let caller = env::non_empty(env::AGENT_ID).map(AgentId);
+    let timeout_ms = timeout_secs.saturating_mul(1000);
+    let req_id = ONE_SHOT_REQ_ID;
+    write_frame(
+        &mut conn.stream,
+        &ClientRequest::AskSession {
+            req_id,
+            caller,
+            target: session.to_string(),
+            question: question.to_string(),
+            timeout_ms,
+            wait,
+        },
+    )
+    .await?;
+    loop {
+        match read_frame::<ServerEvent, _>(&mut conn.stream).await? {
+            Some(ServerEvent::SessionAnswer {
+                req_id: r, answer, ..
+            }) if r == req_id => {
+                println!("{answer}");
+                return Ok(());
+            }
+            Some(ServerEvent::Error {
+                req_id: Some(r),
+                message,
+            }) if r == req_id => bail!("{message}"),
+            Some(_) => continue,
+            None => bail!("{CLOSED_BEFORE_REPLY}"),
+        }
+    }
+}
+
+fn print_session_summaries(sessions: &[SessionSummary]) {
+    for session in sessions {
+        println!(
+            "{} name={} project={} branch={} worktree={} harness={} status={}{} summary={}",
+            session.id,
+            shell_word(&session.name),
+            shell_word(&session.project),
+            shell_word(&session.branch),
+            session.worktree.display(),
+            session.harness,
+            session.status,
+            if session.alive { " alive" } else { "" },
+            shell_word(&session.summary)
+        );
+    }
+}
+
+fn shell_word(value: &str) -> String {
+    if value
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'/'))
+    {
+        value.to_string()
+    } else {
+        format!("{value:?}")
+    }
+}
+
+#[derive(Debug, Clone)]
+struct OrchestratorTree {
+    projects: Vec<Project>,
+    worktrees: Vec<Worktree>,
+    agents: Vec<Agent>,
+    terminals: Vec<TerminalTab>,
+    links: Vec<Link>,
+}
+
+async fn orchestrator_connection() -> Result<(AgentId, Connection)> {
+    let agent_id = AgentId(current_agent_id("orchestrator")?);
+    let sock = paths::socket_path();
+    let Ok(stream) = try_connect(&sock).await else {
+        bail!("no {CLI_NAME} daemon is running");
+    };
+    Ok((agent_id, handshake(stream).await?))
+}
+
+async fn fetch_orchestrator_tree(
+    caller: &AgentId,
+    conn: &mut Connection,
+) -> Result<OrchestratorTree> {
+    let req_id = ONE_SHOT_REQ_ID;
+    write_frame(
+        &mut conn.stream,
+        &ClientRequest::OrchestratorList {
+            req_id,
+            caller: caller.clone(),
+        },
+    )
+    .await?;
+    loop {
+        match read_frame::<ServerEvent, _>(&mut conn.stream).await? {
+            Some(ServerEvent::OrchestratorList {
+                req_id: r,
+                projects,
+                worktrees,
+                agents,
+                terminals,
+                links,
+            }) if r == req_id => {
+                return Ok(OrchestratorTree {
+                    projects,
+                    worktrees,
+                    agents,
+                    terminals,
+                    links,
+                });
+            }
+            Some(ServerEvent::Error {
+                req_id: Some(r),
+                message,
+            }) if r == req_id => bail!("{message}"),
+            Some(_) => continue,
+            None => bail!("{CLOSED_BEFORE_REPLY}"),
+        }
+    }
+}
+
+pub async fn orchestrator_list(json: bool) -> Result<()> {
+    let (caller, mut conn) = orchestrator_connection().await?;
+    let tree = fetch_orchestrator_tree(&caller, &mut conn).await?;
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "projects": tree.projects,
+                "worktrees": tree.worktrees,
+                "agents": tree.agents,
+                "terminals": tree.terminals,
+                "links": tree.links,
+            }))?
+        );
+    } else {
+        print_orchestrator_tree(&tree);
+    }
+    Ok(())
+}
+
+pub async fn orchestrator_read(session: &str, bytes: u32) -> Result<()> {
+    let (caller, mut conn) = orchestrator_connection().await?;
+    let session = parse_session_ref(session);
+    let req_id = ONE_SHOT_REQ_ID;
+    write_frame(
+        &mut conn.stream,
+        &ClientRequest::OrchestratorRead {
+            req_id,
+            caller,
+            session: session.clone(),
+            max_bytes: bytes,
+        },
+    )
+    .await?;
+    loop {
+        match read_frame::<ServerEvent, _>(&mut conn.stream).await? {
+            Some(ServerEvent::OutputTail {
+                req_id: r,
+                session: _,
+                tail,
+            }) if r == req_id => {
+                match tail {
+                    Some(tail) => print!("{}", String::from_utf8_lossy(&tail.data)),
+                    None => println!("(session is not live)"),
+                }
+                return Ok(());
+            }
+            Some(ServerEvent::Error {
+                req_id: Some(r),
+                message,
+            }) if r == req_id => bail!("{message}"),
+            Some(_) => continue,
+            None => bail!("{CLOSED_BEFORE_REPLY}"),
+        }
+    }
+}
+
+pub async fn orchestrator_send(session: &str, prompt: &str) -> Result<()> {
+    let target = AgentId(session.to_string());
+    let (caller, mut conn) = orchestrator_connection().await?;
+    let req_id = ONE_SHOT_REQ_ID;
+    write_frame(
+        &mut conn.stream,
+        &ClientRequest::OrchestratorSend {
+            req_id,
+            caller,
+            target: target.clone(),
+            message: prompt.to_string(),
+        },
+    )
+    .await?;
+    await_ack(&mut conn, req_id).await?;
+    println!("sent to {}", target);
+    Ok(())
+}
+
+pub async fn orchestrator_spawn(
+    project: &str,
+    worktree: Option<&str>,
+    base: Option<String>,
+    kind: AgentKind,
+    task: &str,
+) -> Result<()> {
+    let (caller, mut conn) = orchestrator_connection().await?;
+    let tree = fetch_orchestrator_tree(&caller, &mut conn).await?;
+    let project_id = resolve_project(&tree, project)?;
+    let (worktree_id, branch) = match worktree {
+        Some(target) => resolve_worktree_or_branch(&tree, &project_id, target),
+        None => (None, None),
+    };
+    let req_id = ONE_SHOT_REQ_ID + 1;
+    write_frame(
+        &mut conn.stream,
+        &ClientRequest::OrchestratorSpawn {
+            req_id,
+            caller,
+            project: project_id,
+            worktree: worktree_id,
+            branch,
+            base,
+            name: String::new(),
+            kind,
+            custom_harness: None,
+            model: None,
+            effort: None,
+            starting_prompt: task.to_string(),
+        },
+    )
+    .await?;
+    await_ack(&mut conn, req_id).await?;
+    println!("started a new {} session for that task", kind.as_str());
+    Ok(())
+}
+
+pub async fn orchestrator_review(session: &str, tabs: Vec<ReviewTabKind>) -> Result<()> {
+    let (caller, mut conn) = orchestrator_connection().await?;
+    let req_id = ONE_SHOT_REQ_ID;
+    write_frame(
+        &mut conn.stream,
+        &ClientRequest::OrchestratorOpenReview {
+            req_id,
+            caller,
+            sessions: vec![parse_session_ref(session)],
+            tabs,
+        },
+    )
+    .await?;
+    await_ack(&mut conn, req_id).await?;
+    println!("opened review in {CLI_NAME}");
+    Ok(())
+}
+
+fn parse_session_ref(raw: &str) -> SessionRef {
+    if let Some(id) = raw
+        .strip_prefix("terminal:")
+        .or_else(|| raw.strip_prefix("term:"))
+    {
+        SessionRef::Terminal(TerminalId(id.to_string()))
+    } else {
+        SessionRef::Agent(AgentId(raw.to_string()))
+    }
+}
+
+fn resolve_project(tree: &OrchestratorTree, raw: &str) -> Result<ProjectId> {
+    let matches = tree
+        .projects
+        .iter()
+        .filter(|p| p.id.as_str() == raw || p.name == raw)
+        .collect::<Vec<_>>();
+    match matches.as_slice() {
+        [project] => Ok(project.id.clone()),
+        [] => bail!("project not found: {raw}"),
+        _ => bail!("project name is ambiguous: {raw}; use its id"),
+    }
+}
+
+fn resolve_worktree_or_branch(
+    tree: &OrchestratorTree,
+    project: &ProjectId,
+    raw: &str,
+) -> (Option<WorktreeId>, Option<String>) {
+    match tree
+        .worktrees
+        .iter()
+        .find(|w| &w.project_id == project && (w.id.as_str() == raw || w.branch == raw))
+    {
+        Some(worktree) => (Some(worktree.id.clone()), None),
+        None => (None, Some(raw.to_string())),
+    }
+}
+
+fn print_orchestrator_tree(tree: &OrchestratorTree) {
+    for project in &tree.projects {
+        println!(
+            "project {} name={} path={}",
+            project.id,
+            project.name,
+            project.repo_path.display()
+        );
+        for worktree in tree.worktrees.iter().filter(|w| w.project_id == project.id) {
+            println!(
+                "  worktree {} branch={}{} path={}",
+                worktree.id,
+                worktree.branch,
+                if worktree.is_main { " root" } else { "" },
+                worktree.path.display()
+            );
+            for agent in tree.agents.iter().filter(|a| a.worktree_id == worktree.id) {
+                println!(
+                    "    agent {} name={} kind={} status={}{}{} role={}",
+                    agent.id,
+                    agent.name,
+                    agent.kind.as_str(),
+                    agent.status.as_str(),
+                    if agent.alive { " alive" } else { "" },
+                    if agent.unseen { " unseen" } else { "" },
+                    agent.role.as_str()
+                );
+            }
+            for term in tree
+                .terminals
+                .iter()
+                .filter(|t| t.worktree_id == worktree.id)
+            {
+                println!(
+                    "    terminal {} name={}{}{}",
+                    term.id,
+                    term.name,
+                    if term.alive { " alive" } else { "" },
+                    if term.run_command.is_some() {
+                        " run"
+                    } else {
+                        ""
+                    }
+                );
+            }
+        }
+    }
 }
 
 /// CLI: `nebula worktree [name] [--base <ref>]` from inside an agent

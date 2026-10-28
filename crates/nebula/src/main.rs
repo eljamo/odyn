@@ -1,12 +1,13 @@
 mod browser;
 mod cli;
+mod sbx;
 mod ssh;
 mod tunnel;
 mod upgrade;
 
 use anyhow::Result;
 use clap::{CommandFactory, FromArgMatches}; // odyn:
-use cli::{Cli, Command, ConfigCommand};
+use cli::{Cli, Command, ConfigCommand, OrchestratorCommand};
 use nebula_core::CLI_NAME; // odyn: user-visible messages name the binary.
 use std::path::Path;
 
@@ -58,6 +59,39 @@ fn main() -> Result<()> {
             base,
         }) => nebula_tui::run_spawn(task.join(" "), kind, worktree, base),
         Some(Command::Open { files }) => nebula_tui::run_open(files),
+        Some(Command::Sessions { json }) => nebula_tui::run_sessions(json),
+        Some(Command::Read { session, lines }) => nebula_tui::run_read_session(&session, lines),
+        Some(Command::Ask {
+            session,
+            question,
+            timeout,
+            no_wait,
+        }) => nebula_tui::run_ask_session(&session, question.join(" "), timeout, !no_wait),
+        Some(Command::Orchestrator { command }) => match command {
+            OrchestratorCommand::List { json } => nebula_tui::run_orchestrator_list(json),
+            OrchestratorCommand::Read { session, bytes } => {
+                nebula_tui::run_orchestrator_read(&session, bytes)
+            }
+            OrchestratorCommand::Send { session, prompt } => {
+                nebula_tui::run_orchestrator_send(&session, prompt.join(" "))
+            }
+            OrchestratorCommand::Spawn {
+                project,
+                worktree,
+                base,
+                kind,
+                task,
+            } => nebula_tui::run_orchestrator_spawn(
+                &project,
+                worktree.as_deref(),
+                base,
+                kind,
+                task.join(" "),
+            ),
+            OrchestratorCommand::Review { session, tabs } => {
+                nebula_tui::run_orchestrator_review(&session, tabs)
+            }
+        },
         Some(Command::Browser {
             port,
             bind,
@@ -81,6 +115,7 @@ fn main() -> Result<()> {
             path,
             no_sync_config,
         }) => ssh::run_ssh(&host, path.as_deref(), !no_sync_config),
+        Some(Command::Sbx { name, image }) => sbx::run_sbx(name.as_deref(), image.as_deref()),
         Some(Command::Tunnel {
             host,
             path,
@@ -108,6 +143,10 @@ fn main() -> Result<()> {
         }
         Some(Command::ProtocolVersion) => {
             println!("{}", nebula_core::PROTOCOL_VERSION);
+            Ok(())
+        }
+        Some(Command::ProtocolMinCompatibleVersion) => {
+            println!("{}", nebula_core::MIN_COMPATIBLE_PROTOCOL);
             Ok(())
         }
         Some(Command::RestartVersion) => {

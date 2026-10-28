@@ -29,6 +29,7 @@ fn seed_agent_in(app: &mut App, id: &str, worktree: &nebula_core::WorktreeId) {
                 status_changed_at: 0,
                 alive: true,
                 issue_url: None,
+                role: nebula_core::AgentRole::Worker,
                 recent_prompts: Vec::new(),
             }),
         },
@@ -58,6 +59,7 @@ fn seed_second_agent(app: &mut App, status: nebula_core::AgentStatus) {
                 status_changed_at: 0,
                 alive: true,
                 issue_url: None,
+                role: nebula_core::AgentRole::Worker,
                 recent_prompts: Vec::new(),
             }),
         },
@@ -86,13 +88,13 @@ fn an_unwatched_finish_counts_until_the_cursor_lands_on_it() {
     seed_second_agent(&mut app, AgentStatus::Running);
     let a2 = AgentId("a2".into());
     let (w1, p1) = (WorktreeId("w1".into()), ProjectId("p1".into()));
-    app.term = Some(AttachedTerm::new(
+    app.pane.term = Some(AttachedTerm::new(
         SessionRef::Agent(AgentId("a1".into())),
         40,
         10,
     ));
-    app.focus = Focus::Sessions;
-    app.sel_session = row_of(&app, "a1");
+    app.nav.focus = Focus::Sessions;
+    app.nav.sel_session = row_of(&app, "a1");
 
     hse(
         &mut app,
@@ -106,15 +108,15 @@ fn an_unwatched_finish_counts_until_the_cursor_lands_on_it() {
     assert_eq!(app.worktree_unseen(&w1), 1, "one terminal to go read");
     assert_eq!(app.project_unseen(&p1), 1);
     assert_eq!(
-        app.sel_session,
+        app.nav.sel_session,
         row_of(&app, "a1"),
         "the cursor stayed on the session it was on"
     );
 
     let mut out = Vec::new();
-    let delta = row_of(&app, "a2") as i64 - app.sel_session as i64;
+    let delta = row_of(&app, "a2") as i64 - app.nav.sel_session as i64;
     move_selection(&mut app, delta, &mut out);
-    assert_eq!(app.sel_session, row_of(&app, "a2"));
+    assert_eq!(app.nav.sel_session, row_of(&app, "a2"));
     assert_eq!(app.worktree_unseen(&w1), 0, "landing on the row reads it");
     assert_eq!(app.project_unseen(&p1), 0);
     assert!(
@@ -144,7 +146,7 @@ fn a_finish_rings_the_done_sound_once() {
     let mut app = App::new();
     seed_tree(&mut app);
     seed_second_agent(&mut app, AgentStatus::Running);
-    assert!(!app.pending_ding, "the snapshot is silent");
+    assert!(!app.chrome.pending_ding, "the snapshot is silent");
     let a2 = AgentId("a2".into());
     let flip = |status: AgentStatus| ServerEvent::StatusChanged {
         agent: a2.clone(),
@@ -154,27 +156,30 @@ fn a_finish_rings_the_done_sound_once() {
     };
 
     hse(&mut app, flip(AgentStatus::NeedsFeedback));
-    assert!(!app.pending_ding, "waiting on the user is not done");
+    assert!(!app.chrome.pending_ding, "waiting on the user is not done");
     hse(&mut app, flip(AgentStatus::Finished));
-    assert!(app.pending_ding, "NEEDS FEEDBACK -> FINISHED rings");
+    assert!(app.chrome.pending_ding, "NEEDS FEEDBACK -> FINISHED rings");
 
-    app.pending_ding = false;
-    hse(&mut app, flip(AgentStatus::Finished));
-    assert!(!app.pending_ding, "a re-stamp of a finished row is silent");
-
-    hse(&mut app, flip(AgentStatus::Running));
-    assert!(!app.pending_ding);
-    // On screen or not makes no difference to the sound.
-    app.term = Some(AttachedTerm::new(SessionRef::Agent(a2.clone()), 40, 10));
+    app.chrome.pending_ding = false;
     hse(&mut app, flip(AgentStatus::Finished));
     assert!(
-        app.pending_ding,
+        !app.chrome.pending_ding,
+        "a re-stamp of a finished row is silent"
+    );
+
+    hse(&mut app, flip(AgentStatus::Running));
+    assert!(!app.chrome.pending_ding);
+    // On screen or not makes no difference to the sound.
+    app.pane.term = Some(AttachedTerm::new(SessionRef::Agent(a2.clone()), 40, 10));
+    hse(&mut app, flip(AgentStatus::Finished));
+    assert!(
+        app.chrome.pending_ding,
         "RUNNING -> FINISHED rings, even on screen"
     );
     hse(&mut app, flip(AgentStatus::Running));
     hse(&mut app, flip(AgentStatus::Finished));
     assert!(
-        app.pending_ding,
+        app.chrome.pending_ding,
         "two finishes in a frame are still one ding"
     );
 }
@@ -189,7 +194,7 @@ fn a_finish_in_the_pane_on_screen_is_already_seen() {
     seed_tree(&mut app);
     seed_second_agent(&mut app, AgentStatus::Running);
     let a2 = AgentId("a2".into());
-    app.term = Some(AttachedTerm::new(SessionRef::Agent(a2.clone()), 40, 10));
+    app.pane.term = Some(AttachedTerm::new(SessionRef::Agent(a2.clone()), 40, 10));
 
     let mut out = Vec::new();
     handle_server_event(
@@ -222,7 +227,10 @@ fn a_turn_stopping_to_ask_queues_the_feedback_alert() {
     let mut app = App::new();
     seed_tree(&mut app);
     seed_second_agent(&mut app, AgentStatus::Running);
-    assert!(app.pending_feedback.is_empty(), "the snapshot is silent");
+    assert!(
+        app.chrome.pending_feedback.is_empty(),
+        "the snapshot is silent"
+    );
     let flip = |agent: &str, status: AgentStatus| ServerEvent::StatusChanged {
         agent: AgentId(agent.into()),
         status,
@@ -232,28 +240,28 @@ fn a_turn_stopping_to_ask_queues_the_feedback_alert() {
 
     hse(&mut app, flip("a2", AgentStatus::NeedsFeedback));
     assert_eq!(
-        app.pending_feedback,
+        app.chrome.pending_feedback,
         vec![FeedbackAlert {
             session: "agent-2".into(),
             place: "demo · main".into(),
         }]
     );
-    assert!(!app.pending_ding, "waiting on the user is not done");
+    assert!(!app.chrome.pending_ding, "waiting on the user is not done");
 
     hse(&mut app, flip("a2", AgentStatus::NeedsFeedback));
     assert_eq!(
-        app.pending_feedback.len(),
+        app.chrome.pending_feedback.len(),
         1,
         "a re-stamp of a red row is silent"
     );
 
-    app.pending_feedback.clear();
+    app.chrome.pending_feedback.clear();
     hse(&mut app, flip("a2", AgentStatus::Finished));
     assert!(
-        app.pending_feedback.is_empty(),
+        app.chrome.pending_feedback.is_empty(),
         "leaving red is the done sound's edge"
     );
-    assert!(app.pending_ding);
+    assert!(app.chrome.pending_ding);
 
     // Two sessions stopping in one frame: two names for the
     // notification; the drain plays the sound once for both.
@@ -262,6 +270,7 @@ fn a_turn_stopping_to_ask_queues_the_feedback_alert() {
     hse(&mut app, flip("a2", AgentStatus::Running));
     hse(&mut app, flip("a2", AgentStatus::NeedsFeedback));
     let names: Vec<_> = app
+        .chrome
         .pending_feedback
         .iter()
         .map(|a| a.session.as_str())
@@ -276,17 +285,17 @@ fn key(code: KeyCode, mods: KeyModifiers) -> Event {
 fn locked_pane_app() -> App {
     let mut app = App::new();
     seed_tree(&mut app);
-    app.term = Some(AttachedTerm::new(
+    app.pane.term = Some(AttachedTerm::new(
         SessionRef::Agent(AgentId("a1".into())),
         40,
         10,
     ));
-    app.focus = Focus::Terminal;
-    app.term_locked = true;
+    app.nav.focus = Focus::Terminal;
+    app.pane.term_locked = true;
     // The tabs as a draw leaves them: the pane's project already
     // leads, so a key typed at it moves no tab.
     app.settle_project_tabs();
-    app.dirty = false;
+    app.chrome.dirty = false;
     app
 }
 
@@ -307,7 +316,7 @@ fn a_key_that_only_goes_to_the_pty_asks_for_no_frame() {
         matches!(out.as_slice(), [ClientRequest::Input { .. }]),
         "the key went to the PTY: {out:?}"
     );
-    assert!(!app.dirty, "and changed nothing on screen");
+    assert!(!app.chrome.dirty, "and changed nothing on screen");
 }
 
 /// …but whatever a forwarded key takes down is a change, and is
@@ -317,16 +326,19 @@ fn a_forwarded_key_that_clears_something_still_paints() {
     let mut out = Vec::new();
 
     let mut app = locked_pane_app();
-    app.flash = Some("copied".into());
+    app.chrome.flash = Some("copied".into());
     handle_terminal_event(
         &mut app,
         key(KeyCode::Char('x'), KeyModifiers::NONE),
         &mut out,
     );
-    assert!(app.dirty && app.flash.is_none(), "the flash came down");
+    assert!(
+        app.chrome.dirty && app.chrome.flash.is_none(),
+        "the flash came down"
+    );
 
     let mut app = locked_pane_app();
-    if let Some(term) = &mut app.term {
+    if let Some(term) = &mut app.pane.term {
         term.parser.process(&b"line\r\n".repeat(40));
         term.set_scroll(3);
         assert!(term.scroll_offset() > 0);
@@ -336,8 +348,11 @@ fn a_forwarded_key_that_clears_something_still_paints() {
         key(KeyCode::Char('x'), KeyModifiers::NONE),
         &mut out,
     );
-    assert!(app.dirty, "typing left the scrollback for the live edge");
-    assert_eq!(app.term.as_ref().map(|t| t.scroll_offset()), Some(0));
+    assert!(
+        app.chrome.dirty,
+        "typing left the scrollback for the live edge"
+    );
+    assert_eq!(app.pane.term.as_ref().map(|t| t.scroll_offset()), Some(0));
 }
 
 /// The hatch out of the pane is not a forwarded key: FOCUS moves, and
@@ -352,7 +367,7 @@ fn the_unlock_key_in_a_locked_pane_paints() {
         &mut out,
     );
     assert!(out.is_empty(), "nothing went to the PTY");
-    assert!(!app.term_locked && app.dirty);
+    assert!(!app.pane.term_locked && app.chrome.dirty);
 }
 
 /// A turn that stops to ask in the pane the user is locked into typing
@@ -373,52 +388,56 @@ fn a_red_turn_in_the_pane_you_are_typing_at_is_silent() {
         changed_at: crate::app::now_ms(),
         unseen: false,
     };
-    app.term = Some(AttachedTerm::new(SessionRef::Agent(a2.clone()), 40, 10));
-    app.focus = Focus::Terminal;
-    app.term_locked = true;
+    app.pane.term = Some(AttachedTerm::new(SessionRef::Agent(a2.clone()), 40, 10));
+    app.nav.focus = Focus::Terminal;
+    app.pane.term_locked = true;
     assert!(
-        app.window_focused,
+        app.chrome.window_focused,
         "a fresh TUI assumes the window has focus"
     );
 
     hse(&mut app, flip(AgentStatus::NeedsFeedback));
     assert!(
-        app.pending_feedback.is_empty(),
+        app.chrome.pending_feedback.is_empty(),
         "the prompt is on screen, under the user's hands"
     );
 
     // Unlocked: the pane merely previews it, the user is on the panels.
     hse(&mut app, flip(AgentStatus::Running));
-    app.term_locked = false;
-    hse(&mut app, flip(AgentStatus::NeedsFeedback));
-    assert_eq!(app.pending_feedback.len(), 1, "previewing is not typing at");
-
-    // Locked, but the terminal window went to the background.
-    app.pending_feedback.clear();
-    hse(&mut app, flip(AgentStatus::Running));
-    app.term_locked = true;
-    let mut out = Vec::new();
-    handle_terminal_event(&mut app, Event::FocusLost, &mut out);
-    assert!(!app.window_focused);
+    app.pane.term_locked = false;
     hse(&mut app, flip(AgentStatus::NeedsFeedback));
     assert_eq!(
-        app.pending_feedback.len(),
+        app.chrome.pending_feedback.len(),
+        1,
+        "previewing is not typing at"
+    );
+
+    // Locked, but the terminal window went to the background.
+    app.chrome.pending_feedback.clear();
+    hse(&mut app, flip(AgentStatus::Running));
+    app.pane.term_locked = true;
+    let mut out = Vec::new();
+    handle_terminal_event(&mut app, Event::FocusLost, &mut out);
+    assert!(!app.chrome.window_focused);
+    hse(&mut app, flip(AgentStatus::NeedsFeedback));
+    assert_eq!(
+        app.chrome.pending_feedback.len(),
         1,
         "nobody is looking at that pane"
     );
     handle_terminal_event(&mut app, Event::FocusGained, &mut out);
-    assert!(app.window_focused);
+    assert!(app.chrome.window_focused);
 
     // Another session's pane on screen, locked, makes no difference.
-    app.pending_feedback.clear();
-    app.term = Some(AttachedTerm::new(
+    app.chrome.pending_feedback.clear();
+    app.pane.term = Some(AttachedTerm::new(
         SessionRef::Agent(AgentId("a1".into())),
         40,
         10,
     ));
     hse(&mut app, flip(AgentStatus::Running));
     hse(&mut app, flip(AgentStatus::NeedsFeedback));
-    assert_eq!(app.pending_feedback.len(), 1);
+    assert_eq!(app.chrome.pending_feedback.len(), 1);
 }
 
 /// A session with no live PTY behind it — reaped, or not booted since
@@ -435,7 +454,7 @@ fn cold_session_dot_is_gray_until_warm() {
     seed_second_agent(&mut app, AgentStatus::Finished);
     // The band open, so both cards are on screen whichever the
     // cursor's row keeps on its strip.
-    app.launcher_expanded = Some(nebula_core::WorktreeId("w1".into()));
+    app.launcher.launcher_expanded = Some(nebula_core::WorktreeId("w1".into()));
     let a2 = AgentId("a2".into());
     // The agent-2 row's dot color, and the row's text.
     let dot = |app: &mut App| {
@@ -466,11 +485,11 @@ fn cold_session_dot_is_gray_until_warm() {
     };
 
     let (fg, row) = dot(&mut app);
-    assert_eq!(fg, app.theme.ok, "warm: the finished green: {row}");
+    assert_eq!(fg, app.chrome.theme.ok, "warm: the finished green: {row}");
 
     upsert(&mut app, &|a| a.alive = false);
     let (fg, row) = dot(&mut app);
-    assert_eq!(fg, app.theme.dim, "cold: gray: {row}");
+    assert_eq!(fg, app.chrome.theme.dim, "cold: gray: {row}");
 
     hse(
         &mut app,
@@ -482,20 +501,23 @@ fn cold_session_dot_is_gray_until_warm() {
         },
     );
     let (fg, row) = dot(&mut app);
-    assert_eq!(fg, app.theme.dim, "cold wins over unread: {row}");
+    assert_eq!(fg, app.chrome.theme.dim, "cold wins over unread: {row}");
     let tail = &row[row.find("agent-2").unwrap()..];
     assert!(tail.contains(" done"), "the badge still says so: {row}");
 
     upsert(&mut app, &|a| a.alive = true);
     let (fg, row) = dot(&mut app);
-    assert_eq!(fg, app.theme.done, "warm again: unread blue: {row}");
+    assert_eq!(fg, app.chrome.theme.done, "warm again: unread blue: {row}");
 
     upsert(&mut app, &|a| {
         a.alive = false;
         a.cloud_session_id = Some("session_016SiQW5Lem2LbnUf1A3undt".into());
     });
     let (fg, row) = dot(&mut app);
-    assert_eq!(fg, app.theme.done, "a cloud row is never cold: {row}");
+    assert_eq!(
+        fg, app.chrome.theme.done,
+        "a cloud row is never cold: {row}"
+    );
 }
 
 /// The grid's beat asks the daemon after every terminal the last
@@ -518,12 +540,12 @@ fn terminal_tails_are_asked_after_the_drawn_cards_and_land_as_lines() {
         run_command: None,
     };
     app.tree.terminals = vec![tab("t1", true), tab("t2", true), tab("t3", false)];
-    app.term = Some(AttachedTerm::new(
+    app.pane.term = Some(AttachedTerm::new(
         SessionRef::Terminal(TerminalId("t2".into())),
         80,
         24,
     ));
-    app.terminal_tails.insert(
+    app.pane.terminal_tails.insert(
         TerminalId("t1".into()),
         TerminalTail {
             lines: vec!["old".into()],
@@ -532,7 +554,7 @@ fn terminal_tails_are_asked_after_the_drawn_cards_and_land_as_lines() {
     );
     // As a frame leaves them: t1 twice (a band's strip and the pane's
     // header could both draw it), the attached t2, the dead t3.
-    app.tail_cards = vec![
+    app.pane.tail_cards = vec![
         TerminalId("t1".into()),
         TerminalId("t1".into()),
         TerminalId("t2".into()),
@@ -555,7 +577,7 @@ fn terminal_tails_are_asked_after_the_drawn_cards_and_land_as_lines() {
         "one ask, for the live terminal the pane is not on, from where it left off"
     );
     assert_eq!(
-        app.tail_cards.len(),
+        app.pane.tail_cards.len(),
         4,
         "the frame's notes are read, not taken: an idle grid keeps asking"
     );
@@ -563,10 +585,10 @@ fn terminal_tails_are_asked_after_the_drawn_cards_and_land_as_lines() {
         ClientRequest::TailOutput { req_id, .. } => *req_id,
         other => panic!("{other:?}"),
     };
-    assert!(app.pending.contains_key(&req_id));
+    assert!(app.requests.pending.contains_key(&req_id));
 
     // The answer: a shell's last lines, wrapped at the PTY's width.
-    app.dirty = false;
+    app.chrome.dirty = false;
     hse(
         &mut app,
         ServerEvent::OutputTail {
@@ -581,10 +603,10 @@ fn terminal_tails_are_asked_after_the_drawn_cards_and_land_as_lines() {
         },
     );
     assert!(
-        !app.pending.contains_key(&req_id),
+        !app.requests.pending.contains_key(&req_id),
         "the slot is cleared by hand"
     );
-    let tail = &app.terminal_tails[&TerminalId("t1".into())];
+    let tail = &app.pane.terminal_tails[&TerminalId("t1".into())];
     let texts: Vec<String> = tail.lines.iter().map(|r| r.text()).collect();
     assert_eq!(texts, ["$ npm test", "ok 12", "$"]);
     assert_eq!(
@@ -596,10 +618,10 @@ fn terminal_tails_are_asked_after_the_drawn_cards_and_land_as_lines() {
         "the lines keep the colours they were printed in"
     );
     assert_eq!(tail.end_seq, 70);
-    assert!(app.dirty, "the card changed");
+    assert!(app.chrome.dirty, "the card changed");
 
     // Nothing new: the lines stay, the frame is spared.
-    app.dirty = false;
+    app.chrome.dirty = false;
     hse(
         &mut app,
         ServerEvent::OutputTail {
@@ -613,8 +635,13 @@ fn terminal_tails_are_asked_after_the_drawn_cards_and_land_as_lines() {
             }),
         },
     );
-    assert_eq!(app.terminal_tails[&TerminalId("t1".into())].lines.len(), 3);
-    assert!(!app.dirty);
+    assert_eq!(
+        app.pane.terminal_tails[&TerminalId("t1".into())]
+            .lines
+            .len(),
+        3
+    );
+    assert!(!app.chrome.dirty);
     // The shell gone: likewise.
     hse(
         &mut app,
@@ -624,7 +651,12 @@ fn terminal_tails_are_asked_after_the_drawn_cards_and_land_as_lines() {
             tail: None,
         },
     );
-    assert_eq!(app.terminal_tails[&TerminalId("t1".into())].lines.len(), 3);
+    assert_eq!(
+        app.pane.terminal_tails[&TerminalId("t1".into())]
+            .lines
+            .len(),
+        3
+    );
     // The row removed: the lines go with it.
     hse(
         &mut app,
@@ -632,7 +664,10 @@ fn terminal_tails_are_asked_after_the_drawn_cards_and_land_as_lines() {
             id: EntityId::Terminal(TerminalId("t1".into())),
         },
     );
-    assert!(!app.terminal_tails.contains_key(&TerminalId("t1".into())));
+    assert!(!app
+        .pane
+        .terminal_tails
+        .contains_key(&TerminalId("t1".into())));
 }
 
 pub(super) fn hse(app: &mut App, ev: ServerEvent) {
@@ -656,13 +691,13 @@ fn a_frame_parks_the_host_cursor_on_the_attached_ptys_cursor() {
     let mut term = AttachedTerm::new(SessionRef::Agent(AgentId("a1".into())), 40, 10);
     // `$ cat`, then one wide character: row 1, two cells in.
     term.parser.process("$ cat\r\n亜".as_bytes());
-    app.term = Some(term);
-    app.focus = Focus::Terminal;
-    app.term_locked = true;
+    app.pane.term = Some(term);
+    app.nav.focus = Focus::Terminal;
+    app.pane.term_locked = true;
     let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
     draw_frame(&mut terminal, &mut app).unwrap();
-    let want = Position::new(app.term_area.x + 2, app.term_area.y + 1);
-    assert_eq!(app.host_cursor, Some(want), "the frame named the cell");
+    let want = Position::new(app.pane.term_area.x + 2, app.pane.term_area.y + 1);
+    assert_eq!(app.pane.host_cursor, Some(want), "the frame named the cell");
     assert_eq!(
         terminal.backend().cursor_position(),
         want,
@@ -690,14 +725,14 @@ fn a_pane_scrolled_past_its_cursor_leaves_the_host_cursor_alone() {
     // Twenty rows of scrollback above a ten-row grid: the cursor's row
     // is well below the pane.
     term.set_scroll(20);
-    app.term = Some(term);
-    app.focus = Focus::Terminal;
-    app.term_locked = true;
+    app.pane.term = Some(term);
+    app.nav.focus = Focus::Terminal;
+    app.pane.term_locked = true;
     let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
     let parked = Position::new(7, 7);
     terminal.set_cursor_position(parked).unwrap();
     draw_frame(&mut terminal, &mut app).unwrap();
-    assert_eq!(app.host_cursor, None, "no cell to name");
+    assert_eq!(app.pane.host_cursor, None, "no cell to name");
     assert_eq!(terminal.backend().cursor_position(), parked, "so no move");
 }
 
@@ -711,9 +746,9 @@ fn the_editor_modal_takes_the_host_cursor_over_the_pane() {
     seed_tree(&mut app);
     let mut term = AttachedTerm::new(SessionRef::Agent(AgentId("a1".into())), 40, 10);
     term.parser.process(b"$ cat\r\nabc");
-    app.term = Some(term);
-    app.focus = Focus::Terminal;
-    app.term_locked = true;
+    app.pane.term = Some(term);
+    app.nav.focus = Focus::Terminal;
+    app.pane.term_locked = true;
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let dir = tempfile::tempdir().unwrap();
     let mut vim = crate::vim_term::VimTerm::spawn_cmd(
@@ -729,13 +764,17 @@ fn the_editor_modal_takes_the_host_cursor_over_the_pane() {
     .unwrap();
     vim.kill();
     // Row 2, column 4 of the editor's grid.
-    vim.process(b"\x1b[3;5H");
-    app.vim = Some(vim);
+    vim.parser.process(b"\x1b[3;5H");
+    app.pane.vim = Some(vim);
     let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
     draw_frame(&mut terminal, &mut app).unwrap();
-    let modal = app.vim.as_ref().unwrap().area;
+    let modal = app.pane.vim.as_ref().unwrap().area;
     let want = Position::new(modal.x + 4, modal.y + 2);
-    assert_eq!(app.host_cursor, Some(want), "the editor is where keys go");
+    assert_eq!(
+        app.pane.host_cursor,
+        Some(want),
+        "the editor is where keys go"
+    );
     assert_eq!(terminal.backend().cursor_position(), want);
 }
 
@@ -814,6 +853,7 @@ pub(super) fn seed_tree(app: &mut App) {
                 status_changed_at: 0,
                 alive: true,
                 issue_url: None,
+                role: nebula_core::AgentRole::Worker,
                 recent_prompts: Vec::new(),
             }),
         },
@@ -855,12 +895,12 @@ const GHOSTTY: &str = "/Applications/Ghostty.app";
 fn ghostty_tab_opens_in_the_selected_worktree() {
     let dir = tempfile::tempdir().unwrap();
     let mut app = App::new();
-    app.is_remote = false;
+    app.chrome.is_remote = false;
     seed_worktree_at(&mut app, dir.path());
-    app.flash = None;
+    app.chrome.flash = None;
     open_ghostty_tab_with(&mut app, Some(GHOSTTY.into()));
     assert_eq!(
-        app.flash,
+        app.chrome.flash,
         Some(format!("opened a Ghostty tab in {}", dir.path().display()))
     );
 }
@@ -869,20 +909,23 @@ fn ghostty_tab_opens_in_the_selected_worktree() {
 fn ghostty_tab_is_silent_without_ghostty_or_over_ssh() {
     let dir = tempfile::tempdir().unwrap();
     let mut app = App::new();
-    app.is_remote = false;
+    app.chrome.is_remote = false;
     seed_worktree_at(&mut app, dir.path());
-    app.flash = None;
+    app.chrome.flash = None;
     open_ghostty_tab_with(&mut app, None);
-    assert_eq!(app.flash, None, "no Ghostty.app: not a word");
+    assert_eq!(app.chrome.flash, None, "no Ghostty.app: not a word");
 
     let mut empty = App::new();
-    empty.flash = None;
+    empty.chrome.flash = None;
     open_ghostty_tab_with(&mut empty, None);
-    assert_eq!(empty.flash, None, "nor a select-first nudge");
+    assert_eq!(empty.chrome.flash, None, "nor a select-first nudge");
 
-    app.is_remote = true;
+    app.chrome.is_remote = true;
     open_ghostty_tab_with(&mut app, Some(GHOSTTY.into()));
-    assert_eq!(app.flash, None, "over ssh the tab would open elsewhere");
+    assert_eq!(
+        app.chrome.flash, None,
+        "over ssh the tab would open elsewhere"
+    );
 }
 
 #[test]
@@ -890,12 +933,12 @@ fn ghostty_tab_names_a_checkout_gone_from_disk() {
     let dir = tempfile::tempdir().unwrap();
     let gone = dir.path().join("gone");
     let mut app = App::new();
-    app.is_remote = false;
+    app.chrome.is_remote = false;
     seed_worktree_at(&mut app, &gone);
-    app.flash = None;
+    app.chrome.flash = None;
     open_ghostty_tab_with(&mut app, Some(GHOSTTY.into()));
     assert_eq!(
-        app.flash,
+        app.chrome.flash,
         Some(format!("path missing on disk: {}", gone.display()))
     );
 }
@@ -926,7 +969,7 @@ const CLOUD_ID: &str = "session_01SQugK2HDyk33coSrfqFJk4";
 /// right-click on that row opens it — these tests never draw, so there
 /// is no cell to click.
 fn open_row_menu(app: &mut App) {
-    if let Some(items) = context_menu_items(app, app.focus) {
+    if let Some(items) = context_menu_items(app, app.nav.focus) {
         open_menu(app, items, KEYBOARD_MENU_ANCHOR);
     }
 }
@@ -954,11 +997,11 @@ fn cloud_row_can_send_a_message_to_its_session() {
     seed_tree(&mut app);
     let mut out = Vec::new();
     make_cloud_row(&mut app, &mut out);
-    app.focus = Focus::Sessions;
+    app.nav.focus = Focus::Sessions;
 
     open_row_menu(&mut app);
-    let Some(Overlay::Menu(menu)) = &app.overlay else {
-        panic!("no menu: {:?}", app.overlay)
+    let Some(Overlay::Menu(menu)) = &app.modals.overlay else {
+        panic!("no menu: {:?}", app.modals.overlay)
     };
     let labels: Vec<&str> = menu.items.iter().map(|i| i.label.as_str()).collect();
     assert!(
@@ -975,13 +1018,13 @@ fn cloud_row_can_send_a_message_to_its_session() {
         .iter()
         .position(|i| i.label == "Send to cloud session")
         .unwrap();
-    let Some(Overlay::Menu(menu)) = &mut app.overlay else {
+    let Some(Overlay::Menu(menu)) = &mut app.modals.overlay else {
         unreachable!()
     };
     menu.hover = idx;
     press(&mut app, KeyCode::Enter, KeyModifiers::NONE, &mut out);
-    let Some(Overlay::Prompt(prompt)) = &mut app.overlay else {
-        panic!("no message prompt: {:?}", app.overlay)
+    let Some(Overlay::Prompt(prompt)) = &mut app.modals.overlay else {
+        panic!("no message prompt: {:?}", app.modals.overlay)
     };
     assert!(
         prompt.is_multiline(),
@@ -1002,7 +1045,7 @@ fn cloud_row_can_send_a_message_to_its_session() {
         }
         other => panic!("expected a cloud send: {other:?}"),
     };
-    assert!(app.overlay.is_none(), "the prompt closes on submit");
+    assert!(app.modals.overlay.is_none(), "the prompt closes on submit");
 
     // A failed send reopens the editor with the message intact.
     hse(
@@ -1012,8 +1055,8 @@ fn cloud_row_can_send_a_message_to_its_session() {
             message: "claude could not reach the cloud session".into(),
         },
     );
-    let Some(Overlay::Prompt(prompt)) = &app.overlay else {
-        panic!("a lost message should come back: {:?}", app.overlay)
+    let Some(Overlay::Prompt(prompt)) = &app.modals.overlay else {
+        panic!("a lost message should come back: {:?}", app.modals.overlay)
     };
     assert_eq!(prompt.input.as_str(), "also update the README");
 }
@@ -1029,8 +1072,8 @@ fn cloud_row_pane_links_to_the_session_instead_of_attaching() {
     seed_tree(&mut app);
     let mut out = Vec::new();
     make_cloud_row(&mut app, &mut out);
-    app.focus = Focus::Sessions;
-    app.sel_session = 0;
+    app.nav.focus = Focus::Sessions;
+    app.nav.sel_session = 0;
     out.clear();
 
     preview_selected_now(&mut app, &mut out);
@@ -1039,7 +1082,7 @@ fn cloud_row_pane_links_to_the_session_instead_of_attaching() {
             .any(|r| matches!(r, ClientRequest::Attach { .. })),
         "a cloud row is never attached: {out:?}"
     );
-    assert!(app.term.is_none(), "no PTY stands behind the panel");
+    assert!(app.pane.term.is_none(), "no PTY stands behind the panel");
 
     let mut terminal = Terminal::new(TestBackend::new(160, 30)).unwrap();
     terminal.draw(|f| ui::draw(f, &mut app)).unwrap();
@@ -1051,7 +1094,8 @@ fn cloud_row_pane_links_to_the_session_instead_of_attaching() {
     );
     assert!(text.contains(" cloud"), "the row keeps its badge: {text}");
     assert_eq!(
-        app.hits
+        app.chrome
+            .hits
             .iter()
             .filter(|(_, t)| *t == HitTarget::CloudSessionLink)
             .count(),
@@ -1062,11 +1106,12 @@ fn cloud_row_pane_links_to_the_session_instead_of_attaching() {
     // A pane too narrow for the URL folds it rather than clipping it —
     // every row of the fold is clickable. Full-screen, so the panel
     // is the whole body and its width is the frame's.
-    app.collapsed = true;
+    app.pane.collapsed = true;
     let mut narrow = Terminal::new(TestBackend::new(40, 30)).unwrap();
     narrow.draw(|f| ui::draw(f, &mut app)).unwrap();
     let text = buffer_text(&narrow);
     let rows: Vec<ratatui::layout::Rect> = app
+        .chrome
         .hits
         .iter()
         .filter(|(_, t)| *t == HitTarget::CloudSessionLink)
@@ -1089,11 +1134,11 @@ fn cloud_row_pane_links_to_the_session_instead_of_attaching() {
     out.clear();
     press(&mut app, KeyCode::Enter, KeyModifiers::NONE, &mut out);
     assert_eq!(
-        app.flash.as_deref(),
+        app.chrome.flash.as_deref(),
         Some(&*format!("opened claude.ai/code/{CLOUD_ID}"))
     );
-    assert_eq!(app.focus, Focus::Sessions);
-    assert!(!app.term_locked);
+    assert_eq!(app.nav.focus, Focus::Sessions);
+    assert!(!app.pane.term_locked);
     assert!(
         !out.iter()
             .any(|r| matches!(r, ClientRequest::Attach { .. })),
@@ -1101,8 +1146,9 @@ fn cloud_row_pane_links_to_the_session_instead_of_attaching() {
     );
 
     // So does a click on the link itself.
-    app.flash = None;
+    app.chrome.flash = None;
     let (link, _) = app
+        .chrome
         .hits
         .iter()
         .find(|(_, t)| *t == HitTarget::CloudSessionLink)
@@ -1110,7 +1156,7 @@ fn cloud_row_pane_links_to_the_session_instead_of_attaching() {
         .expect("the link is a hit target");
     click(&mut app, link.x + 1, link.y, &mut out);
     assert_eq!(
-        app.flash.as_deref(),
+        app.chrome.flash.as_deref(),
         Some(&*format!("opened claude.ai/code/{CLOUD_ID}"))
     );
 }
@@ -1127,9 +1173,9 @@ fn a_row_that_gains_its_cloud_session_lets_go_of_the_create_pane() {
     seed_tree(&mut app);
     let mut out = Vec::new();
     attach_now(&mut app, SessionRef::Agent(AgentId("a1".into())), &mut out);
-    app.focus = Focus::Terminal;
-    app.term_locked = true;
-    assert!(app.attached_sref.is_some());
+    app.nav.focus = Focus::Terminal;
+    app.pane.term_locked = true;
+    assert!(app.pane.attached_sref.is_some());
     out.clear();
 
     make_cloud_row(&mut app, &mut out);
@@ -1138,9 +1184,9 @@ fn a_row_that_gains_its_cloud_session_lets_go_of_the_create_pane() {
             .any(|r| matches!(r, ClientRequest::Detach { .. })),
         "the create pane is released: {out:?}"
     );
-    assert!(app.term.is_none());
-    assert!(!app.term_locked);
-    assert_eq!(app.focus, Focus::Sessions);
+    assert!(app.pane.term.is_none());
+    assert!(!app.pane.term_locked);
+    assert_eq!(app.nav.focus, Focus::Sessions);
     assert!(app.previewed_cloud().is_some());
 }
 
@@ -1159,7 +1205,8 @@ fn empty_tree_draws_splash_until_first_project() {
         "tagline on the splash: {text}"
     );
     let grid_head = |app: &App| {
-        app.hits
+        app.chrome
+            .hits
             .iter()
             .any(|(_, h)| *h == HitTarget::LauncherTabAdd)
     };
@@ -1179,15 +1226,15 @@ fn empty_tree_draws_splash_until_first_project() {
 fn animations_off_stops_sweep_and_splash_ticking() {
     let mut app = App::new();
     assert!(app.splash_active(), "empty tree splash ticks by default");
-    app.animations = false;
+    app.chrome.animations = false;
     assert!(!app.splash_active(), "still splash: drawn but not ticked");
 
-    app.animations = true;
+    app.chrome.animations = true;
     seed_tree(&mut app);
     assert!(!app.status_anim_active(), "fresh agent doesn't animate");
     app.tree.agents[0].status = nebula_core::AgentStatus::Running;
     assert!(app.status_anim_active());
-    app.animations = false;
+    app.chrome.animations = false;
     assert!(!app.status_anim_active());
 }
 
@@ -1219,15 +1266,15 @@ fn a_merge_seen_to_land_keeps_the_sweep_ticking_for_a_few_seconds() {
     adopt_pr_state(&mut app, &merged);
     assert!(app.merge_is_fresh(&w1), "open to merged, seen: stamped");
     assert!(app.status_anim_active(), "the merged row sweeps");
-    app.animations = false;
+    app.chrome.animations = false;
     assert!(!app.status_anim_active(), "unless animations are off");
-    app.animations = true;
+    app.chrome.animations = true;
 
     // The window runs out: the row is still purple, and at rest.
     let long_ago = std::time::Instant::now()
         .checked_sub(settled())
         .expect("uptime past the window");
-    app.merge_landed.insert(w1.clone(), long_ago);
+    app.github.merge_landed.insert(w1.clone(), long_ago);
     assert!(app.worktree_wears_merge(&w1), "still the merged row");
     assert!(!app.status_anim_active(), "settled: no frames asked for");
     // Hearing the same state again is not a second merge.
@@ -1258,7 +1305,7 @@ fn a_merge_seen_to_land_keeps_the_sweep_ticking_for_a_few_seconds() {
         .iter()
         .position(|p| p.id == ProjectId("p2".into()))
         .expect("the other project");
-    app.sel_project = app
+    app.nav.sel_project = app
         .project_rows()
         .iter()
         .position(|i| *i == p2)
@@ -1286,7 +1333,8 @@ fn shift_n_no_longer_summons_the_splash() {
     let text = buffer_text(&terminal);
     assert!(!text.contains("any key returns"), "{text}");
     assert!(
-        app.hits
+        app.chrome
+            .hits
             .iter()
             .any(|(_, h)| *h == HitTarget::LauncherTabAdd),
         "the grid is on screen: {text}"
@@ -1299,11 +1347,11 @@ fn shift_n_no_longer_summons_the_splash() {
 #[test]
 fn n_adds_project_from_any_focus_while_tree_empty() {
     let mut app = App::new();
-    app.focus = Focus::Sessions;
+    app.nav.focus = Focus::Sessions;
     let mut out = Vec::new();
     press(&mut app, KeyCode::Char('n'), KeyModifiers::NONE, &mut out);
-    let Some(Overlay::Prompt(p)) = &app.overlay else {
-        panic!("expected add-project prompt, got {:?}", app.overlay);
+    let Some(Overlay::Prompt(p)) = &app.modals.overlay else {
+        panic!("expected add-project prompt, got {:?}", app.modals.overlay);
     };
     assert_eq!(p.kind, crate::app::PromptKind::AddProject);
 }
@@ -1343,14 +1391,14 @@ fn opening_a_project_whose_folder_is_missing_offers_to_locate_it() {
     let tmp = tempfile::tempdir().unwrap();
     let gone = tmp.path().join("moved-away");
     let mut app = App::new();
-    app.prompt_missing_project_paths = true;
+    app.launcher.prompt_missing_project_paths = true;
     seed_worktree_at(&mut app, &gone);
     let mut out = Vec::new();
 
     launcher::open_project(&mut app, &ProjectId("p1".into()), &mut out);
     assert!(out.is_empty(), "{out:?}");
-    let Some(Overlay::Confirm(confirm)) = &app.overlay else {
-        panic!("expected locate confirm, got {:?}", app.overlay);
+    let Some(Overlay::Confirm(confirm)) = &app.modals.overlay else {
+        panic!("expected locate confirm, got {:?}", app.modals.overlay);
     };
     assert_eq!(confirm.title, "Project folder not found");
     assert!(confirm.message.contains(&gone.display().to_string()));
@@ -1361,14 +1409,18 @@ fn opening_a_project_whose_folder_is_missing_offers_to_locate_it() {
     ));
 
     press(&mut app, KeyCode::Char('n'), KeyModifiers::NONE, &mut out);
-    assert!(app.overlay.is_none());
+    assert!(app.modals.overlay.is_none());
     assert!(
-        app.dismissed_repath_projects
+        app.launcher
+            .dismissed_repath_projects
             .contains(&ProjectId("p1".into())),
         "n dismisses it for this TUI run"
     );
     launcher::open_project(&mut app, &ProjectId("p1".into()), &mut out);
-    assert!(app.overlay.is_none(), "dismissed projects do not nag");
+    assert!(
+        app.modals.overlay.is_none(),
+        "dismissed projects do not nag"
+    );
 }
 
 #[test]
@@ -1379,14 +1431,14 @@ fn locating_a_missing_project_sends_set_project_path_and_reopens_on_error() {
     std::fs::create_dir_all(&moved).unwrap();
     let moved_canon = std::fs::canonicalize(&moved).unwrap();
     let mut app = App::new();
-    app.prompt_missing_project_paths = true;
+    app.launcher.prompt_missing_project_paths = true;
     seed_worktree_at(&mut app, &gone);
     let mut out = Vec::new();
 
     launcher::open_project(&mut app, &ProjectId("p1".into()), &mut out);
     press(&mut app, KeyCode::Char('y'), KeyModifiers::NONE, &mut out);
-    let Some(Overlay::Prompt(prompt)) = &mut app.overlay else {
-        panic!("expected locate prompt, got {:?}", app.overlay);
+    let Some(Overlay::Prompt(prompt)) = &mut app.modals.overlay else {
+        panic!("expected locate prompt, got {:?}", app.modals.overlay);
     };
     assert!(matches!(
         prompt.kind,
@@ -1411,11 +1463,14 @@ fn locating_a_missing_project_sends_set_project_path_and_reopens_on_error() {
             message: "not a git repository".into(),
         },
     );
-    let Some(Overlay::Prompt(prompt)) = &app.overlay else {
-        panic!("error reopens the locate prompt, got {:?}", app.overlay);
+    let Some(Overlay::Prompt(prompt)) = &app.modals.overlay else {
+        panic!(
+            "error reopens the locate prompt, got {:?}",
+            app.modals.overlay
+        );
     };
     assert_eq!(prompt.input.as_str(), moved_canon.display().to_string());
-    assert_eq!(app.flash.as_deref(), Some("not a git repository"));
+    assert_eq!(app.chrome.flash.as_deref(), Some("not a git repository"));
 }
 
 #[test]
@@ -1437,13 +1492,13 @@ fn successful_project_repath_rekeys_project_settings() {
 
     crate::config::with_config_path(config_path.clone(), || {
         let mut app = App::new();
-        app.prompt_missing_project_paths = true;
+        app.launcher.prompt_missing_project_paths = true;
         seed_worktree_at(&mut app, &gone);
         let mut out = Vec::new();
 
         launcher::open_project(&mut app, &ProjectId("p1".into()), &mut out);
         press(&mut app, KeyCode::Char('y'), KeyModifiers::NONE, &mut out);
-        if let Some(Overlay::Prompt(prompt)) = &mut app.overlay {
+        if let Some(Overlay::Prompt(prompt)) = &mut app.modals.overlay {
             prompt.input.set_text(moved.display().to_string());
             prompt.refresh_dirs();
         } else {
@@ -1480,7 +1535,7 @@ fn launched_in_alpha(app: &mut App) -> tempfile::TempDir {
     let tmp = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(tmp.path().join("ws/alpha/.git")).unwrap();
     std::fs::create_dir_all(tmp.path().join("ws/beta")).unwrap();
-    app.launch_repo = Some(tmp.path().join("ws/alpha"));
+    app.launcher.launch_repo = Some(tmp.path().join("ws/alpha"));
     tmp
 }
 
@@ -1491,7 +1546,7 @@ fn launched_in_alpha(app: &mut App) -> tempfile::TempDir {
 fn enter_on_the_first_run_splash_opens_the_folder_nebula_started_in() {
     let mut app = App::new();
     let tmp = launched_in_alpha(&mut app);
-    app.focus = Focus::Terminal;
+    app.nav.focus = Focus::Terminal;
     let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
     terminal.draw(|f| ui::draw(f, &mut app)).unwrap();
     let text = buffer_text(&terminal);
@@ -1521,8 +1576,11 @@ fn enter_on_the_first_run_splash_elsewhere_opens_the_prompt() {
     assert!(text.contains("o: open a folder"), "{text}");
     let mut out = Vec::new();
     press(&mut app, KeyCode::Enter, KeyModifiers::NONE, &mut out);
-    let Some(Overlay::Prompt(p)) = &app.overlay else {
-        panic!("expected the open-project prompt, got {:?}", app.overlay);
+    let Some(Overlay::Prompt(p)) = &app.modals.overlay else {
+        panic!(
+            "expected the open-project prompt, got {:?}",
+            app.modals.overlay
+        );
     };
     assert_eq!(p.kind, crate::app::PromptKind::AddProject);
     assert!(out.is_empty(), "{out:?}");
@@ -1542,14 +1600,14 @@ fn opening_a_folder_outside_git_asks_to_git_init_it() {
     open_folder(&mut app, beta.clone(), &mut out);
     assert!(out.is_empty(), "{out:?}");
     assert!(
-        matches!(&app.overlay, Some(Overlay::Confirm(c))
+        matches!(&app.modals.overlay, Some(Overlay::Confirm(c))
                 if c.title == "Not a git repository"
                     && c.action == PendingAction::InitProjectRepo(beta.clone())),
         "{:?}",
-        app.overlay
+        app.modals.overlay
     );
     press(&mut app, KeyCode::Char('n'), KeyModifiers::NONE, &mut out);
-    assert!(app.overlay.is_none());
+    assert!(app.modals.overlay.is_none());
     assert!(out.is_empty(), "{out:?}");
 
     open_folder(&mut app, beta.clone(), &mut out);
@@ -1584,8 +1642,11 @@ fn the_open_project_prompt_starts_on_the_launch_folder() {
     let tmp = launched_in_alpha(&mut app);
     let mut out = Vec::new();
     press(&mut app, KeyCode::Char('o'), KeyModifiers::NONE, &mut out);
-    let Some(Overlay::Prompt(p)) = &app.overlay else {
-        panic!("expected the open-project prompt, got {:?}", app.overlay);
+    let Some(Overlay::Prompt(p)) = &app.modals.overlay else {
+        panic!(
+            "expected the open-project prompt, got {:?}",
+            app.modals.overlay
+        );
     };
     assert_eq!(p.title, "Open project");
     assert_eq!(dir_names(p), vec!["alpha", "beta"]);
@@ -1622,7 +1683,7 @@ fn opening_a_known_folder_opens_its_project() {
         "{out:?}"
     );
     assert_eq!(
-        app.flash.as_deref(),
+        app.chrome.flash.as_deref(),
         Some("demo is already a project — opened it")
     );
     assert_eq!(
@@ -1638,13 +1699,13 @@ fn o_adds_project_from_any_focus() {
     for focus in [Focus::Projects, Focus::Worktrees, Focus::Sessions] {
         let mut app = App::new();
         seed_tree(&mut app);
-        app.focus = focus;
+        app.nav.focus = focus;
         let mut out = Vec::new();
         press(&mut app, KeyCode::Char('o'), KeyModifiers::NONE, &mut out);
-        let Some(Overlay::Prompt(p)) = &app.overlay else {
+        let Some(Overlay::Prompt(p)) = &app.modals.overlay else {
             panic!(
                 "expected add-project prompt at {focus:?}, got {:?}",
-                app.overlay
+                app.modals.overlay
             );
         };
         assert_eq!(p.kind, crate::app::PromptKind::AddProject);
@@ -1666,8 +1727,8 @@ fn seed_link(app: &mut App, url: &str) {
             }),
         },
     );
-    app.focus = Focus::Sessions;
-    app.sel_session = app
+    app.nav.focus = Focus::Sessions;
+    app.nav.sel_session = app
         .visible_session_rows()
         .iter()
         .position(|r| r.as_link().is_some())
@@ -1684,36 +1745,50 @@ fn a_slow_or_interrupted_second_tap_at_the_edge_stays_put() {
         press(app, KeyCode::Char('l'), KeyModifiers::NONE, out)
     };
 
-    app.focus = Focus::Sessions;
+    app.nav.focus = Focus::Sessions;
     l(&mut app, &mut out);
-    let (armed, _) = app.edge_tap.expect("the first press arms");
+    let (armed, _) = app.chrome.edge_tap.expect("the first press arms");
     assert_eq!(armed, crate::keymap::Action::FocusRight);
-    app.edge_tap = Some((
+    app.chrome.edge_tap = Some((
         armed,
         std::time::Instant::now() - focus_walk::DOUBLE_TAP - Duration::from_millis(100),
     ));
     l(&mut app, &mut out);
-    assert_eq!(app.focus, Focus::Sessions, "too slow: two single presses");
-    assert!(app.edge_tap.is_some(), "but the late one arms again");
+    assert_eq!(
+        app.nav.focus,
+        Focus::Sessions,
+        "too slow: two single presses"
+    );
+    assert!(app.chrome.edge_tap.is_some(), "but the late one arms again");
 
     press(&mut app, KeyCode::Char('j'), KeyModifiers::NONE, &mut out);
-    assert!(app.edge_tap.is_none(), "any other key breaks the pair");
+    assert!(
+        app.chrome.edge_tap.is_none(),
+        "any other key breaks the pair"
+    );
     l(&mut app, &mut out);
-    assert_eq!(app.focus, Focus::Sessions, "so this is a first press again");
+    assert_eq!(
+        app.nav.focus,
+        Focus::Sessions,
+        "so this is a first press again"
+    );
     l(&mut app, &mut out);
-    assert_eq!(app.focus, Focus::Terminal, "and this one completes it");
+    assert_eq!(app.nav.focus, Focus::Terminal, "and this one completes it");
 }
 
 #[test]
 fn shift_l_no_longer_opens_manual_link_creation() {
     let mut app = App::new();
     seed_tree(&mut app);
-    app.focus = Focus::Sessions;
+    app.nav.focus = Focus::Sessions;
     let mut out = Vec::new();
 
     press(&mut app, KeyCode::Char('L'), KeyModifiers::SHIFT, &mut out);
 
-    assert!(app.overlay.is_none(), "manual LINK creation stays closed");
+    assert!(
+        app.modals.overlay.is_none(),
+        "manual LINK creation stays closed"
+    );
     assert!(
         out.is_empty(),
         "manual LINK creation sends no request: {out:?}"
@@ -1728,8 +1803,11 @@ fn r_edits_a_link_and_d_deletes_it() {
     let mut out = Vec::new();
 
     press(&mut app, KeyCode::Char('r'), KeyModifiers::NONE, &mut out);
-    let Some(Overlay::Prompt(p)) = &app.overlay else {
-        panic!("expected the edit-link prompt, got {:?}", app.overlay);
+    let Some(Overlay::Prompt(p)) = &app.modals.overlay else {
+        panic!(
+            "expected the edit-link prompt, got {:?}",
+            app.modals.overlay
+        );
     };
     assert_eq!(p.title, "Edit link");
     assert_eq!(p.input.trim(), "https://example.dev/spec", "prefilled");
@@ -1737,9 +1815,9 @@ fn r_edits_a_link_and_d_deletes_it() {
 
     press(&mut app, KeyCode::Char('d'), KeyModifiers::NONE, &mut out);
     assert!(
-        matches!(&app.overlay, Some(Overlay::Confirm(c)) if c.title == "Delete link"),
+        matches!(&app.modals.overlay, Some(Overlay::Confirm(c)) if c.title == "Delete link"),
         "expected the delete confirm, got {:?}",
-        app.overlay
+        app.modals.overlay
     );
     press(&mut app, KeyCode::Char('y'), KeyModifiers::NONE, &mut out);
     assert!(
@@ -1754,7 +1832,7 @@ fn r_edits_a_link_and_d_deletes_it() {
 pub(super) fn seed_open_prs(app: &mut App, prs: &[(u64, &str)]) {
     let id = app.selected_project().expect("a project").id.clone();
     let now = std::time::Instant::now();
-    app.open_prs.insert(
+    app.github.open_prs.insert(
         id,
         crate::app::OpenPrs {
             list: prs
@@ -1765,6 +1843,7 @@ pub(super) fn seed_open_prs(app: &mut App, prs: &[(u64, &str)]) {
                     url: format!("https://github.com/o/r/pull/{number}"),
                     is_draft: false,
                     health: Default::default(),
+                    base: "main".into(),
                     head: format!("pr-{number}-head"),
                 })
                 .collect(),
@@ -1779,7 +1858,7 @@ pub(super) fn seed_open_prs(app: &mut App, prs: &[(u64, &str)]) {
 /// answered — the PROJECT ISSUES GROUP's rows.
 pub(super) fn seed_issues(app: &mut App, issues: &[(u64, &str)]) {
     let id = app.selected_project().expect("a project").id.clone();
-    app.issues.insert(
+    app.github.issues.insert(
         id,
         crate::issues::IssueList {
             list: issues
@@ -1819,10 +1898,10 @@ fn open_prs_take_the_rows_below_the_worktrees() {
     assert!(app.selected_worktree().is_some(), "row 0 is the checkout");
     assert!(app.selected_worktree_pr().is_none());
 
-    app.sel_worktree = 1;
+    app.nav.sel_worktree = 1;
     assert!(app.selected_worktree().is_none(), "row 1 is a pull request");
     assert_eq!(app.selected_worktree_pr().map(|p| p.number), Some(7));
-    app.sel_worktree = 2;
+    app.nav.sel_worktree = 2;
     assert_eq!(app.selected_worktree_pr().map(|p| p.number), Some(9));
 }
 
@@ -1856,10 +1935,10 @@ fn a_checkout_on_a_pull_requests_head_branch_nests_under_its_row() {
     assert_eq!(rows(&app), ["main", "feat", "#7", "└ pr-7-head", "#9"]);
     assert_eq!(app.worktree_row_count(), 5);
 
-    app.sel_worktree = 2;
+    app.nav.sel_worktree = 2;
     assert_eq!(app.selected_worktree_pr().map(|p| p.number), Some(7));
     assert!(app.selected_worktree().is_none(), "a pull request row");
-    app.sel_worktree = 3;
+    app.nav.sel_worktree = 3;
     assert_eq!(
         app.selected_worktree().map(|w| w.id.0.clone()),
         Some("w2".into()),
@@ -1874,20 +1953,20 @@ fn a_checkout_on_a_pull_requests_head_branch_nests_under_its_row() {
 
     // Folded, the pull requests are off screen and the checkout is a
     // plain row again — nothing you have is hidden by hiding them.
-    app.open_prs_collapsed = true;
+    app.launcher.open_prs_collapsed = true;
     assert_eq!(rows(&app), ["main", "pr-7-head", "feat"]);
-    app.open_prs_collapsed = false;
+    app.launcher.open_prs_collapsed = false;
 
     // A draft kept out by the setting takes no checkout with it either.
     let pid = app.selected_project().expect("a project").id.clone();
-    app.open_prs.get_mut(&pid).unwrap().list[0].is_draft = true;
-    app.hide_draft_prs = true;
+    app.github.open_prs.get_mut(&pid).unwrap().list[0].is_draft = true;
+    app.launcher.hide_draft_prs = true;
     assert_eq!(rows(&app), ["main", "pr-7-head", "feat", "#9"]);
-    app.hide_draft_prs = false;
+    app.launcher.hide_draft_prs = false;
     assert_eq!(rows(&app), ["main", "feat", "#7", "└ pr-7-head", "#9"]);
 
     // The ROOT WORKTREE never nests, whatever branch it is on.
-    app.open_prs.get_mut(&pid).unwrap().list[1].head = "main".into();
+    app.github.open_prs.get_mut(&pid).unwrap().list[1].head = "main".into();
     assert_eq!(rows(&app), ["main", "feat", "#7", "└ pr-7-head", "#9"]);
 }
 
@@ -1903,11 +1982,11 @@ fn the_cursor_follows_a_checkout_that_moves_under_or_out_from_under_its_pull_req
     let mut app = App::new();
     seed_tree(&mut app);
     seed_feat_worktree(&mut app, "w2", "pr-7-head");
-    app.focus = Focus::Worktrees;
+    app.nav.focus = Focus::Worktrees;
     let mut out = Vec::new();
     let w2 = WorktreeId("w2".into());
     let on_w2 = |app: &App| app.selected_worktree().map(|w| w.id.clone()) == Some(w2.clone());
-    app.sel_worktree = 1;
+    app.nav.sel_worktree = 1;
     assert!(on_w2(&app));
     let pid = app.selected_project().expect("a project").id.clone();
     let listed = vec![crate::pull_request::OpenPr {
@@ -1916,42 +1995,43 @@ fn the_cursor_follows_a_checkout_that_moves_under_or_out_from_under_its_pull_req
         url: pr_url(7),
         is_draft: false,
         health: Default::default(),
+        base: "main".into(),
         head: "pr-7-head".into(),
     }];
 
     // The list lands: the checkout moves under #7, the cursor with it.
     note_open_prs_answer(&mut app, pid.clone(), Some(listed), &mut out);
     assert_eq!(app.worktree_row_of(&w2), Some(2));
-    assert_eq!(app.sel_worktree, 2);
+    assert_eq!(app.nav.sel_worktree, 2);
     assert!(on_w2(&app));
 
     // Folding frees it; unfolding nests it again.
     toggle_open_prs(&mut app, &mut out);
-    assert!(app.open_prs_collapsed);
-    assert_eq!(app.sel_worktree, 1);
+    assert!(app.launcher.open_prs_collapsed);
+    assert_eq!(app.nav.sel_worktree, 1);
     assert!(on_w2(&app));
     toggle_open_prs(&mut app, &mut out);
-    assert_eq!(app.sel_worktree, 2);
+    assert_eq!(app.nav.sel_worktree, 2);
     assert!(on_w2(&app));
 
     // A draft hidden by the setting frees its checkout; shown, it
     // takes it back.
-    app.open_prs.get_mut(&pid).unwrap().list[0].is_draft = true;
+    app.github.open_prs.get_mut(&pid).unwrap().list[0].is_draft = true;
     assert!(
         !set_hide_draft_prs(&mut app, true),
         "the cursor never left a checkout"
     );
-    assert_eq!(app.sel_worktree, 1);
+    assert_eq!(app.nav.sel_worktree, 1);
     assert!(on_w2(&app));
     set_hide_draft_prs(&mut app, false);
-    assert_eq!(app.sel_worktree, 2);
+    assert_eq!(app.nav.sel_worktree, 2);
     assert!(on_w2(&app));
 
     // The pull request merges: the next answer lists it no more, and
     // the checkout is a plain row, still under the cursor.
     note_open_prs_answer(&mut app, pid, Some(Vec::new()), &mut out);
     assert_eq!(app.worktree_row_count(), 2);
-    assert_eq!(app.sel_worktree, 1);
+    assert_eq!(app.nav.sel_worktree, 1);
     assert!(on_w2(&app));
 }
 
@@ -1965,24 +2045,32 @@ fn half_page_chords_stay_out_of_the_projects_panel_and_the_locked_pane() {
     let mut app = App::new();
     seed_tree(&mut app);
     seed_open_prs(&mut app, &[(7, "Attach links"), (9, "Number the lines")]);
-    app.worktrees_view_rows = 6;
-    app.sessions_view_rows = 6;
+    app.nav.worktrees_view_rows = 6;
+    app.nav.sessions_view_rows = 6;
     let mut out = Vec::new();
 
-    app.focus = Focus::Projects;
-    let before = (app.sel_project, app.sel_worktree, app.sel_session);
+    app.nav.focus = Focus::Projects;
+    let before = (
+        app.nav.sel_project,
+        app.nav.sel_worktree,
+        app.nav.sel_session,
+    );
     ctrl(&mut app, 'd', &mut out);
     ctrl(&mut app, 'u', &mut out);
     assert_eq!(
-        (app.sel_project, app.sel_worktree, app.sel_session),
+        (
+            app.nav.sel_project,
+            app.nav.sel_worktree,
+            app.nav.sel_session
+        ),
         before,
         "Projects: no cursor moved"
     );
-    assert!(app.overlay.is_none(), "Projects: nothing opened");
+    assert!(app.modals.overlay.is_none(), "Projects: nothing opened");
 
-    app.focus = Focus::Terminal;
-    app.term_locked = true;
-    app.term = Some(AttachedTerm::new(
+    app.nav.focus = Focus::Terminal;
+    app.pane.term_locked = true;
+    app.pane.term = Some(AttachedTerm::new(
         SessionRef::Agent(AgentId("a1".into())),
         80,
         24,
@@ -1998,8 +2086,8 @@ fn half_page_chords_stay_out_of_the_projects_panel_and_the_locked_pane() {
         matches!(out.last(), Some(ClientRequest::Input { data, .. }) if data == b"\x15"),
         "^u reaches the PTY as kill-to-start: {out:?}"
     );
-    assert_eq!(app.sel_worktree, 0, "the Worktrees cursor never moved");
-    assert!(app.term_locked, "and the lock held");
+    assert_eq!(app.nav.sel_worktree, 0, "the Worktrees cursor never moved");
+    assert!(app.pane.term_locked, "and the lock held");
 }
 
 /// A repo with nothing open backs off instead of asking every beat, and
@@ -2012,9 +2100,9 @@ fn the_open_pr_list_backs_off_when_empty_and_survives_a_failed_call() {
     let pid = app.selected_project().expect("a project").id.clone();
 
     note_open_prs_answer(&mut app, pid.clone(), Some(vec![]), &mut Vec::new());
-    assert_eq!(app.open_prs[&pid].step, OPEN_PRS_RECHECK_MIN);
+    assert_eq!(app.github.open_prs[&pid].step, OPEN_PRS_RECHECK_MIN);
     note_open_prs_answer(&mut app, pid.clone(), Some(vec![]), &mut Vec::new());
-    assert_eq!(app.open_prs[&pid].step, OPEN_PRS_RECHECK_MIN * 2);
+    assert_eq!(app.github.open_prs[&pid].step, OPEN_PRS_RECHECK_MIN * 2);
 
     let found = vec![crate::pull_request::OpenPr {
         number: 7,
@@ -2022,30 +2110,34 @@ fn the_open_pr_list_backs_off_when_empty_and_survives_a_failed_call() {
         url: "https://github.com/o/r/pull/7".into(),
         is_draft: false,
         health: Default::default(),
+        base: "main".into(),
         head: "attach-links".into(),
     }];
     note_open_prs_answer(&mut app, pid.clone(), Some(found.clone()), &mut Vec::new());
     assert_eq!(
-        app.open_prs[&pid].step, OPEN_PRS_REFRESH,
+        app.github.open_prs[&pid].step, OPEN_PRS_REFRESH,
         "a repo with pull requests settles onto the steady beat"
     );
     assert_eq!(app.visible_open_prs().len(), 1);
 
-    assert!(!app.open_prs_failed.contains(&pid));
+    assert!(!app.github.open_prs_failed.contains(&pid));
     note_open_prs_answer(&mut app, pid.clone(), None, &mut Vec::new());
     assert_eq!(
-        app.open_prs[&pid].list, found,
+        app.github.open_prs[&pid].list, found,
         "a failed call keeps the last good list"
     );
-    assert!(app.open_prs[&pid].step > OPEN_PRS_REFRESH, "but backs off");
     assert!(
-        app.open_prs_failed.contains(&pid),
+        app.github.open_prs[&pid].step > OPEN_PRS_REFRESH,
+        "but backs off"
+    );
+    assert!(
+        app.github.open_prs_failed.contains(&pid),
         "and marks it as one that couldn't be refreshed (#106)"
     );
 
     note_open_prs_answer(&mut app, pid.clone(), Some(vec![]), &mut Vec::new());
     assert!(
-        !app.open_prs_failed.contains(&pid),
+        !app.github.open_prs_failed.contains(&pid),
         "the next real answer clears the mark"
     );
 }
@@ -2068,12 +2160,12 @@ fn arriving_at_a_project_re_asks_but_not_faster_than_the_floor() {
 
     // An answer older than the floor is re-asked the moment we arrive.
     let stale = std::time::Instant::now() - crate::app::OPEN_PRS_MIN_AGE * 2;
-    app.open_prs.get_mut(&pid).unwrap().at = stale;
+    app.github.open_prs.get_mut(&pid).unwrap().at = stale;
     schedule_open_prs_lookup(&mut app);
     assert!(app.open_prs_lookup_due(&pid));
 
     // An in-flight call is never doubled up on.
-    app.open_prs_inflight.insert(pid.clone());
+    app.github.open_prs_inflight.insert(pid.clone());
     assert!(!app.open_prs_lookup_due(&pid));
 }
 
@@ -2089,12 +2181,12 @@ fn focusing_a_sidebar_panel_re_asks_for_pull_requests() {
     let stale = std::time::Instant::now() - crate::app::OPEN_PRS_MIN_AGE * 2;
     let settle = |app: &mut App| {
         note_open_prs_answer(app, pid.clone(), Some(vec![]), &mut Vec::new());
-        app.open_prs.get_mut(&pid).unwrap().at = stale;
+        app.github.open_prs.get_mut(&pid).unwrap().at = stale;
         note_pr_answer(app, &wid, true);
     };
 
     settle(&mut app);
-    app.focus = Focus::Terminal;
+    app.nav.focus = Focus::Terminal;
     note_focus_change(&mut app);
     assert!(
         !app.open_prs_lookup_due(&pid),
@@ -2102,13 +2194,13 @@ fn focusing_a_sidebar_panel_re_asks_for_pull_requests() {
     );
     assert!(!app.pr_lookup_due(&wid));
 
-    app.focus = Focus::Worktrees;
+    app.nav.focus = Focus::Worktrees;
     note_focus_change(&mut app);
     assert!(app.open_prs_lookup_due(&pid), "the Worktrees panel is");
     assert!(app.pr_lookup_due(&wid));
 
     settle(&mut app);
-    app.focus = Focus::Sessions;
+    app.nav.focus = Focus::Sessions;
     note_focus_change(&mut app);
     assert!(app.open_prs_lookup_due(&pid), "so is the Sessions panel");
     assert!(app.pr_lookup_due(&wid));
@@ -2117,7 +2209,7 @@ fn focusing_a_sidebar_panel_re_asks_for_pull_requests() {
     // (one `gh pr view`, no floor of its own) is still re-asked.
     note_open_prs_answer(&mut app, pid.clone(), Some(vec![]), &mut Vec::new());
     note_pr_answer(&mut app, &wid, true);
-    app.focus = Focus::Worktrees;
+    app.nav.focus = Focus::Worktrees;
     note_focus_change(&mut app);
     assert!(!app.open_prs_lookup_due(&pid), "floored");
     assert!(app.pr_lookup_due(&wid));
@@ -2132,7 +2224,7 @@ fn terminal_window_focus_re_asks_for_pull_requests() {
     let pid = app.selected_project().expect("a project").id.clone();
     let wid = app.selected_worktree().expect("a worktree").id.clone();
     note_open_prs_answer(&mut app, pid.clone(), Some(vec![]), &mut Vec::new());
-    app.open_prs.get_mut(&pid).unwrap().at =
+    app.github.open_prs.get_mut(&pid).unwrap().at =
         std::time::Instant::now() - crate::app::OPEN_PRS_MIN_AGE * 2;
     note_pr_answer(&mut app, &wid, true);
     assert!(!app.open_prs_lookup_due(&pid));
@@ -2206,12 +2298,12 @@ fn a_refresh_that_changes_draft_status_moves_the_row_in_or_out() {
             ],
         );
         assert!(open_pr_numbers(&app).is_empty());
-        app.focus = Focus::Worktrees;
-        app.open_prs_collapsed = true;
-        app.sel_worktree = app.visible_worktrees().len() - 1;
+        app.nav.focus = Focus::Worktrees;
+        app.launcher.open_prs_collapsed = true;
+        app.nav.sel_worktree = app.visible_worktrees().len() - 1;
         let mut out = Vec::new();
         press(&mut app, KeyCode::Down, KeyModifiers::NONE, &mut out);
-        assert!(app.open_prs_collapsed, "nothing to step into");
+        assert!(app.launcher.open_prs_collapsed, "nothing to step into");
         assert!(app.selected_worktree().is_some());
     });
 }
@@ -2227,7 +2319,7 @@ fn the_palette_finds_open_prs_by_title_and_reads_them_in_the_pane() {
         &mut app,
         &[(7, "Attach links to worktrees"), (9, "Number the lines")],
     );
-    app.focus = Focus::Sessions;
+    app.nav.focus = Focus::Sessions;
     let mut out = Vec::new();
 
     press(&mut app, KeyCode::Char('/'), KeyModifiers::NONE, &mut out);
@@ -2237,11 +2329,11 @@ fn the_palette_finds_open_prs_by_title_and_reads_them_in_the_pane() {
     {
         let p = palette(&app);
         assert_eq!(
-            p.items[p.matches[p.selected].item].text, "demo/#9 Number the lines",
+            p.list.items[p.list.matches[p.list.cursor].item].text, "demo/#9 Number the lines",
             "the project paths it, like every other row"
         );
         assert_eq!(
-            p.items[p.matches[p.selected].item].crumb,
+            p.list.items[p.list.matches[p.list.cursor].item].crumb,
             Some((0, 4)),
             "drawn with its project in front: `demo/#9 Number the lines`"
         );
@@ -2251,10 +2343,17 @@ fn the_palette_finds_open_prs_by_title_and_reads_them_in_the_pane() {
     // nothing to attach — the browser is never the quiet default.
     set_enter_attaches(&mut app, true);
     press(&mut app, KeyCode::Enter, KeyModifiers::NONE, &mut out);
-    assert!(app.overlay.is_none(), "the palette closes");
-    assert_eq!(app.flash, None, "no browser opened: {:?}", app.flash);
-    assert_eq!(app.focus, Focus::Worktrees);
-    assert_eq!(app.sel_worktree, 2, "the row after the one checkout and #7");
+    assert!(app.modals.overlay.is_none(), "the palette closes");
+    assert_eq!(
+        app.chrome.flash, None,
+        "no browser opened: {:?}",
+        app.chrome.flash
+    );
+    assert_eq!(app.nav.focus, Focus::Worktrees);
+    assert_eq!(
+        app.nav.sel_worktree, 2,
+        "the row after the one checkout and #7"
+    );
     assert_eq!(
         app.selected_worktree_pr().map(|pr| pr.number),
         Some(9),
@@ -2266,7 +2365,10 @@ fn the_palette_finds_open_prs_by_title_and_reads_them_in_the_pane() {
         "the pane is reading it"
     );
     assert_eq!(
-        app.pending_pr_detail.as_ref().map(|(p, _)| p.url.as_str()),
+        app.github
+            .pending_pr_detail
+            .as_ref()
+            .map(|(p, _)| p.url.as_str()),
         Some("https://github.com/o/r/pull/9"),
         "its description is asked for, as any move onto the row would"
     );
@@ -2280,7 +2382,7 @@ fn a_palette_pr_pick_unfolds_the_open_prs_group() {
     let mut app = App::new();
     seed_tree(&mut app);
     seed_open_prs(&mut app, &[(7, "Attach links to worktrees")]);
-    app.open_prs_collapsed = true;
+    app.launcher.open_prs_collapsed = true;
     assert_eq!(app.worktree_row_count(), 1, "folded: only the checkout");
     let mut out = Vec::new();
 
@@ -2289,9 +2391,9 @@ fn a_palette_pr_pick_unfolds_the_open_prs_group() {
         press(&mut app, KeyCode::Char(c), KeyModifiers::NONE, &mut out);
     }
     press(&mut app, KeyCode::Enter, KeyModifiers::NONE, &mut out);
-    assert!(!app.open_prs_collapsed, "the group is open");
+    assert!(!app.launcher.open_prs_collapsed, "the group is open");
     assert_eq!(app.selected_worktree_pr().map(|pr| pr.number), Some(7));
-    assert_eq!(app.focus, Focus::Worktrees);
+    assert_eq!(app.nav.focus, Focus::Worktrees);
 }
 
 /// `Ctrl+O` is the palette's "open the hit", and on a pull request that
@@ -2315,10 +2417,13 @@ fn palette_ctrl_o_on_a_pr_lands_on_it_and_opens_the_browser() {
         KeyModifiers::CONTROL,
         &mut out,
     );
-    assert!(app.overlay.is_none(), "the palette closes");
-    assert_eq!(app.flash.as_deref(), Some("opened github.com/o/r/pull/7"));
+    assert!(app.modals.overlay.is_none(), "the palette closes");
+    assert_eq!(
+        app.chrome.flash.as_deref(),
+        Some("opened github.com/o/r/pull/7")
+    );
     assert_eq!(app.selected_worktree_pr().map(|pr| pr.number), Some(7));
-    assert_eq!(app.focus, Focus::Worktrees);
+    assert_eq!(app.nav.focus, Focus::Worktrees);
 }
 
 /// A pull request row in `/` says where it stands, in words, before it
@@ -2344,6 +2449,7 @@ fn palette_pull_request_rows_say_draft_or_ready_for_review_and_follow_the_refres
                 url: pr_url(number),
                 is_draft,
                 health: Default::default(),
+                base: "main".into(),
                 head: format!("pr-{number}-head"),
             })
             .collect();
@@ -2387,12 +2493,13 @@ fn palette_pull_request_rows_say_draft_or_ready_for_review_and_follow_the_refres
 
     // Park the cursor on the draft, then let a refresh say it was
     // marked ready for review: the word flips, the cursor stays.
-    if let Some(Overlay::Palette(p)) = &mut app.overlay {
+    if let Some(Overlay::Palette(p)) = &mut app.modals.overlay {
         let row = p
+            .list
             .matches
             .iter()
             .position(|m| {
-                p.items[m.item].target
+                p.list.items[m.item].target
                     == PaletteTarget::PullRequest {
                         project: pid.clone(),
                         url: pr_url(9),
@@ -2456,9 +2563,9 @@ fn a_palette_pr_pick_that_lost_its_row_flashes() {
         Landing::FocusOnly,
         &mut out,
     );
-    assert_eq!(app.flash.as_deref(), Some(PR_GONE));
+    assert_eq!(app.chrome.flash.as_deref(), Some(PR_GONE));
     assert!(app.selected_worktree_pr().is_none());
-    assert_eq!(app.sel_worktree, 0, "the cursor stays on the checkout");
+    assert_eq!(app.nav.sel_worktree, 0, "the cursor stays on the checkout");
 }
 
 /// A space in the query is an AND between terms, not a char to match: the
@@ -2476,13 +2583,14 @@ fn palette_query_terms_match_independently_across_a_space() {
         press(&mut app, KeyCode::Char(c), KeyModifiers::NONE, &mut out);
     }
     let p = palette(&app);
-    assert_eq!(p.query, "demo #7", "the space reaches the query");
+    assert_eq!(p.list.query, "demo #7", "the space reaches the query");
     // The one hit, on a line of its own — nothing listed above it just
     // to hold it.
     let texts: Vec<&str> = p
+        .list
         .matches
         .iter()
-        .map(|m| p.items[m.item].text.as_str())
+        .map(|m| p.list.items[m.item].text.as_str())
         .collect();
     assert_eq!(texts, vec!["demo/#7 Attach links to worktrees"]);
 }
@@ -2507,6 +2615,7 @@ fn a_merged_pull_request_leaves_the_list_on_the_next_refresh() {
                 url: format!("https://github.com/o/r/pull/{number}"),
                 is_draft,
                 health: Default::default(),
+                base: "main".into(),
                 head: format!("pr-{number}-head"),
             })
             .collect();
@@ -2515,9 +2624,10 @@ fn a_merged_pull_request_leaves_the_list_on_the_next_refresh() {
 
     answer(&mut app, vec![(7, false), (9, true)]);
     assert_eq!(app.worktree_row_count(), 3, "the checkout, then both PRs");
-    app.pr_detail
+    app.github
+        .pr_detail
         .insert(pr_url(7), a_detail(7, "read on a hover", vec![]));
-    app.sel_worktree = 1;
+    app.nav.sel_worktree = 1;
     assert_eq!(app.selected_worktree_pr().map(|p| p.number), Some(7));
 
     // #7 is merged: the next list doesn't mention it.
@@ -2533,7 +2643,7 @@ fn a_merged_pull_request_leaves_the_list_on_the_next_refresh() {
         "the cursor lands on the row that survived"
     );
     assert!(
-        !app.pr_detail.contains_key(&pr_url(7)),
+        !app.github.pr_detail.contains_key(&pr_url(7)),
         "and the body cached for the reading pane goes with it"
     );
 
@@ -2556,7 +2666,7 @@ fn the_cursor_follows_its_pull_request_across_a_reorder() {
     let mut app = App::new();
     seed_tree(&mut app);
     seed_open_prs(&mut app, &[(9, "Number lines"), (7, "Attach links")]);
-    app.sel_worktree = 2;
+    app.nav.sel_worktree = 2;
     assert_eq!(app.selected_worktree_pr().map(|p| p.number), Some(7));
 
     let pid = app.selected_project().expect("a project").id.clone();
@@ -2567,6 +2677,7 @@ fn the_cursor_follows_its_pull_request_across_a_reorder() {
             url: pr_url(11),
             is_draft: false,
             health: Default::default(),
+            base: "main".into(),
             head: "brand-new".into(),
         },
         crate::pull_request::OpenPr {
@@ -2575,6 +2686,7 @@ fn the_cursor_follows_its_pull_request_across_a_reorder() {
             url: pr_url(9),
             is_draft: false,
             health: Default::default(),
+            base: "main".into(),
             head: "number-lines".into(),
         },
         crate::pull_request::OpenPr {
@@ -2583,11 +2695,12 @@ fn the_cursor_follows_its_pull_request_across_a_reorder() {
             url: pr_url(7),
             is_draft: false,
             health: Default::default(),
+            base: "main".into(),
             head: "attach-links".into(),
         },
     ];
     // Halfway down #7's conversation when the refresh lands.
-    app.pr_preview_scroll = 12;
+    app.github.pr_preview_scroll = 12;
     note_open_prs_answer(&mut app, pid, Some(list), &mut Vec::new());
     assert_eq!(open_pr_numbers(&app), vec![11, 9, 7]);
     assert_eq!(
@@ -2595,9 +2708,9 @@ fn the_cursor_follows_its_pull_request_across_a_reorder() {
         Some(7),
         "still on #7, two rows further down"
     );
-    assert_eq!(app.sel_worktree, 3);
+    assert_eq!(app.nav.sel_worktree, 3);
     assert_eq!(
-        app.pr_preview_scroll, 12,
+        app.github.pr_preview_scroll, 12,
         "and still where they were reading — a beat this quick must not \
              rewind the pane under them"
     );
@@ -2612,18 +2725,18 @@ fn a_detail_that_says_merged_retires_the_row_on_the_spot() {
     let mut app = App::new();
     seed_tree(&mut app);
     seed_open_prs(&mut app, &[(7, "Attach links"), (9, "Number lines")]);
-    app.sel_worktree = 1;
+    app.nav.sel_worktree = 1;
 
     let mut merged = a_detail(7, "shipped", vec![]);
     merged.state = "MERGED".into();
     assert!(!merged.is_open());
-    app.pr_detail.insert(pr_url(7), merged);
+    app.github.pr_detail.insert(pr_url(7), merged);
     drop_retired_pr(&mut app, &pr_url(7), &mut Vec::new());
 
     assert_eq!(open_pr_numbers(&app), vec![9]);
     assert_eq!(app.selected_worktree_pr().map(|p| p.number), Some(9));
     assert_eq!(
-        app.flash.as_deref(),
+        app.chrome.flash.as_deref(),
         Some("#7 is no longer open"),
         "a row that evaporates mid-read says why"
     );
@@ -2648,7 +2761,8 @@ fn a_detail_that_says_merged_flips_the_branch_row_and_keeps_its_body() {
     let pid = app.selected_project().expect("a project").id.clone();
     let wid = nebula_core::WorktreeId("w1".into());
     let branch_pr = |app: &App| {
-        app.pull_requests
+        app.github
+            .pull_requests
             .get(&wid)
             .cloned()
             .flatten()
@@ -2664,24 +2778,24 @@ fn a_detail_that_says_merged_flips_the_branch_row_and_keeps_its_body() {
         "merged",
         "the row wears the answer"
     );
-    assert!(app.dirty, "and repaints for it");
+    assert!(app.chrome.dirty, "and repaints for it");
     assert_eq!(app.visible_links().len(), 1, "but the row is not retired");
 
-    app.pr_detail.insert(pr_url(7), merged);
+    app.github.pr_detail.insert(pr_url(7), merged);
     // The project's open list no longer carries #7 — it is merged — and
     // its refresh sweeps the detail cache.
     note_open_prs_answer(&mut app, pid, Some(vec![]), &mut Vec::new());
     assert!(
-        app.pr_detail.contains_key(&pr_url(7)),
+        app.github.pr_detail.contains_key(&pr_url(7)),
         "the body of a pull request still on a row is kept"
     );
 
     // A detail for some other pull request leaves the row alone.
     let other = a_detail(9, "unrelated", vec![]);
-    app.dirty = false;
+    app.chrome.dirty = false;
     adopt_pr_state(&mut app, &other);
     assert_eq!(branch_pr(&app).badge(), "merged");
-    assert!(!app.dirty);
+    assert!(!app.chrome.dirty);
 }
 
 fn pr_url(number: u64) -> String {
@@ -2696,6 +2810,7 @@ fn a_pr(number: u64, title: &str, is_draft: bool) -> crate::pull_request::OpenPr
         url: pr_url(number),
         is_draft,
         health: Default::default(),
+        base: "main".into(),
         head: format!("pr-{number}-head"),
     }
 }
@@ -2734,9 +2849,10 @@ fn an_unreadable_pull_request_says_so_in_the_pane() {
     let mut app = App::new();
     seed_tree(&mut app);
     seed_open_prs(&mut app, &[(7, "Attach links")]);
-    app.focus = Focus::Worktrees;
-    app.sel_worktree = 1;
-    app.pr_detail_failed
+    app.nav.focus = Focus::Worktrees;
+    app.nav.sel_worktree = 1;
+    app.github
+        .pr_detail_failed
         .insert("https://github.com/o/r/pull/7".into());
     let mut terminal = Terminal::new(TestBackend::new(140, 30)).unwrap();
     terminal.draw(|f| ui::draw(f, &mut app)).unwrap();
@@ -2748,7 +2864,7 @@ fn an_unreadable_pull_request_says_so_in_the_pane() {
 /// Seed the Sessions panel's PR ROW: the pull request `gh` found on the
 /// seeded worktree's branch.
 fn seed_branch_pr(app: &mut App, number: u64, title: &str) {
-    app.pull_requests.insert(
+    app.github.pull_requests.insert(
         nebula_core::WorktreeId("w1".into()),
         Some(crate::pull_request::PullRequest {
             number,
@@ -2756,6 +2872,9 @@ fn seed_branch_pr(app: &mut App, number: u64, title: &str) {
             title: title.into(),
             state: crate::pull_request::STATE_OPEN.into(),
             is_draft: false,
+            head: String::new(),
+            head_sha: String::new(),
+            base: "main".into(),
             health: Default::default(),
             activity: Vec::new(),
         }),
@@ -2779,16 +2898,16 @@ fn stepping_onto_the_sessions_pr_row_arms_the_detail_fetch() {
     let mut app = App::new();
     seed_tree(&mut app);
     seed_branch_pr(&mut app, 7, "Attach links");
-    app.focus = Focus::Sessions;
+    app.nav.focus = Focus::Sessions;
 
     assert!(
-        app.pending_pr_detail.is_none(),
+        app.github.pending_pr_detail.is_none(),
         "a session row arms nothing"
     );
     let before = app.previewed_pr().map(|pr| pr.url);
-    app.sel_session = sessions_pr_row(&app);
+    app.nav.sel_session = sessions_pr_row(&app);
     note_preview_change(&mut app, before);
-    let (pending, _) = app.pending_pr_detail.clone().expect("armed on #7");
+    let (pending, _) = app.github.pending_pr_detail.clone().expect("armed on #7");
     assert_eq!(pending.number, 7);
     assert_eq!(pending.url, "https://github.com/o/r/pull/7");
     assert_eq!(pending.dir, std::path::PathBuf::from("/tmp/demo"));
@@ -2799,18 +2918,18 @@ fn stepping_onto_the_sessions_pr_row_arms_the_detail_fetch() {
     );
 
     // A turn that changes nothing about the row keeps the reader's place.
-    app.pr_preview_scroll = 9;
+    app.github.pr_preview_scroll = 9;
     let before = app.previewed_pr().map(|pr| pr.url);
     note_preview_change(&mut app, before);
-    assert_eq!(app.pr_preview_scroll, 9);
-    assert!(app.pending_pr_detail.is_some(), "still armed");
+    assert_eq!(app.github.pr_preview_scroll, 9);
+    assert!(app.github.pending_pr_detail.is_some(), "still armed");
 
     // Focus into the pane: a terminal has nothing to fetch.
     let before = app.previewed_pr().map(|pr| pr.url);
-    app.focus = Focus::Terminal;
+    app.nav.focus = Focus::Terminal;
     note_preview_change(&mut app, before);
-    assert!(app.pending_pr_detail.is_none());
-    assert_eq!(app.pr_preview_scroll, 0);
+    assert!(app.github.pending_pr_detail.is_none());
+    assert_eq!(app.github.pr_preview_scroll, 0);
 }
 
 /// `g` on the Sessions PR ROW asks GitHub for that pull request's diff
@@ -2820,17 +2939,20 @@ fn g_on_the_sessions_pr_row_reads_its_diff() {
     let mut app = App::new();
     seed_tree(&mut app);
     seed_branch_pr(&mut app, 7, "Attach links");
-    app.focus = Focus::Sessions;
-    app.sel_session = sessions_pr_row(&app);
+    app.nav.focus = Focus::Sessions;
+    app.nav.sel_session = sessions_pr_row(&app);
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-    app.pr_diff_tx = Some(tx);
-    app.pr_diff_inflight = Some(7);
+    app.github.pr_diff_tx = Some(tx);
+    app.github.pr_diff_inflight = Some(7);
     let mut out = Vec::new();
 
     press(&mut app, KeyCode::Char('g'), KeyModifiers::NONE, &mut out);
-    assert!(app.overlay.is_none(), "not the worktree's diff modal");
+    assert!(
+        app.modals.overlay.is_none(),
+        "not the worktree's diff modal"
+    );
     assert_eq!(
-        app.flash.as_deref(),
+        app.chrome.flash.as_deref(),
         Some("still fetching the diff for #7…")
     );
 
@@ -2852,12 +2974,12 @@ fn y_on_a_pull_request_row_opens_the_comment_box() {
     let mut app = App::new();
     seed_tree(&mut app);
     seed_open_prs(&mut app, &[(7, "Attach links")]);
-    app.focus = Focus::Worktrees;
-    app.sel_worktree = 1;
+    app.nav.focus = Focus::Worktrees;
+    app.nav.sel_worktree = 1;
     let mut out = Vec::new();
     press(&mut app, KeyCode::Char('y'), KeyModifiers::NONE, &mut out);
-    let Some(Overlay::Prompt(prompt)) = &app.overlay else {
-        panic!("expected the COMMENT BOX, got {:?}", app.overlay);
+    let Some(Overlay::Prompt(prompt)) = &app.modals.overlay else {
+        panic!("expected the COMMENT BOX, got {:?}", app.modals.overlay);
     };
     assert!(
         prompt.is_multiline(),
@@ -2872,7 +2994,7 @@ fn y_on_a_pull_request_row_opens_the_comment_box() {
     assert!(out.is_empty(), "opening the box sends the daemon nothing");
 
     // The row's menu offers the same box.
-    app.overlay = None;
+    app.modals.overlay = None;
     let pr = app.all_open_prs()[0].clone();
     let items = pr_row_menu_items(&app, &pr);
     assert!(
@@ -2883,41 +3005,41 @@ fn y_on_a_pull_request_row_opens_the_comment_box() {
     );
     run_menu_action(&mut app, MenuAction::CommentPullRequest, &mut out);
     assert!(
-        matches!(&app.overlay, Some(Overlay::Prompt(p))
+        matches!(&app.modals.overlay, Some(Overlay::Prompt(p))
                 if matches!(&p.kind, PromptKind::PrComment { number: 7, .. })),
         "{:?}",
-        app.overlay
+        app.modals.overlay
     );
 
     // The Sessions panel's PR ROW opens it too, and so does its menu.
-    app.overlay = None;
-    app.sel_worktree = 0;
+    app.modals.overlay = None;
+    app.nav.sel_worktree = 0;
     seed_branch_pr(&mut app, 9, "Fix login");
-    app.focus = Focus::Sessions;
-    app.sel_session = sessions_pr_row(&app);
+    app.nav.focus = Focus::Sessions;
+    app.nav.sel_session = sessions_pr_row(&app);
     press(&mut app, KeyCode::Char('y'), KeyModifiers::NONE, &mut out);
     assert!(
-        matches!(&app.overlay, Some(Overlay::Prompt(p))
+        matches!(&app.modals.overlay, Some(Overlay::Prompt(p))
                 if matches!(&p.kind, PromptKind::PrComment { number: 9, .. })),
         "{:?}",
-        app.overlay
+        app.modals.overlay
     );
     let items = menu_items_for_link(&app.selected_link().expect("the PR ROW"));
     assert!(items.iter().any(|i| i.label == "Comment…"), "{items:?}");
 
     // Off a pull request row, on a card, `y` comments on the card's
     // pull request — its checkout's, the one `⇧V` opens.
-    app.overlay = None;
+    app.modals.overlay = None;
     let pr_row = sessions_pr_row(&app);
-    app.sel_session = (0..app.visible_session_rows().len())
+    app.nav.sel_session = (0..app.visible_session_rows().len())
         .find(|i| *i != pr_row)
         .expect("an agent row");
     press(&mut app, KeyCode::Char('y'), KeyModifiers::NONE, &mut out);
     assert!(
-        matches!(&app.overlay, Some(Overlay::Prompt(p))
+        matches!(&app.modals.overlay, Some(Overlay::Prompt(p))
                 if matches!(&p.kind, PromptKind::PrComment { number: 9, .. })),
         "{:?}",
-        app.overlay
+        app.modals.overlay
     );
 }
 
@@ -2934,11 +3056,11 @@ fn the_comment_box_posts_on_enter_and_never_loses_the_text() {
     let mut app = App::new();
     seed_tree(&mut app);
     seed_open_prs(&mut app, &[(7, "Attach links")]);
-    app.focus = Focus::Worktrees;
-    app.sel_worktree = 1;
+    app.nav.focus = Focus::Worktrees;
+    app.nav.sel_worktree = 1;
     app.tree.projects[0].repo_path = "/nonexistent/nebula-demo".into();
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-    app.pr_comment_tx = Some(tx);
+    app.github.pr_comment_tx = Some(tx);
     let mut out = Vec::new();
     let answer = |body: &str, result: Result<String, String>| PrCommentAnswer {
         number: 7,
@@ -2951,8 +3073,8 @@ fn the_comment_box_posts_on_enter_and_never_loses_the_text() {
     // Nothing typed: the box closes and nothing is posted.
     press(&mut app, KeyCode::Char('y'), KeyModifiers::NONE, &mut out);
     press(&mut app, KeyCode::Enter, KeyModifiers::NONE, &mut out);
-    assert!(app.overlay.is_none(), "{:?}", app.overlay);
-    assert_eq!(app.flash.as_deref(), Some("cancelled: empty input"));
+    assert!(app.modals.overlay.is_none(), "{:?}", app.modals.overlay);
+    assert_eq!(app.chrome.flash.as_deref(), Some("cancelled: empty input"));
 
     // Shift+Enter breaks a line; Enter posts — here from a checkout
     // that is not on disk, so the box comes back with the text.
@@ -2961,90 +3083,99 @@ fn the_comment_box_posts_on_enter_and_never_loses_the_text() {
     press(&mut app, KeyCode::Enter, KeyModifiers::SHIFT, &mut out);
     type_text(&mut app, "to me", &mut out);
     press(&mut app, KeyCode::Enter, KeyModifiers::NONE, &mut out);
-    let Some(Overlay::Prompt(prompt)) = &app.overlay else {
-        panic!("expected the box back, got {:?}", app.overlay);
+    let Some(Overlay::Prompt(prompt)) = &app.modals.overlay else {
+        panic!("expected the box back, got {:?}", app.modals.overlay);
     };
     assert_eq!(prompt.input.as_str(), "Looks good\nto me");
     assert_eq!(
-        app.flash.as_deref(),
+        app.chrome.flash.as_deref(),
         Some("repo path missing on disk: /nonexistent/nebula-demo")
     );
-    assert!(app.pr_comment_inflight.is_empty(), "nothing started");
+    assert!(app.github.pr_comment_inflight.is_empty(), "nothing started");
     assert!(rx.try_recv().is_err(), "nothing posted");
 
     // One already on its way to this pull request: wait, text kept.
-    app.pr_comment_inflight.insert(pr_url(7));
+    app.github.pr_comment_inflight.insert(pr_url(7));
     press(&mut app, KeyCode::Enter, KeyModifiers::NONE, &mut out);
     assert!(
-        matches!(&app.overlay, Some(Overlay::Prompt(p)) if p.input.as_str() == "Looks good\nto me"),
+        matches!(&app.modals.overlay, Some(Overlay::Prompt(p)) if p.input.as_str() == "Looks good\nto me"),
         "{:?}",
-        app.overlay
+        app.modals.overlay
     );
     assert_eq!(
-        app.flash.as_deref(),
+        app.chrome.flash.as_deref(),
         Some("still posting the last comment on #7…")
     );
-    app.pr_comment_inflight.clear();
-    app.overlay = None;
+    app.github.pr_comment_inflight.clear();
+    app.modals.overlay = None;
 
     // A refusal lands in gh's words and the box comes back with the text.
     land_pr_comment(&mut app, answer("Looks good", Err("not logged in".into())));
     assert_eq!(
-        app.flash.as_deref(),
+        app.chrome.flash.as_deref(),
         Some("couldn't post the comment on #7: not logged in")
     );
     assert!(
-        matches!(&app.overlay, Some(Overlay::Prompt(p))
+        matches!(&app.modals.overlay, Some(Overlay::Prompt(p))
                 if p.input.as_str() == "Looks good" && p.title == "Comment on #7 Attach links"),
         "{:?}",
-        app.overlay
+        app.modals.overlay
     );
 
     // Landing under another modal leaves it up and keeps the text for
     // the next box on this pull request.
-    app.overlay = Some(Overlay::Help(HelpView::default()));
+    app.modals.overlay = Some(Overlay::Help(HelpView::default()));
     land_pr_comment(&mut app, answer("Second try", Err("no network".into())));
     assert!(
-        matches!(&app.overlay, Some(Overlay::Help(_))),
+        matches!(&app.modals.overlay, Some(Overlay::Help(_))),
         "{:?}",
-        app.overlay
+        app.modals.overlay
     );
-    app.overlay = None;
+    app.modals.overlay = None;
     press(&mut app, KeyCode::Char('y'), KeyModifiers::NONE, &mut out);
     assert!(
-        matches!(&app.overlay, Some(Overlay::Prompt(p)) if p.input.as_str() == "Second try"),
+        matches!(&app.modals.overlay, Some(Overlay::Prompt(p)) if p.input.as_str() == "Second try"),
         "{:?}",
-        app.overlay
+        app.modals.overlay
     );
-    app.overlay = None;
-    assert!(app.pr_comment_drafts.is_empty(), "the draft was consumed");
+    app.modals.overlay = None;
+    assert!(
+        app.github.pr_comment_drafts.is_empty(),
+        "the draft was consumed"
+    );
 
     // Posted: the pane re-reads the pull request it is on, in place.
-    app.pr_detail.insert(pr_url(7), a_detail(7, "body", vec![]));
-    app.pending_pr_detail = None;
-    app.pr_preview_scroll = 3;
+    app.github
+        .pr_detail
+        .insert(pr_url(7), a_detail(7, "body", vec![]));
+    app.github.pending_pr_detail = None;
+    app.github.pr_preview_scroll = 3;
     land_pr_comment(
         &mut app,
         answer("Looks good", Ok(format!("{}#issuecomment-1", pr_url(7)))),
     );
-    assert_eq!(app.flash.as_deref(), Some("comment posted on #7"));
+    assert_eq!(app.chrome.flash.as_deref(), Some("comment posted on #7"));
     assert!(
-        app.pending_pr_detail
+        app.github
+            .pending_pr_detail
             .as_ref()
             .is_some_and(|(p, _)| p.url == pr_url(7)),
         "the conversation is asked for again: {:?}",
-        app.pending_pr_detail
+        app.github.pending_pr_detail
     );
-    assert_eq!(app.pr_preview_scroll, 3, "the reader's place is kept");
-    assert!(app.overlay.is_none());
+    assert_eq!(
+        app.github.pr_preview_scroll, 3,
+        "the reader's place is kept"
+    );
+    assert!(app.modals.overlay.is_none());
 
     // Posted on a pull request the pane has since left: stale, so the
     // next visit reads it afresh.
-    app.sel_worktree = 0;
-    app.pending_pr_detail = None;
+    app.nav.sel_worktree = 0;
+    app.github.pending_pr_detail = None;
     land_pr_comment(&mut app, answer("Looks good", Ok(String::new())));
-    assert!(app.pending_pr_detail.is_none());
-    assert!(app.pr_detail_stale.contains(&pr_url(7)));
+    assert!(app.github.pending_pr_detail.is_none());
+    assert!(app.github.pr_detail_stale.contains(&pr_url(7)));
 }
 
 /// PgDn/PgUp/Home/End page the preview, clamped to its real length —
@@ -3054,41 +3185,41 @@ fn the_preview_pages_and_clamps_to_its_length() {
     let mut app = App::new();
     seed_tree(&mut app);
     seed_open_prs(&mut app, &[(7, "Attach links")]);
-    app.focus = Focus::Worktrees;
-    app.sel_worktree = 1;
+    app.nav.focus = Focus::Worktrees;
+    app.nav.sel_worktree = 1;
     let body = (0..200)
         .map(|i| format!("line {i}"))
         .collect::<Vec<_>>()
         .join("\n");
-    app.pr_detail.insert(
+    app.github.pr_detail.insert(
         "https://github.com/o/r/pull/7".into(),
         a_detail(7, &body, vec![]),
     );
     let mut terminal = Terminal::new(TestBackend::new(140, 30)).unwrap();
     terminal.draw(|f| ui::draw(f, &mut app)).unwrap();
-    assert!(app.pr_preview_lines > 200, "the body wrapped long");
+    assert!(app.github.pr_preview_lines > 200, "the body wrapped long");
 
     let mut out = Vec::new();
     press(&mut app, KeyCode::PageDown, KeyModifiers::NONE, &mut out);
-    let paged = app.pr_preview_scroll;
+    let paged = app.github.pr_preview_scroll;
     assert!(paged > 0, "PgDn moved");
     press(&mut app, KeyCode::End, KeyModifiers::NONE, &mut out);
-    assert_eq!(app.pr_preview_scroll, app.pr_preview_max_scroll());
+    assert_eq!(app.github.pr_preview_scroll, app.pr_preview_max_scroll());
     press(&mut app, KeyCode::PageDown, KeyModifiers::NONE, &mut out);
     assert_eq!(
-        app.pr_preview_scroll,
+        app.github.pr_preview_scroll,
         app.pr_preview_max_scroll(),
         "the end is the end"
     );
     press(&mut app, KeyCode::Home, KeyModifiers::NONE, &mut out);
-    assert_eq!(app.pr_preview_scroll, 0);
+    assert_eq!(app.github.pr_preview_scroll, 0);
     assert!(out.is_empty(), "reading a PR sends the daemon nothing");
 
     // Moving to another row starts its preview at the top.
-    app.pr_preview_scroll = paged;
-    app.sel_worktree = 0;
+    app.github.pr_preview_scroll = paged;
+    app.nav.sel_worktree = 0;
     schedule_pr_detail(&mut app);
-    assert_eq!(app.pr_preview_scroll, 0);
+    assert_eq!(app.github.pr_preview_scroll, 0);
 }
 
 /// `g` on a pull-request row opens the ordinary diff modal on the
@@ -3099,7 +3230,7 @@ fn the_fetched_pr_diff_opens_in_the_diff_modal() {
     let mut app = App::new();
     seed_tree(&mut app);
     seed_open_prs(&mut app, &[(7, "Attach links")]);
-    app.sel_worktree = 1;
+    app.nav.sel_worktree = 1;
     let diff = "\
 diff --git a/src/a.rs b/src/a.rs
 --- a/src/a.rs
@@ -3114,7 +3245,7 @@ diff --git a/src/b.rs b/src/b.rs
 -x
 +y
 ";
-    app.pr_diff_inflight = Some(7);
+    app.github.pr_diff_inflight = Some(7);
     open_pr_diff_view(
         &mut app,
         7,
@@ -3122,9 +3253,9 @@ diff --git a/src/b.rs b/src/b.rs
         "#7 Attach links".into(),
         Some(diff.into()),
     );
-    assert!(app.pr_diff_inflight.is_none(), "the fetch is done");
-    let Some(Overlay::Diff(view)) = &app.overlay else {
-        panic!("expected the diff modal, got {:?}", app.overlay);
+    assert!(app.github.pr_diff_inflight.is_none(), "the fetch is done");
+    let Some(Overlay::Diff(view)) = &app.modals.overlay else {
+        panic!("expected the diff modal, got {:?}", app.modals.overlay);
     };
     assert_eq!(view.branch, "#7 Attach links", "the PR titles the modal");
     assert_eq!(
@@ -3142,7 +3273,7 @@ diff --git a/src/b.rs b/src/b.rs
 
     // Selecting the second file reads the prefetched chunk — no repo is
     // touched (seed_tree's /tmp/demo isn't even a git checkout).
-    let Some(Overlay::Diff(view)) = &mut app.overlay else {
+    let Some(Overlay::Diff(view)) = &mut app.modals.overlay else {
         unreachable!()
     };
     view.select(1);
@@ -3179,13 +3310,13 @@ diff --git a/docs/keys.md b/docs/keys.md
 ";
 
 /// An app with the DIFF modal up on [`TREE_PR_DIFF`], flat or as the
-/// tree per `app.diff_tree` — which `tree` sets before opening.
+/// tree per `app.modals.diff_tree` — which `tree` sets before opening.
 fn pr_diff_app(tree: bool) -> App {
     let mut app = App::new();
     seed_tree(&mut app);
     seed_open_prs(&mut app, &[(7, "Attach links")]);
-    app.sel_worktree = 1;
-    app.diff_tree = tree;
+    app.nav.sel_worktree = 1;
+    app.modals.diff_tree = tree;
     open_pr_diff_view(
         &mut app,
         7,
@@ -3219,7 +3350,7 @@ fn ctrl_t_flips_the_pr_diff_file_list_between_flat_and_tree() {
     let mut out = Vec::new();
     press(&mut app, KeyCode::Down, KeyModifiers::NONE, &mut out);
     assert!(diff_view(&app).diff.contains("+new-b"));
-    if let Some(Overlay::Diff(view)) = &mut app.overlay {
+    if let Some(Overlay::Diff(view)) = &mut app.modals.overlay {
         view.view_height = 2;
         view.scroll = 3;
     }
@@ -3232,7 +3363,7 @@ fn ctrl_t_flips_the_pr_diff_file_list_between_flat_and_tree() {
     );
     assert!(diff_view(&app).diff.contains("+new-b"));
     assert_eq!(diff_view(&app).scroll, 3, "same file: the place is kept");
-    assert!(app.diff_tree, "remembered for the next open");
+    assert!(app.modals.diff_tree, "remembered for the next open");
 
     let mut terminal = Terminal::new(TestBackend::new(140, 30)).unwrap();
     terminal.draw(|f| ui::draw(f, &mut app)).unwrap();
@@ -3275,7 +3406,7 @@ fn ctrl_t_flips_the_pr_diff_file_list_between_flat_and_tree() {
     assert!(view.tree.is_none());
     assert_eq!(view.selected_file().unwrap().path, "docs/keys.md");
     assert!(view.diff.contains("+new-keys"), "{}", view.diff);
-    assert!(!app.diff_tree);
+    assert!(!app.modals.diff_tree);
     assert!(out.is_empty(), "the list's shape is nebula's own business");
 }
 
@@ -3381,7 +3512,7 @@ fn the_diff_tree_survives_a_refresh_and_a_relaunch() {
         diff_tree_rows(&app),
         ["crates/tui/src", "a.rs", "b.rs", "docs", "*keys.md"]
     );
-    let Some(Overlay::Diff(view)) = &mut app.overlay else {
+    let Some(Overlay::Diff(view)) = &mut app.modals.overlay else {
         unreachable!()
     };
     view.toggle_dir(0);
@@ -3399,10 +3530,10 @@ fn the_diff_tree_survives_a_refresh_and_a_relaunch() {
     let mut next = App::new();
     seed_tree(&mut next);
     restore_ui_state(&mut next, &json);
-    assert!(next.diff_tree);
+    assert!(next.modals.diff_tree);
     // A blob from before the tree existed keeps the flat list.
     restore_ui_state(&mut next, "{\"show_archived\":false,\"collapsed\":false}");
-    assert!(!next.diff_tree);
+    assert!(!next.modals.diff_tree);
 }
 
 /// A diff `gh` couldn't fetch flashes and leaves the modal shut, and a
@@ -3412,31 +3543,32 @@ fn a_failed_pr_diff_flashes_instead_of_opening() {
     let mut app = App::new();
     seed_tree(&mut app);
     seed_open_prs(&mut app, &[(7, "Attach links")]);
-    app.sel_worktree = 1;
+    app.nav.sel_worktree = 1;
 
-    app.pr_diff_inflight = Some(7);
+    app.github.pr_diff_inflight = Some(7);
     open_pr_diff_view(&mut app, 7, &pr_url(7), "#7 Attach links".into(), None);
-    assert!(app.overlay.is_none());
+    assert!(app.modals.overlay.is_none());
     assert!(
-        app.flash
+        app.chrome
+            .flash
             .as_deref()
             .is_some_and(|f| f.contains("couldn't read the diff for #7")),
         "got {:?}",
-        app.flash
+        app.chrome.flash
     );
 
     // An empty diff is not a modal with no rows in it.
     open_pr_diff_view(&mut app, 7, &pr_url(7), "#7".into(), Some(String::new()));
-    assert!(app.overlay.is_none());
-    assert_eq!(app.flash.as_deref(), Some("#7 changes no files"));
+    assert!(app.modals.overlay.is_none());
+    assert_eq!(app.chrome.flash.as_deref(), Some("#7 changes no files"));
 
     // Mashing the key while one is in flight is a nudge, not a request.
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-    app.pr_diff_tx = Some(tx);
-    app.pr_diff_inflight = Some(7);
+    app.github.pr_diff_tx = Some(tx);
+    app.github.pr_diff_inflight = Some(7);
     request_pr_diff(&mut app);
     assert_eq!(
-        app.flash.as_deref(),
+        app.chrome.flash.as_deref(),
         Some("still fetching the diff for #7…")
     );
 }
@@ -3449,6 +3581,9 @@ fn cached_pr(number: u64) -> crate::pull_request::PullRequest {
         title: format!("PR {number}"),
         state: crate::pull_request::STATE_OPEN.into(),
         is_draft: false,
+        head: String::new(),
+        head_sha: String::new(),
+        base: "main".into(),
         health: Default::default(),
         activity: Vec::new(),
     }
@@ -3461,6 +3596,7 @@ fn cached_open(number: u64) -> crate::pull_request::OpenPr {
         url: pr_url(number),
         is_draft: false,
         health: Default::default(),
+        base: "main".into(),
         head: format!("head-{number}"),
     }
 }
@@ -3492,13 +3628,13 @@ fn only_a_merge_seen_to_happen_is_stamped() {
     assert!(app.merge_is_fresh(&w1), "open, then merged: seen to land");
 
     // Opened and landed between two beats of a checkout with no PR.
-    app.merge_landed.clear();
+    app.github.merge_landed.clear();
     land_pull_request(&mut app, w1.clone(), Lookup::Absent);
     land_pull_request(&mut app, w1.clone(), Lookup::Found(merged(9)));
     assert!(app.merge_is_fresh(&w1), "no pull request, then merged");
 
     // A lookup that never reached GitHub says nothing either way.
-    app.merge_landed.clear();
+    app.github.merge_landed.clear();
     land_pull_request(&mut app, w1.clone(), Lookup::Unavailable);
     assert!(!app.merge_is_fresh(&w1));
     assert!(app.worktree_wears_merge(&w1), "the row keeps its merge");
@@ -3526,9 +3662,9 @@ fn a_fresh_unread_finish_keeps_the_sweep_ticking_for_a_few_seconds() {
     finish(&mut app, now);
     assert!(fresh(&app), "the card sweeps");
     assert!(app.status_anim_active());
-    app.animations = false;
+    app.chrome.animations = false;
     assert!(!app.status_anim_active(), "unless animations are off");
-    app.animations = true;
+    app.chrome.animations = true;
 
     app.tree.agents[0].unseen = false;
     assert!(!fresh(&app), "read: over");
@@ -3564,34 +3700,43 @@ fn an_unavailable_lookup_keeps_the_cached_row() {
     seed_tree(&mut app);
     let w1 = nebula_core::WorktreeId("w1".into());
     seed_branch_pr(&mut app, 7, "Attach links");
-    app.pr_cache_dirty = false;
+    app.github.pr_cache_dirty = false;
 
-    app.pr_inflight.insert(w1.clone());
+    app.github.pr_inflight.insert(w1.clone());
     land_pull_request(&mut app, w1.clone(), Lookup::Unavailable);
-    assert!(!app.pr_inflight.contains(&w1));
+    assert!(!app.github.pr_inflight.contains(&w1));
     assert_eq!(
-        app.pull_requests[&w1].as_ref().map(|p| p.number),
+        app.github.pull_requests[&w1].as_ref().map(|p| p.number),
         Some(7),
         "the last answer stays on the row"
     );
-    assert!(!app.pr_cache_dirty, "nothing changed, nothing to write");
+    assert!(
+        !app.github.pr_cache_dirty,
+        "nothing changed, nothing to write"
+    );
     assert!(
         !app.pr_lookup_due(&w1),
         "but the next attempt is backed off"
     );
 
     land_pull_request(&mut app, w1.clone(), Lookup::Absent);
-    assert_eq!(app.pull_requests[&w1], None, "a definite miss clears it");
-    assert!(app.pr_cache_dirty);
+    assert_eq!(
+        app.github.pull_requests[&w1], None,
+        "a definite miss clears it"
+    );
+    assert!(app.github.pr_cache_dirty);
 
-    app.pr_cache_dirty = false;
+    app.github.pr_cache_dirty = false;
     let found = cached_pr(8);
     land_pull_request(&mut app, w1.clone(), Lookup::Found(found.clone()));
-    assert_eq!(app.pull_requests[&w1].as_ref(), Some(&found));
-    assert!(app.pr_cache_dirty);
-    app.pr_cache_dirty = false;
+    assert_eq!(app.github.pull_requests[&w1].as_ref(), Some(&found));
+    assert!(app.github.pr_cache_dirty);
+    app.github.pr_cache_dirty = false;
     land_pull_request(&mut app, w1, Lookup::Found(found));
-    assert!(!app.pr_cache_dirty, "the same answer again is not a change");
+    assert!(
+        !app.github.pr_cache_dirty,
+        "the same answer again is not a change"
+    );
 }
 
 /// A body hydrated from the cache is shown the moment the cursor rests
@@ -3605,14 +3750,18 @@ fn a_cached_body_is_shown_at_once_and_refreshed_underneath() {
     seed_tree(&mut app);
     seed_open_prs(&mut app, &[(7, "Attach links")]);
     let url = pr_url(7);
-    app.pr_detail
+    app.github
+        .pr_detail
         .insert(url.clone(), a_detail(7, "from the cache", Vec::new()));
-    app.pr_detail_stale.insert(url.clone());
-    app.focus = Focus::Worktrees;
-    app.sel_worktree = 1;
+    app.github.pr_detail_stale.insert(url.clone());
+    app.nav.focus = Focus::Worktrees;
+    app.nav.sel_worktree = 1;
     schedule_pr_detail(&mut app);
     assert_eq!(
-        app.pending_pr_detail.as_ref().map(|(p, _)| p.url.as_str()),
+        app.github
+            .pending_pr_detail
+            .as_ref()
+            .map(|(p, _)| p.url.as_str()),
         Some(url.as_str()),
         "stale: re-asked"
     );
@@ -3623,29 +3772,32 @@ fn a_cached_body_is_shown_at_once_and_refreshed_underneath() {
     assert!(!text.contains("loading…"), "{text}");
 
     let mut out = Vec::new();
-    app.pending_pr_detail = None;
-    app.pr_detail_inflight.insert(url.clone());
+    app.github.pending_pr_detail = None;
+    app.github.pr_detail_inflight.insert(url.clone());
     land_pr_detail(&mut app, url.clone(), None, &mut out);
     assert_eq!(
-        app.pr_detail.get(&url).map(|d| d.body.as_str()),
+        app.github.pr_detail.get(&url).map(|d| d.body.as_str()),
         Some("from the cache"),
         "a failed refresh keeps the cached copy"
     );
 
-    app.pr_detail_failed.clear();
-    app.pr_detail_inflight.insert(url.clone());
-    app.pr_cache_dirty = false;
+    app.github.pr_detail_failed.clear();
+    app.github.pr_detail_inflight.insert(url.clone());
+    app.github.pr_cache_dirty = false;
     land_pr_detail(
         &mut app,
         url.clone(),
         Some(a_detail(7, "rewritten", Vec::new())),
         &mut out,
     );
-    assert_eq!(app.pr_detail[&url].body, "rewritten");
-    assert!(!app.pr_detail_stale.contains(&url));
-    assert!(app.pr_cache_dirty);
+    assert_eq!(app.github.pr_detail[&url].body, "rewritten");
+    assert!(!app.github.pr_detail_stale.contains(&url));
+    assert!(app.github.pr_cache_dirty);
     schedule_pr_detail(&mut app);
-    assert!(app.pending_pr_detail.is_none(), "fresh: nothing to ask");
+    assert!(
+        app.github.pending_pr_detail.is_none(),
+        "fresh: nothing to ask"
+    );
 }
 
 /// The daemon's snapshot is the truth about which checkouts and
@@ -3663,12 +3815,17 @@ fn the_snapshot_prunes_cached_rows_the_tree_no_longer_has() {
     let p1 = nebula_core::ProjectId("p1".into());
     let gone_w = nebula_core::WorktreeId("w-gone".into());
     let gone_p = nebula_core::ProjectId("p-gone".into());
-    fresh.pull_requests.insert(w1.clone(), Some(cached_pr(7)));
     fresh
+        .github
+        .pull_requests
+        .insert(w1.clone(), Some(cached_pr(7)));
+    fresh
+        .github
         .pull_requests
         .insert(gone_w.clone(), Some(cached_pr(8)));
     let now = std::time::Instant::now();
     fresh
+        .github
         .pr_recheck
         .insert(gone_w.clone(), (now, PR_RECHECK_MIN));
     let open = |list| crate::app::OpenPrs {
@@ -3678,16 +3835,19 @@ fn the_snapshot_prunes_cached_rows_the_tree_no_longer_has() {
         step: OPEN_PRS_REFRESH,
     };
     fresh
+        .github
         .open_prs
         .insert(p1.clone(), open(vec![cached_open(9)]));
     fresh
+        .github
         .open_prs
         .insert(gone_p.clone(), open(vec![cached_open(10)]));
     for number in [7, 8, 9, 10] {
         fresh
+            .github
             .pr_detail
             .insert(pr_url(number), a_detail(number, "body", Vec::new()));
-        fresh.pr_detail_stale.insert(pr_url(number));
+        fresh.github.pr_detail_stale.insert(pr_url(number));
     }
 
     hse(
@@ -3702,16 +3862,16 @@ fn the_snapshot_prunes_cached_rows_the_tree_no_longer_has() {
             ui_state: None,
         },
     );
-    assert!(fresh.pull_requests.contains_key(&w1));
-    assert!(!fresh.pull_requests.contains_key(&gone_w));
-    assert!(!fresh.pr_recheck.contains_key(&gone_w));
-    assert!(fresh.open_prs.contains_key(&p1));
-    assert!(!fresh.open_prs.contains_key(&gone_p));
-    let mut kept: Vec<u64> = fresh.pr_detail.values().map(|d| d.number).collect();
+    assert!(fresh.github.pull_requests.contains_key(&w1));
+    assert!(!fresh.github.pull_requests.contains_key(&gone_w));
+    assert!(!fresh.github.pr_recheck.contains_key(&gone_w));
+    assert!(fresh.github.open_prs.contains_key(&p1));
+    assert!(!fresh.github.open_prs.contains_key(&gone_p));
+    let mut kept: Vec<u64> = fresh.github.pr_detail.values().map(|d| d.number).collect();
     kept.sort();
     assert_eq!(kept, [7, 9], "bodies follow their rows");
-    assert!(!fresh.pr_detail_stale.contains(&pr_url(8)));
-    assert!(fresh.pr_cache_dirty);
+    assert!(!fresh.github.pr_detail_stale.contains(&pr_url(8)));
+    assert!(fresh.github.pr_cache_dirty);
 }
 
 /// The background pass over the projects the cursor is not on: the
@@ -3744,7 +3904,7 @@ fn the_open_list_sweep_visits_the_other_projects_on_a_slow_beat() {
     assert_eq!(target(&app), Some(p2.clone()), "never asked: due");
 
     let now = std::time::Instant::now();
-    app.open_prs.insert(
+    app.github.open_prs.insert(
         p2.clone(),
         crate::app::OpenPrs {
             list: Vec::new(),
@@ -3758,24 +3918,25 @@ fn the_open_list_sweep_visits_the_other_projects_on_a_slow_beat() {
     let stale = now
         .checked_sub(OPEN_PRS_SWEEP_REFRESH + Duration::from_secs(1))
         .expect("machine up for minutes");
-    app.open_prs.get_mut(&p2).unwrap().at = stale;
+    app.github.open_prs.get_mut(&p2).unwrap().at = stale;
     assert_eq!(target(&app), Some(p2.clone()), "older than the beat");
 
-    app.open_prs.get_mut(&p2).unwrap().step = OPEN_PRS_RECHECK_MAX;
+    app.github.open_prs.get_mut(&p2).unwrap().step = OPEN_PRS_RECHECK_MAX;
     assert_eq!(target(&app), None, "its own, longer backoff holds it");
-    app.open_prs.get_mut(&p2).unwrap().step = OPEN_PRS_RECHECK_MIN;
+    app.github.open_prs.get_mut(&p2).unwrap().step = OPEN_PRS_RECHECK_MIN;
 
-    app.open_prs_inflight.insert(p2.clone());
+    app.github.open_prs_inflight.insert(p2.clone());
     assert_eq!(target(&app), None, "already in flight");
-    app.open_prs_inflight.clear();
+    app.github.open_prs_inflight.clear();
 
-    app.open_prs.remove(&p1);
+    app.github.open_prs.remove(&p1);
     assert_eq!(
         target(&app),
         Some(p2),
         "the selected project is never the sweep's, even unasked"
     );
-    app.open_prs
+    app.github
+        .open_prs
         .get_mut(&nebula_core::ProjectId("p2".into()))
         .unwrap()
         .at = now;
@@ -3792,10 +3953,10 @@ fn the_open_list_sweep_visits_the_other_projects_on_a_slow_beat() {
 fn a_cached_diff_opens_at_once_and_is_refreshed_in_place() {
     let dir = tempfile::tempdir().unwrap();
     let mut app = App::new();
-    app.pr_cache = Some(crate::pr_cache::PrCache::at(dir.path().to_path_buf()));
+    app.github.pr_cache = Some(crate::pr_cache::PrCache::at(dir.path().to_path_buf()));
     seed_tree(&mut app);
     seed_open_prs(&mut app, &[(7, "Attach links")]);
-    app.sel_worktree = 1;
+    app.nav.sel_worktree = 1;
     let url = pr_url(7);
     let title = || "#7 Attach links".to_string();
     let cached = "\
@@ -3822,15 +3983,16 @@ diff --git a/src/b.rs b/src/b.rs
         !open_cached_pr_diff(&mut app, 7, &url, &title()),
         "nothing cached yet"
     );
-    app.pr_cache
+    app.github
+        .pr_cache
         .as_ref()
         .unwrap()
         .store_diff(&url, cached)
         .unwrap();
 
     assert!(open_cached_pr_diff(&mut app, 7, &url, &title()));
-    let Some(Overlay::Diff(view)) = &mut app.overlay else {
-        panic!("expected the diff modal, got {:?}", app.overlay);
+    let Some(Overlay::Diff(view)) = &mut app.modals.overlay else {
+        panic!("expected the diff modal, got {:?}", app.modals.overlay);
     };
     assert_eq!(view.pr_url.as_deref(), Some(url.as_str()));
     assert!(view.diff.contains("+new"));
@@ -3840,13 +4002,18 @@ diff --git a/src/b.rs b/src/b.rs
     assert!(view.diff.contains("+y"));
 
     // The same diff lands: nothing moves, and the fetch is done.
-    app.pr_diff_refreshing.insert(url.clone());
-    app.pr_diff_inflight = Some(7);
+    app.github.pr_diff_refreshing.insert(url.clone());
+    app.github.pr_diff_inflight = Some(7);
     land_pr_diff(&mut app, answer(Some(cached)));
-    assert!(app.pr_diff_inflight.is_none());
-    assert!(app.pr_diff_refreshing.is_empty());
-    assert!(!app.flash.as_deref().unwrap_or("").contains("changed"));
-    let Some(Overlay::Diff(view)) = &app.overlay else {
+    assert!(app.github.pr_diff_inflight.is_none());
+    assert!(app.github.pr_diff_refreshing.is_empty());
+    assert!(!app
+        .chrome
+        .flash
+        .as_deref()
+        .unwrap_or("")
+        .contains("changed"));
+    let Some(Overlay::Diff(view)) = &app.modals.overlay else {
         panic!("still open");
     };
     assert!(view.diff.contains("+y"), "still on b.rs");
@@ -3872,9 +4039,9 @@ diff --git a/src/c.rs b/src/c.rs
 @@ -0,0 +1 @@
 +c
 ";
-    app.pr_diff_refreshing.insert(url.clone());
+    app.github.pr_diff_refreshing.insert(url.clone());
     land_pr_diff(&mut app, answer(Some(fresh)));
-    let Some(Overlay::Diff(view)) = &app.overlay else {
+    let Some(Overlay::Diff(view)) = &app.modals.overlay else {
         panic!("still open");
     };
     assert_eq!(
@@ -3889,7 +4056,11 @@ diff --git a/src/c.rs b/src/c.rs
         "the reader's file, refreshed: {}",
         view.diff
     );
-    assert!(app.flash.as_deref().is_some_and(|f| f.contains("changed")));
+    assert!(app
+        .chrome
+        .flash
+        .as_deref()
+        .is_some_and(|f| f.contains("changed")));
     assert_eq!(
         crate::pr_cache::recall_diff(&app, &url).as_deref(),
         Some(fresh),
@@ -3897,10 +4068,10 @@ diff --git a/src/c.rs b/src/c.rs
     );
 
     // Closed before the answer landed: cached, not reopened.
-    app.overlay = None;
-    app.pr_diff_refreshing.insert(url.clone());
+    app.modals.overlay = None;
+    app.github.pr_diff_refreshing.insert(url.clone());
     land_pr_diff(&mut app, answer(Some(cached)));
-    assert!(app.overlay.is_none());
+    assert!(app.modals.overlay.is_none());
     assert_eq!(
         crate::pr_cache::recall_diff(&app, &url).as_deref(),
         Some(cached)
@@ -3908,12 +4079,12 @@ diff --git a/src/c.rs b/src/c.rs
 
     // A refresh `gh` couldn't do leaves the cached copy on screen.
     assert!(open_cached_pr_diff(&mut app, 7, &url, &title()));
-    app.pr_diff_refreshing.insert(url.clone());
+    app.github.pr_diff_refreshing.insert(url.clone());
     land_pr_diff(&mut app, answer(None));
-    assert!(matches!(&app.overlay, Some(Overlay::Diff(_))));
+    assert!(matches!(&app.modals.overlay, Some(Overlay::Diff(_))));
 
     // Nothing cached for #9: its diff opens on landing, as always.
-    app.overlay = None;
+    app.modals.overlay = None;
     land_pr_diff(
         &mut app,
         PrDiffAnswer {
@@ -3924,7 +4095,7 @@ diff --git a/src/c.rs b/src/c.rs
         },
     );
     assert!(
-        matches!(&app.overlay, Some(Overlay::Diff(v)) if v.pr_url.as_deref() == Some(pr_url(9).as_str()))
+        matches!(&app.modals.overlay, Some(Overlay::Diff(v)) if v.pr_url.as_deref() == Some(pr_url(9).as_str()))
     );
     assert_eq!(
         crate::pr_cache::recall_diff(&app, &pr_url(9)).as_deref(),
@@ -3947,7 +4118,7 @@ fn shift_r_on_the_worktrees_panel_refreshes_pull_requests_now() {
     let pid = app.selected_project().expect("a project").id.clone();
     let wid = app.selected_worktree().expect("a worktree").id.clone();
     note_open_prs_answer(&mut app, pid.clone(), Some(vec![]), &mut Vec::new());
-    app.focus = Focus::Worktrees;
+    app.nav.focus = Focus::Worktrees;
     schedule_pull_request_refresh(&mut app);
     assert!(
         !app.open_prs_lookup_due(&pid),
@@ -3961,7 +4132,7 @@ fn shift_r_on_the_worktrees_panel_refreshes_pull_requests_now() {
     let mut out = Vec::new();
     press(&mut app, KeyCode::Char('r'), KeyModifiers::NONE, &mut out);
     assert!(
-        !app.open_prs_lookup_due(&pid) && !app.pr_refresh_requested,
+        !app.open_prs_lookup_due(&pid) && !app.github.pr_refresh_requested,
         "plain r runs the checkout, and refreshes nothing"
     );
     assert!(
@@ -3969,7 +4140,7 @@ fn shift_r_on_the_worktrees_panel_refreshes_pull_requests_now() {
             .all(|r| matches!(r, ClientRequest::StartRun { .. })),
         "{out:?}"
     );
-    assert!(app.overlay.is_none() && app.flash.is_none());
+    assert!(app.modals.overlay.is_none() && app.chrome.flash.is_none());
     out.clear();
 
     // Another checkout of the project, resting on the sweep's beat.
@@ -3985,27 +4156,32 @@ fn shift_r_on_the_worktrees_panel_refreshes_pull_requests_now() {
         "and every other checkout's sweep timer"
     );
     assert!(
-        app.pr_refresh_requested,
+        app.github.pr_refresh_requested,
         "fired on the loop's next turn, not the next git tick"
     );
-    assert!(app.overlay.is_none(), "nothing to rename here");
-    assert_eq!(app.flash.as_deref(), Some(RELOAD_FLASH));
+    assert!(app.modals.overlay.is_none(), "nothing to rename here");
+    assert_eq!(app.chrome.flash.as_deref(), Some(RELOAD_FLASH));
     assert!(out.is_empty(), "no daemon traffic — gh runs client-side");
 
     // The same from an open-PR row of the group, which the pane is
     // reading: its conversation is asked for again too.
     seed_open_prs(&mut app, &[(7, "Attach links")]);
-    app.sel_worktree = app.visible_worktrees().len();
-    app.pr_detail.insert(pr_url(7), a_detail(7, "body", vec![]));
-    app.pr_refresh_requested = false;
+    app.nav.sel_worktree = app.visible_worktrees().len();
+    app.github
+        .pr_detail
+        .insert(pr_url(7), a_detail(7, "body", vec![]));
+    app.github.pr_refresh_requested = false;
     press(&mut app, KeyCode::Char('R'), KeyModifiers::SHIFT, &mut out);
-    assert!(app.pr_refresh_requested);
+    assert!(app.github.pr_refresh_requested);
     assert_eq!(
-        app.pending_pr_detail.as_ref().map(|(p, _)| p.url.as_str()),
+        app.github
+            .pending_pr_detail
+            .as_ref()
+            .map(|(p, _)| p.url.as_str()),
         Some(pr_url(7).as_str()),
         "the cached conversation is re-asked"
     );
-    assert!(app.overlay.is_none());
+    assert!(app.modals.overlay.is_none());
 }
 
 /// `Shift+R` on the Sessions panel's PR ROW re-asks GitHub: the row's
@@ -4020,7 +4196,7 @@ fn shift_r_on_the_pr_row_refreshes_pull_requests() {
     seed_tree(&mut app);
     let url = pr_url(7);
     let wid = app.selected_worktree().expect("a worktree").id.clone();
-    app.pull_requests.insert(
+    app.github.pull_requests.insert(
         wid.clone(),
         Some(crate::pull_request::PullRequest {
             number: 7,
@@ -4028,32 +4204,37 @@ fn shift_r_on_the_pr_row_refreshes_pull_requests() {
             title: "Attach links".into(),
             state: crate::pull_request::STATE_OPEN.into(),
             is_draft: false,
+            head: String::new(),
+            head_sha: String::new(),
+            base: "main".into(),
             health: Default::default(),
             activity: Vec::new(),
         }),
     );
     note_pr_answer(&mut app, &wid, true);
-    app.focus = Focus::Sessions;
-    app.sel_session = app
+    app.nav.focus = Focus::Sessions;
+    app.nav.sel_session = app
         .visible_session_rows()
         .iter()
         .position(|r| r.as_link().is_some())
         .expect("pull-request row");
     // Read once, refused once since, and the reader is partway down.
-    app.pr_detail
+    app.github
+        .pr_detail
         .insert(url.clone(), a_detail(7, "body", vec![]));
-    app.pr_detail_failed.insert(url.clone());
-    app.pending_pr_detail = None;
-    app.pr_preview_scroll = 12;
+    app.github.pr_detail_failed.insert(url.clone());
+    app.github.pending_pr_detail = None;
+    app.github.pr_preview_scroll = 12;
     assert!(!app.pr_lookup_due(&wid));
 
     let mut out = Vec::new();
     press(&mut app, KeyCode::Char('R'), KeyModifiers::SHIFT, &mut out);
-    assert!(app.overlay.is_none(), "no prompt");
-    assert_eq!(app.flash.as_deref(), Some(RELOAD_FLASH));
+    assert!(app.modals.overlay.is_none(), "no prompt");
+    assert_eq!(app.chrome.flash.as_deref(), Some(RELOAD_FLASH));
     assert!(app.pr_lookup_due(&wid), "the row's own lookup is due");
-    assert!(app.pr_refresh_requested);
+    assert!(app.github.pr_refresh_requested);
     let (pending, at) = app
+        .github
         .pending_pr_detail
         .as_ref()
         .expect("the conversation is fetched again");
@@ -4061,32 +4242,35 @@ fn shift_r_on_the_pr_row_refreshes_pull_requests() {
     assert_eq!(pending.number, 7);
     assert!(*at <= std::time::Instant::now(), "no hover debounce");
     assert!(
-        app.pr_detail.contains_key(&url),
+        app.github.pr_detail.contains_key(&url),
         "the cached copy stays on screen until the new one lands"
     );
     assert!(
-        !app.pr_detail_failed.contains(&url),
+        !app.github.pr_detail_failed.contains(&url),
         "a refusal is not the last word"
     );
-    assert_eq!(app.pr_preview_scroll, 12, "the reader is not rewound");
+    assert_eq!(
+        app.github.pr_preview_scroll, 12,
+        "the reader is not rewound"
+    );
 
     // One already in flight is left to land: nothing is stacked on it.
-    app.pending_pr_detail = None;
-    app.pr_detail_inflight.insert(url.clone());
+    app.github.pending_pr_detail = None;
+    app.github.pr_detail_inflight.insert(url.clone());
     press(&mut app, KeyCode::Char('R'), KeyModifiers::SHIFT, &mut out);
-    assert!(app.pending_pr_detail.is_none());
+    assert!(app.github.pending_pr_detail.is_none());
 
     // From an agent row the key refreshes all the same…
-    app.sel_session = 0;
-    app.pr_refresh_requested = false;
-    app.flash = None;
+    app.nav.sel_session = 0;
+    app.github.pr_refresh_requested = false;
+    app.chrome.flash = None;
     press(&mut app, KeyCode::Char('R'), KeyModifiers::SHIFT, &mut out);
-    assert!(app.pr_refresh_requested && app.overlay.is_none());
-    assert_eq!(app.flash.as_deref(), Some(RELOAD_FLASH));
+    assert!(app.github.pr_refresh_requested && app.modals.overlay.is_none());
+    assert_eq!(app.chrome.flash.as_deref(), Some(RELOAD_FLASH));
 
     // …while `r` there still renames.
     press(&mut app, KeyCode::Char('r'), KeyModifiers::NONE, &mut out);
-    match &app.overlay {
+    match &app.modals.overlay {
         Some(Overlay::Prompt(p)) => assert!(
             matches!(p.kind, PromptKind::RenameAgent { .. }),
             "got {:?}",
@@ -4104,8 +4288,8 @@ fn delete_all_sessions_leaves_links_alone() {
     seed_link(&mut app, "https://example.dev/spec");
     let mut out = Vec::new();
     press(&mut app, KeyCode::Char('D'), KeyModifiers::NONE, &mut out);
-    let Some(Overlay::Confirm(c)) = &app.overlay else {
-        panic!("expected the bulk confirm, got {:?}", app.overlay);
+    let Some(Overlay::Confirm(c)) = &app.modals.overlay else {
+        panic!("expected the bulk confirm, got {:?}", app.modals.overlay);
     };
     assert!(
         !c.message.contains("example.dev"),
@@ -4131,14 +4315,18 @@ fn palette_query_edits_like_a_line_and_refilters() {
     }
     press(&mut app, KeyCode::Char('b'), KeyModifiers::ALT, &mut out);
     press(&mut app, KeyCode::Char('x'), KeyModifiers::NONE, &mut out);
-    let matched = |app: &App| match &app.overlay {
-        Some(Overlay::Palette(p)) => p.matches.len(),
+    let matched = |app: &App| match &app.modals.overlay {
+        Some(Overlay::Palette(p)) => p.list.matches.len(),
         other => panic!("expected palette, got {other:?}"),
     };
-    let Some(Overlay::Palette(p)) = &app.overlay else {
+    let Some(Overlay::Palette(p)) = &app.modals.overlay else {
         panic!("palette closed")
     };
-    assert_eq!(p.query.as_str(), "xdemo", "⌥← moves, it does not type 'b'");
+    assert_eq!(
+        p.list.query.as_str(),
+        "xdemo",
+        "⌥← moves, it does not type 'b'"
+    );
     assert_eq!(matched(&app), 0, "the edit re-ran the filter");
 
     // Ctrl+W kills the word back to an empty query, which matches all.
@@ -4154,10 +4342,10 @@ fn palette_query_edits_like_a_line_and_refilters() {
         KeyModifiers::CONTROL,
         &mut out,
     );
-    let Some(Overlay::Palette(p)) = &app.overlay else {
+    let Some(Overlay::Palette(p)) = &app.modals.overlay else {
         panic!("palette closed")
     };
-    assert_eq!(p.query.as_str(), "");
+    assert_eq!(p.list.query.as_str(), "");
     assert!(matched(&app) > 0, "clearing the query restores every row");
 }
 
@@ -4182,16 +4370,19 @@ fn worktree_move_arms_prewarm_and_fire_sends_request() {
             }),
         },
     );
-    app.pending_prewarm = None;
-    app.focus = Focus::Worktrees;
+    app.requests.pending_prewarm = None;
+    app.nav.focus = Focus::Worktrees;
     let mut out = Vec::new();
     move_selection(&mut app, 1, &mut out);
-    let (armed, _) = app.pending_prewarm.clone().expect("prewarm armed");
+    let (armed, _) = app.requests.pending_prewarm.clone().expect("prewarm armed");
     assert_eq!(armed, WorktreeId("w2".into()));
 
     out.clear();
     with_default_config(|| fire_pending_prewarm(&mut app, &mut out));
-    assert!(app.pending_prewarm.is_none(), "fires once, then disarms");
+    assert!(
+        app.requests.pending_prewarm.is_none(),
+        "fires once, then disarms"
+    );
     assert!(matches!(
         out.as_slice(),
         [
@@ -4204,7 +4395,10 @@ fn worktree_move_arms_prewarm_and_fire_sends_request() {
             },
         ] if worktree == &WorktreeId("w2".into()) && agent_wt == &WorktreeId("w2".into())
     ));
-    assert!(app.next_keepwarm.is_some(), "keep-warm re-send is armed");
+    assert!(
+        app.requests.next_keepwarm.is_some(),
+        "keep-warm re-send is armed"
+    );
 }
 
 /// An empty `gh` answer doesn't retire the worktree: the next attempt
@@ -4218,18 +4412,18 @@ fn empty_pr_answers_back_off_instead_of_settling() {
     assert!(app.pr_lookup_due(&wt), "never asked: due immediately");
 
     note_pr_answer(&mut app, &wt, false);
-    let (_, first) = *app.pr_recheck.get(&wt).expect("backoff armed");
+    let (_, first) = *app.github.pr_recheck.get(&wt).expect("backoff armed");
     assert_eq!(first, PR_RECHECK_MIN);
     assert!(!app.pr_lookup_due(&wt), "not due until the backoff expires");
 
     note_pr_answer(&mut app, &wt, false);
-    let (_, second) = *app.pr_recheck.get(&wt).expect("backoff armed");
+    let (_, second) = *app.github.pr_recheck.get(&wt).expect("backoff armed");
     assert_eq!(second, PR_RECHECK_MIN * 2, "each miss doubles the gap");
 
     for _ in 0..12 {
         note_pr_answer(&mut app, &wt, false);
     }
-    let (_, capped) = *app.pr_recheck.get(&wt).expect("backoff armed");
+    let (_, capped) = *app.github.pr_recheck.get(&wt).expect("backoff armed");
     assert_eq!(capped, PR_RECHECK_MAX, "growth stops at the cap");
 }
 
@@ -4240,8 +4434,8 @@ fn an_expired_backoff_asks_again() {
     use nebula_core::WorktreeId;
     let mut app = App::new();
     let wt = WorktreeId("w1".into());
-    app.pull_requests.insert(wt.clone(), None);
-    app.pr_recheck.insert(
+    app.github.pull_requests.insert(wt.clone(), None);
+    app.github.pr_recheck.insert(
         wt.clone(),
         (
             std::time::Instant::now() - Duration::from_secs(1),
@@ -4268,21 +4462,21 @@ fn a_found_pr_keeps_being_refreshed() {
     );
     note_pr_answer(&mut app, &wt, false);
     note_pr_answer(&mut app, &wt, true);
-    let (_, step) = *app.pr_recheck.get(&wt).expect("still scheduled");
+    let (_, step) = *app.github.pr_recheck.get(&wt).expect("still scheduled");
     assert_eq!(step, PR_REFRESH, "the miss backoff gives way to the beat");
 
     // A checkout the cursor is not on settles onto the sweep's slower
     // beat instead: nobody is reading its badge.
     let other = WorktreeId("w2".into());
     note_pr_answer(&mut app, &other, true);
-    let (_, step) = *app.pr_recheck.get(&other).expect("scheduled");
+    let (_, step) = *app.github.pr_recheck.get(&other).expect("scheduled");
     assert_eq!(step, PR_SWEEP_REFRESH, "an unselected checkout is swept");
     assert!(
         PR_SWEEP_REFRESH > PR_RECHECK_MAX,
         "slower than any miss backoff"
     );
 
-    app.pull_requests.insert(
+    app.github.pull_requests.insert(
         wt.clone(),
         Some(crate::pull_request::PullRequest {
             number: 7,
@@ -4290,6 +4484,9 @@ fn a_found_pr_keeps_being_refreshed() {
             title: "done".into(),
             state: crate::pull_request::STATE_OPEN.into(),
             is_draft: false,
+            head: String::new(),
+            head_sha: String::new(),
+            base: "main".into(),
             health: Default::default(),
             activity: Vec::new(),
         }),
@@ -4312,7 +4509,7 @@ fn opening_a_pull_request_marks_it_read() {
     let mut app = App::new();
     let url = "https://github.com/o/r/pull/7";
     let wt = WorktreeId("w1".into());
-    app.pull_requests.insert(
+    app.github.pull_requests.insert(
         wt.clone(),
         Some(crate::pull_request::PullRequest {
             number: 7,
@@ -4320,6 +4517,9 @@ fn opening_a_pull_request_marks_it_read() {
             title: "done".into(),
             state: crate::pull_request::STATE_OPEN.into(),
             is_draft: false,
+            head: String::new(),
+            head_sha: String::new(),
+            base: "main".into(),
             health: Default::default(),
             activity: vec!["2024-04-25T19:55:42Z".into()],
         }),
@@ -4327,7 +4527,7 @@ fn opening_a_pull_request_marks_it_read() {
     let mut out = Vec::new();
     mark_pr_seen(&mut app, url, &mut out);
     assert_eq!(
-        app.pr_seen.get(url).map(String::as_str),
+        app.github.pr_seen.get(url).map(String::as_str),
         Some("2024-04-25T19:55:42Z"),
         "applied locally so the badge clears this frame"
     );
@@ -4345,7 +4545,7 @@ fn opening_a_pull_request_marks_it_read() {
     // A URL that isn't a pull request has no conversation to bank.
     mark_pr_seen(&mut app, "https://example.dev/spec", &mut out);
     assert!(out.is_empty());
-    assert_eq!(app.pr_seen.len(), 1);
+    assert_eq!(app.github.pr_seen.len(), 1);
 }
 
 /// A lookup in flight blocks a second one, so the 2s git tick can't
@@ -4355,9 +4555,9 @@ fn an_inflight_lookup_blocks_a_second_one() {
     use nebula_core::WorktreeId;
     let mut app = App::new();
     let wt = WorktreeId("w1".into());
-    app.pr_inflight.insert(wt.clone());
+    app.github.pr_inflight.insert(wt.clone());
     assert!(!app.pr_lookup_due(&wt));
-    app.pr_inflight.remove(&wt);
+    app.github.pr_inflight.remove(&wt);
     assert!(app.pr_lookup_due(&wt));
 }
 
@@ -4383,14 +4583,14 @@ fn a_worktree_switch_clears_the_backoff() {
         },
     );
     let w2 = WorktreeId("w2".into());
-    app.pull_requests.insert(w2.clone(), None);
-    app.pr_recheck.insert(
+    app.github.pull_requests.insert(w2.clone(), None);
+    app.github.pr_recheck.insert(
         w2.clone(),
         (std::time::Instant::now() + PR_RECHECK_MAX, PR_RECHECK_MAX),
     );
     assert!(!app.pr_lookup_due(&w2), "backed off before the switch");
 
-    app.focus = Focus::Worktrees;
+    app.nav.focus = Focus::Worktrees;
     let mut out = Vec::new();
     move_selection(&mut app, 1, &mut out);
     assert_eq!(
@@ -4467,12 +4667,12 @@ fn the_sweep_takes_the_projects_other_checkouts_one_per_tick() {
         sweep_target(&mut app).map(|(id, _)| id),
         Some(first.clone())
     );
-    app.pr_inflight.insert(first.clone());
+    app.github.pr_inflight.insert(first.clone());
     // Next tick: the other one. Then nothing until a timer expires.
     let (second, _) = sweep_target(&mut app).expect("the other checkout");
     assert_eq!(second, rest[1]);
     assert_ne!(second, first);
-    app.pr_inflight.remove(&second);
+    app.github.pr_inflight.remove(&second);
     note_pr_answer(&mut app, &second, true);
     assert!(app.pr_lookup_due(&gone), "not yet reached");
     assert_eq!(
@@ -4484,14 +4684,14 @@ fn the_sweep_takes_the_projects_other_checkouts_one_per_tick() {
         !app.pr_lookup_due(&gone),
         "the missing checkout was noted as a miss on the way past"
     );
-    assert_eq!(app.pull_requests.get(&gone), Some(&None));
+    assert_eq!(app.github.pull_requests.get(&gone), Some(&None));
 
     // With a non-root checkout selected, that one is left to its own
     // lookup and the root is still not swept.
-    app.pr_inflight.clear();
-    app.pr_recheck.clear();
-    app.focus = Focus::Worktrees;
-    app.sel_worktree = order.iter().position(|id| *id == w2).unwrap();
+    app.github.pr_inflight.clear();
+    app.github.pr_recheck.clear();
+    app.nav.focus = Focus::Worktrees;
+    app.nav.sel_worktree = order.iter().position(|id| *id == w2).unwrap();
     assert_eq!(
         app.selected_worktree().map(|w| w.id.clone()),
         Some(w2.clone())
@@ -4501,7 +4701,7 @@ fn the_sweep_takes_the_projects_other_checkouts_one_per_tick() {
         Some(w3.clone()),
         "not the selected checkout, not the root"
     );
-    app.pr_inflight.insert(w3);
+    app.github.pr_inflight.insert(w3);
     assert_eq!(
         sweep_target(&mut app),
         None,
@@ -4529,12 +4729,12 @@ fn a_pull_request_that_leaves_the_open_list_re_asks_its_checkout() {
             PR_SWEEP_REFRESH,
         )
     };
-    app.pr_recheck.insert(wid.clone(), resting());
+    app.github.pr_recheck.insert(wid.clone(), resting());
     assert!(!app.pr_lookup_due(&wid), "on the sweep's beat");
 
     // #9 is still open: nothing about #7's checkout changes.
-    let seven = app.open_prs[&pid].list[0].clone();
-    let nine = app.open_prs[&pid].list[1].clone();
+    let seven = app.github.open_prs[&pid].list[0].clone();
+    let nine = app.github.open_prs[&pid].list[1].clone();
     assert_eq!((seven.number, nine.number), (7, 9));
     note_open_prs_answer(
         &mut app,
@@ -4558,7 +4758,7 @@ fn a_pull_request_that_leaves_the_open_list_re_asks_its_checkout() {
 
     // A call that couldn't be made keeps the old rows and re-asks nothing.
     seed_open_prs(&mut app, &[(7, "Attach links")]);
-    app.pr_recheck.insert(wid.clone(), resting());
+    app.github.pr_recheck.insert(wid.clone(), resting());
     note_open_prs_answer(&mut app, pid.clone(), None, &mut Vec::new());
     assert!(!app.pr_lookup_due(&wid), "no answer, no retirement");
 
@@ -4578,7 +4778,7 @@ fn keepwarm_refires_for_selected_worktree_and_rearms() {
     with_default_config(|| {
         let mut app = App::new();
         seed_tree(&mut app);
-        app.next_keepwarm = Some(std::time::Instant::now());
+        app.requests.next_keepwarm = Some(std::time::Instant::now());
         let mut out = Vec::new();
         fire_keepwarm(&mut app, &mut out);
         assert!(matches!(
@@ -4590,14 +4790,20 @@ fn keepwarm_refires_for_selected_worktree_and_rearms() {
                 effort: None,
             }] if worktree == &nebula_core::WorktreeId("w1".into())
         ));
-        assert!(app.next_keepwarm.is_some(), "re-arms after sending");
+        assert!(
+            app.requests.next_keepwarm.is_some(),
+            "re-arms after sending"
+        );
 
         let mut empty = App::new();
-        empty.next_keepwarm = Some(std::time::Instant::now());
+        empty.requests.next_keepwarm = Some(std::time::Instant::now());
         out.clear();
         fire_keepwarm(&mut empty, &mut out);
         assert!(out.is_empty(), "nothing selected, nothing to keep warm");
-        assert!(empty.next_keepwarm.is_none(), "disarms without a worktree");
+        assert!(
+            empty.requests.next_keepwarm.is_none(),
+            "disarms without a worktree"
+        );
     })
 }
 
@@ -4608,12 +4814,12 @@ fn esc_on_the_new_session_picker_sends_nothing() {
     with_default_config(|| {
         let mut app = App::new();
         seed_tree(&mut app);
-        app.focus = Focus::Sessions;
+        app.nav.focus = Focus::Sessions;
         let mut out = Vec::new();
         open_picker(&mut app);
-        assert!(matches!(&app.overlay, Some(Overlay::Menu(_))));
+        assert!(matches!(&app.modals.overlay, Some(Overlay::Menu(_))));
         press(&mut app, KeyCode::Esc, KeyModifiers::NONE, &mut out);
-        assert!(app.overlay.is_none());
+        assert!(app.modals.overlay.is_none());
         assert!(
             out.is_empty(),
             "nothing to create, nothing to warm: {out:?}"
@@ -4629,7 +4835,7 @@ fn snapshot_arms_prewarm_for_selected_worktree() {
     seed_tree(&mut app);
     let tree = app.tree.clone();
     let mut fresh = App::new();
-    assert!(fresh.pending_prewarm.is_none());
+    assert!(fresh.requests.pending_prewarm.is_none());
     hse(
         &mut fresh,
         ServerEvent::Snapshot {
@@ -4642,7 +4848,11 @@ fn snapshot_arms_prewarm_for_selected_worktree() {
             ui_state: None,
         },
     );
-    let (armed, _) = fresh.pending_prewarm.clone().expect("prewarm armed");
+    let (armed, _) = fresh
+        .requests
+        .pending_prewarm
+        .clone()
+        .expect("prewarm armed");
     assert_eq!(armed, nebula_core::WorktreeId("w1".into()));
 }
 
@@ -4678,7 +4888,7 @@ fn snapshot_reattaches_the_remembered_session() {
             &mut out,
         );
     assert_eq!(
-        fresh.term.as_ref().map(|t| t.sref.clone()),
+        fresh.pane.term.as_ref().map(|t| t.sref.clone()),
         Some(a1.clone())
     );
     assert!(
@@ -4687,8 +4897,8 @@ fn snapshot_reattaches_the_remembered_session() {
         "expected an Attach for a1, got {out:?}"
     );
     // The cursor stays on the grid: this is a preview, not Enter.
-    assert_eq!(fresh.focus, Focus::Sessions);
-    assert!(!fresh.term_locked);
+    assert_eq!(fresh.nav.focus, Focus::Sessions);
+    assert!(!fresh.pane.term_locked);
 
     // No blob (first launch) or a blob whose session is gone: nothing
     // to bring back, so the pane stays blank rather than guessing.
@@ -4712,6 +4922,50 @@ fn snapshot_reattaches_the_remembered_session() {
         }
 }
 
+/// A Snapshot after startup is a daemon resync, not a relaunch. It must
+/// refresh stale entity data without replaying persisted UI state over
+/// the session the user is looking at now.
+#[test]
+fn mid_stream_snapshot_preserves_the_live_selection() {
+    let mut app = App::new();
+    seed_tree(&mut app);
+    seed_second_agent(&mut app, nebula_core::AgentStatus::Finished);
+    app.nav.sel_session = row_of(&app, "a2");
+    app.chrome.snapshot_loaded = true;
+    let tree = app.tree.clone();
+    let mut out = Vec::new();
+
+    handle_server_event(
+        &mut app,
+        ServerEvent::Snapshot {
+            projects: tree.projects,
+            worktrees: tree.worktrees,
+            agents: tree.agents,
+            terminals: tree.terminals,
+            links: tree.links,
+            pr_seen: Vec::new(),
+            ui_state: Some(
+                r#"{"project":"p1","worktree":"w1","session_agent":"a1","show_archived":false,"collapsed":false}"#
+                    .into(),
+            ),
+        },
+        &mut out,
+    );
+
+    assert_eq!(
+        app.selected_session_row().and_then(|r| r.sref()),
+        Some(SessionRef::Agent(AgentId("a2".into())))
+    );
+    assert!(
+        !out.iter().any(|r| matches!(
+            r,
+            ClientRequest::Attach { session, .. }
+                if *session == SessionRef::Agent(AgentId("a1".into()))
+        )),
+        "resync must not reattach the persisted startup session: {out:?}"
+    );
+}
+
 /// The footer's far left is a nameplate: which nebula this is, ahead
 /// of every cursor-driven crumb after it. It yields
 /// the columns back to a flash that would otherwise be cut off mid
@@ -4728,7 +4982,7 @@ fn footer_shows_the_nebula_version_but_never_truncates_a_flash() {
     assert!(text.contains(stamp), "{stamp} missing from:\n{text}");
 
     // A flash short enough to share the bar keeps the nameplate.
-    app.flash = Some("saved".into());
+    app.chrome.flash = Some("saved".into());
     terminal.draw(|f| ui::draw(f, &mut app)).unwrap();
     let text = buffer_text(&terminal);
     assert!(text.contains(stamp), "{stamp} missing from:\n{text}");
@@ -4736,7 +4990,7 @@ fn footer_shows_the_nebula_version_but_never_truncates_a_flash() {
 
     // One that isn't takes the whole left edge instead.
     let long = "the pull request link can't be deleted from here, close it on github";
-    app.flash = Some(long.into());
+    app.chrome.flash = Some(long.into());
     terminal.draw(|f| ui::draw(f, &mut app)).unwrap();
     let text = buffer_text(&terminal);
     assert!(
@@ -4757,7 +5011,7 @@ fn footer_flags_a_newer_release_beside_the_nameplate() {
     terminal.draw(|f| ui::draw(f, &mut app)).unwrap();
     assert!(!buffer_text(&terminal).contains('⇡'), "nothing to flag yet");
 
-    app.update_available = Some("9.9.9".into());
+    app.chrome.update_available = Some("9.9.9".into());
     terminal.draw(|f| ui::draw(f, &mut app)).unwrap();
     let text = buffer_text(&terminal);
     let flagged = format!("{stamp} ⇡ v9.9.9");
@@ -4766,7 +5020,7 @@ fn footer_flags_a_newer_release_beside_the_nameplate() {
 
     // A flash that would be clipped drops the whole plate, indicator too.
     let long = "the pull request link can't be deleted from here, close it on github";
-    app.flash = Some(long.into());
+    app.chrome.flash = Some(long.into());
     terminal.draw(|f| ui::draw(f, &mut app)).unwrap();
     let text = buffer_text(&terminal);
     assert!(
@@ -4789,8 +5043,8 @@ fn footer_shows_session_counts_and_memory() {
         "no readout before the first reading"
     );
 
-    app.client_rss_bytes = 100 * 1024 * 1024;
-    app.last_metrics = Some(MetricsSnapshot {
+    app.jobs.client_rss_bytes = 100 * 1024 * 1024;
+    app.jobs.last_metrics = Some(MetricsSnapshot {
         daemon_pid: 1,
         daemon_rss_bytes: 200 * 1024 * 1024,
         system_total_bytes: 0,
@@ -4830,8 +5084,8 @@ fn clicking_the_footer_readout_opens_the_memory_modal() {
     use ratatui::style::Modifier;
     let mut app = App::new();
     seed_tree(&mut app);
-    app.client_rss_bytes = 100 * 1024 * 1024;
-    app.last_metrics = Some(MetricsSnapshot {
+    app.jobs.client_rss_bytes = 100 * 1024 * 1024;
+    app.jobs.last_metrics = Some(MetricsSnapshot {
         daemon_pid: 1,
         daemon_rss_bytes: 200 * 1024 * 1024,
         system_total_bytes: 0,
@@ -4869,15 +5123,15 @@ fn clicking_the_footer_readout_opens_the_memory_modal() {
     };
     let mut out = Vec::new();
     mouse(&mut app, MouseEventKind::Moved, &mut out);
-    assert_eq!(app.hover_crumb, Some(HitTarget::FooterUsage));
+    assert_eq!(app.launcher.hover_crumb, Some(HitTarget::FooterUsage));
     terminal.draw(|f| ui::draw(f, &mut app)).unwrap();
     assert_eq!(row(&terminal, true), word, "the pointer underlines it");
 
     mouse(&mut app, MouseEventKind::Down(MouseButton::Left), &mut out);
     assert!(
-        matches!(app.overlay, Some(Overlay::Metrics(_))),
+        matches!(app.modals.overlay, Some(Overlay::Metrics(_))),
         "the click opens the memory modal: {:?}",
-        app.overlay
+        app.modals.overlay
     );
     assert!(
         matches!(out.last(), Some(ClientRequest::GetMetrics { .. })),
@@ -4892,14 +5146,18 @@ fn clicking_the_footer_readout_opens_the_memory_modal() {
         }
         other => panic!("expected the memory modal, got {other:?}"),
     };
-    let clicked = steady(app.overlay.take());
+    let clicked = steady(app.modals.overlay.take());
     let mut keyed = Vec::new();
     handle_terminal_event(
         &mut app,
         Event::Key(KeyEvent::new(KeyCode::Char('M'), KeyModifiers::SHIFT)),
         &mut keyed,
     );
-    assert_eq!(steady(app.overlay.take()), clicked, "the click is `⇧M`");
+    assert_eq!(
+        steady(app.modals.overlay.take()),
+        clicked,
+        "the click is `⇧M`"
+    );
     assert!(matches!(
         keyed.last(),
         Some(ClientRequest::GetMetrics { .. })
@@ -4936,6 +5194,7 @@ fn working_sessions_head_the_list_regardless_of_age() {
                 status_changed_at: changed_at,
                 alive: true,
                 issue_url: None,
+                role: nebula_core::AgentRole::Worker,
                 recent_prompts: Vec::new(),
             }),
         };
@@ -4990,6 +5249,7 @@ fn sessions_order_by_last_interaction() {
             status_changed_at: at,
             alive: true,
             issue_url: None,
+            role: nebula_core::AgentRole::Worker,
             recent_prompts: Vec::new(),
         }),
     };
@@ -5072,6 +5332,7 @@ fn a_session_created_running_leads_the_working_ones() {
             status_changed_at: at,
             alive: true,
             issue_url: None,
+            role: nebula_core::AgentRole::Worker,
             recent_prompts: Vec::new(),
         }),
     };
@@ -5132,12 +5393,13 @@ fn status_change_resorts_and_selection_follows() {
                 status_changed_at: 0,
                 alive: true,
                 issue_url: None,
+                role: nebula_core::AgentRole::Worker,
                 recent_prompts: Vec::new(),
             }),
         },
     );
-    app.focus = Focus::Sessions;
-    app.sel_session = 1; // agent-2
+    app.nav.focus = Focus::Sessions;
+    app.nav.sel_session = 1; // agent-2
 
     hse(
         &mut app,
@@ -5154,7 +5416,134 @@ fn status_change_resorts_and_selection_follows() {
         "the stamped agent bubbled to the top"
     );
     assert_eq!(app.session_group_counts(), (2, 0));
-    assert_eq!(app.sel_session, 0, "selection followed agent-2");
+    assert_eq!(app.nav.sel_session, 0, "selection followed agent-2");
+}
+
+/// A session finishing in ANOTHER project must not pull the view over
+/// there. The Projects column is a row index into a list sorted by
+/// recency, where a project with a turn under way counts as "now". When
+/// the finish is stamped at (or a hair past) the TUI's own clock — the
+/// daemon stamped it in the same millisecond the event was handled, or
+/// its clock runs a little ahead — the finished project briefly ties or
+/// beats the working one. The reconcile on the event re-seats the cursor
+/// for that order, and a moment later, with no event at all, the clock
+/// moves on and the order flips back: the same row index now names the
+/// project that just finished. Its session got the highlight while the
+/// pane went on showing the prompt just sent — the swap Cody saw when
+/// the done sound rang. The order must not move on the clock alone.
+#[test]
+fn a_finish_in_another_project_never_moves_the_view_there() {
+    use nebula_core::{AgentStatus, ProjectId};
+    let mut app = App::new();
+    seed_tree(&mut app);
+    seed_second_project(&mut app);
+    let now = crate::app::now_ms();
+    let flip = |agent: &str, status: AgentStatus, changed_at: i64| ServerEvent::StatusChanged {
+        agent: AgentId(agent.into()),
+        status,
+        changed_at,
+        unseen: false,
+    };
+    // An earlier prompt still running over in `nebula`, and the one just
+    // sent here in `demo`.
+    hse(&mut app, flip("a2", AgentStatus::Running, now - 60_000));
+    hse(&mut app, flip("a1", AgentStatus::Running, now - 1_000));
+    let demo = ProjectId("p1".into());
+    let mut out = Vec::new();
+    assert!(select_project_row_by_id(&mut app, &demo));
+    restore_context(&mut app, &mut out);
+    app.pane.term = Some(AttachedTerm::new(
+        SessionRef::Agent(AgentId("a1".into())),
+        40,
+        10,
+    ));
+    assert_eq!(
+        app.selected_session().map(|a| a.name),
+        Some("agent-1".into())
+    );
+
+    // The other project's turn ends, stamped just ahead of this clock.
+    hse(
+        &mut app,
+        flip("a2", AgentStatus::Finished, crate::app::now_ms() + 30),
+    );
+    assert_eq!(app.selected_project().map(|p| &p.id), Some(&demo));
+
+    // Nothing happens but time passing.
+    std::thread::sleep(std::time::Duration::from_millis(60));
+    assert_eq!(
+        app.selected_project().map(|p| &p.id),
+        Some(&demo),
+        "the view stays on the project the user is in"
+    );
+    assert_eq!(
+        app.selected_session().map(|a| a.name),
+        Some("agent-1".into()),
+        "and the highlight stays on the session the pane shows"
+    );
+}
+
+/// The same for two checkouts of one project: a turn ending in the other
+/// one never takes the Worktrees cursor off the checkout being worked in.
+#[test]
+fn a_finish_in_another_checkout_never_moves_the_worktree_cursor() {
+    use nebula_core::{AgentStatus, Entity, Worktree, WorktreeId};
+    let mut app = App::new();
+    seed_tree(&mut app);
+    let feature = WorktreeId("w2".into());
+    hse(
+        &mut app,
+        ServerEvent::EntityUpserted {
+            entity: Entity::Worktree(Worktree {
+                id: feature.clone(),
+                project_id: nebula_core::ProjectId("p1".into()),
+                path: "/tmp/demo-feature".into(),
+                branch: "feature".into(),
+                is_main: false,
+                sort_order: 0,
+            }),
+        },
+    );
+    seed_agent_in(&mut app, "a2", &feature);
+    // A third checkout, so the two the test turns on are both below the
+    // pinned main row and sort against each other.
+    let other = WorktreeId("w3".into());
+    hse(
+        &mut app,
+        ServerEvent::EntityUpserted {
+            entity: Entity::Worktree(Worktree {
+                id: other.clone(),
+                project_id: nebula_core::ProjectId("p1".into()),
+                path: "/tmp/demo-other".into(),
+                branch: "other".into(),
+                is_main: false,
+                sort_order: 1,
+            }),
+        },
+    );
+    seed_agent_in(&mut app, "a3", &other);
+    let now = crate::app::now_ms();
+    let flip = |agent: &str, status: AgentStatus, changed_at: i64| ServerEvent::StatusChanged {
+        agent: AgentId(agent.into()),
+        status,
+        changed_at,
+        unseen: false,
+    };
+    hse(&mut app, flip("a3", AgentStatus::Running, now - 60_000));
+    hse(&mut app, flip("a2", AgentStatus::Running, now - 1_000));
+    let mut out = Vec::new();
+    assert!(select_worktree_by_id(&mut app, &feature, &mut out));
+
+    hse(
+        &mut app,
+        flip("a3", AgentStatus::Finished, crate::app::now_ms() + 30),
+    );
+    std::thread::sleep(std::time::Duration::from_millis(60));
+    assert_eq!(
+        app.selected_worktree().map(|w| &w.id),
+        Some(&feature),
+        "the cursor stays on the checkout being worked in"
+    );
 }
 
 /// Confirming a worktree delete drops the row (and its agents)
@@ -5200,6 +5589,7 @@ fn worktree_delete_is_optimistic_and_rolls_back_on_error() {
                 status_changed_at: 0,
                 alive: true,
                 issue_url: None,
+                role: nebula_core::AgentRole::Worker,
                 recent_prompts: Vec::new(),
             }),
         },
@@ -5233,9 +5623,9 @@ fn worktree_delete_is_optimistic_and_rolls_back_on_error() {
         "worktree restored at its old index"
     );
     assert!(app.tree.agents.iter().any(|a| a.worktree_id == wt_id));
-    assert_eq!(app.flash.as_deref(), Some("worktree dirty"));
+    assert_eq!(app.chrome.flash.as_deref(), Some("worktree dirty"));
     assert!(
-        app.pending.is_empty(),
+        app.requests.pending.is_empty(),
         "failed request leaves no pending intent"
     );
 }
@@ -5253,7 +5643,7 @@ fn tab_in_add_project_prompt_completes_paths() {
 
     let mut app = App::new();
     let mut out = Vec::new();
-    app.overlay = Some(Overlay::Prompt(PromptDialog::new(
+    app.modals.overlay = Some(Overlay::Prompt(PromptDialog::new(
         "Add project",
         "path",
         format!("{}/work", tmp.path().display()),
@@ -5266,7 +5656,7 @@ fn tab_in_add_project_prompt_completes_paths() {
         KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE),
         &mut out,
     );
-    let Some(Overlay::Prompt(p)) = &app.overlay else {
+    let Some(Overlay::Prompt(p)) = &app.modals.overlay else {
         panic!("prompt closed")
     };
     assert_eq!(p.input, format!("{}/workspace/", tmp.path().display()));
@@ -5278,7 +5668,7 @@ fn tab_in_add_project_prompt_completes_paths() {
         KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE),
         &mut out,
     );
-    let Some(Overlay::Prompt(p)) = &app.overlay else {
+    let Some(Overlay::Prompt(p)) = &app.modals.overlay else {
         panic!("prompt closed")
     };
     assert_eq!(p.input, format!("{}/workspace/", tmp.path().display()));
@@ -5290,7 +5680,7 @@ fn tab_in_add_project_prompt_completes_paths() {
         KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE),
         &mut out,
     );
-    let Some(Overlay::Prompt(p)) = &app.overlay else {
+    let Some(Overlay::Prompt(p)) = &app.modals.overlay else {
         panic!("prompt closed")
     };
     assert_eq!(dir_names(p), vec!["nebula"]);
@@ -5299,7 +5689,7 @@ fn tab_in_add_project_prompt_completes_paths() {
         KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE),
         &mut out,
     );
-    let Some(Overlay::Prompt(p)) = &app.overlay else {
+    let Some(Overlay::Prompt(p)) = &app.modals.overlay else {
         panic!("prompt closed")
     };
     assert_eq!(
@@ -5317,13 +5707,13 @@ fn add_project_prompt_browses_with_arrows_and_submits_hovered() {
 
     let mut app = App::new();
     let mut out = Vec::new();
-    app.overlay = Some(Overlay::Prompt(PromptDialog::new(
+    app.modals.overlay = Some(Overlay::Prompt(PromptDialog::new(
         "Add project",
         "path",
         format!("{}/ws/", tmp.path().display()),
         PromptKind::AddProject,
     )));
-    let Some(Overlay::Prompt(p)) = &app.overlay else {
+    let Some(Overlay::Prompt(p)) = &app.modals.overlay else {
         panic!("prompt closed")
     };
     assert_eq!(dir_names(p), vec!["alpha", "beta"]);
@@ -5338,7 +5728,7 @@ fn add_project_prompt_browses_with_arrows_and_submits_hovered() {
             &mut out,
         );
     }
-    let Some(Overlay::Prompt(p)) = &app.overlay else {
+    let Some(Overlay::Prompt(p)) = &app.modals.overlay else {
         panic!("prompt closed")
     };
     assert_eq!(
@@ -5350,7 +5740,7 @@ fn add_project_prompt_browses_with_arrows_and_submits_hovered() {
         KeyEvent::new(KeyCode::Right, KeyModifiers::NONE),
         &mut out,
     );
-    let Some(Overlay::Prompt(p)) = &app.overlay else {
+    let Some(Overlay::Prompt(p)) = &app.modals.overlay else {
         panic!("prompt closed")
     };
     assert_eq!(p.input, format!("{}/ws/beta/", tmp.path().display()));
@@ -5363,7 +5753,7 @@ fn add_project_prompt_browses_with_arrows_and_submits_hovered() {
         KeyEvent::new(KeyCode::Left, KeyModifiers::NONE),
         &mut out,
     );
-    let Some(Overlay::Prompt(p)) = &app.overlay else {
+    let Some(Overlay::Prompt(p)) = &app.modals.overlay else {
         panic!("prompt closed")
     };
     assert_eq!(p.input, format!("{}/ws/", tmp.path().display()));
@@ -5379,7 +5769,7 @@ fn add_project_prompt_browses_with_arrows_and_submits_hovered() {
         KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
         &mut out,
     );
-    assert!(app.overlay.is_none());
+    assert!(app.modals.overlay.is_none());
     assert!(matches!(
         out.as_slice(),
         [ClientRequest::AddProject { path, create_missing: false, .. }]
@@ -5392,7 +5782,7 @@ fn add_project_prefill_yields_to_absolute_paths() {
     use crate::app::{Overlay, PromptDialog, PromptKind};
     let mut app = App::new();
     let mut out = Vec::new();
-    app.overlay = Some(Overlay::Prompt(PromptDialog::new(
+    app.modals.overlay = Some(Overlay::Prompt(PromptDialog::new(
         "Add project",
         "path",
         "~/",
@@ -5403,7 +5793,7 @@ fn add_project_prefill_yields_to_absolute_paths() {
         KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE),
         &mut out,
     );
-    let Some(Overlay::Prompt(p)) = &app.overlay else {
+    let Some(Overlay::Prompt(p)) = &app.modals.overlay else {
         panic!("prompt closed")
     };
     assert_eq!(p.input, "/", "leading '/' replaces the untouched prefill");
@@ -5415,7 +5805,7 @@ fn tab_in_name_prompt_does_not_complete() {
     let mut app = App::new();
     seed_tree(&mut app);
     let mut out = Vec::new();
-    app.overlay = Some(Overlay::Prompt(PromptDialog::new(
+    app.modals.overlay = Some(Overlay::Prompt(PromptDialog::new(
         "Rename agent",
         "name",
         "src", // a dir that exists in cwd — must NOT complete
@@ -5428,7 +5818,7 @@ fn tab_in_name_prompt_does_not_complete() {
         KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE),
         &mut out,
     );
-    let Some(Overlay::Prompt(p)) = &app.overlay else {
+    let Some(Overlay::Prompt(p)) = &app.modals.overlay else {
         panic!("prompt closed")
     };
     assert_eq!(p.input, "src", "name prompts ignore Tab");
@@ -5446,9 +5836,9 @@ fn keys_route_by_focus() {
         KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE),
         &mut out,
     );
-    assert!(!app.should_quit, "q asks before it quits");
+    assert!(!app.chrome.should_quit, "q asks before it quits");
     assert!(
-        matches!(&app.overlay, Some(Overlay::Confirm(c)) if c.action == PendingAction::Quit),
+        matches!(&app.modals.overlay, Some(Overlay::Confirm(c)) if c.action == PendingAction::Quit),
         "q opens the quit confirm"
     );
     handle_key(
@@ -5456,28 +5846,28 @@ fn keys_route_by_focus() {
         KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE),
         &mut out,
     );
-    assert!(app.should_quit);
-    app.should_quit = false;
+    assert!(app.chrome.should_quit);
+    app.chrome.should_quit = false;
 
     // Terminal input-locked: 'q' is forwarded, Ctrl+q escapes and unlocks.
-    app.focus = Focus::Terminal;
-    app.term_locked = true;
+    app.nav.focus = Focus::Terminal;
+    app.pane.term_locked = true;
     let sref = SessionRef::Agent(AgentId("a1".into()));
-    app.term = Some(AttachedTerm::new(sref, 80, 24));
+    app.pane.term = Some(AttachedTerm::new(sref, 80, 24));
     handle_key(
         &mut app,
         KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE),
         &mut out,
     );
-    assert!(!app.should_quit, "q must forward to pty, not quit");
+    assert!(!app.chrome.should_quit, "q must forward to pty, not quit");
     assert!(matches!(out.last(), Some(ClientRequest::Input { data, .. }) if data == b"q"));
     handle_key(
         &mut app,
         KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL),
         &mut out,
     );
-    assert_eq!(app.focus, Focus::Sessions, "Ctrl+q escapes to panels");
-    assert!(!app.term_locked, "Ctrl+q clears the input lock");
+    assert_eq!(app.nav.focus, Focus::Sessions, "Ctrl+q escapes to panels");
+    assert!(!app.pane.term_locked, "Ctrl+q clears the input lock");
 }
 
 /// `q` sits among the panel hotkeys, so a letter meant for an agent used
@@ -5494,8 +5884,11 @@ fn quit_asks_before_it_closes_the_tui() {
         let mut out = Vec::new();
 
         handle_key(&mut app, chord, &mut out);
-        let Some(Overlay::Confirm(c)) = &app.overlay else {
-            panic!("{chord:?} opens the quit confirm, got {:?}", app.overlay)
+        let Some(Overlay::Confirm(c)) = &app.modals.overlay else {
+            panic!(
+                "{chord:?} opens the quit confirm, got {:?}",
+                app.modals.overlay
+            )
         };
         assert_eq!(c.action, PendingAction::Quit);
         // The dialog is sized to its longest line and never wraps.
@@ -5504,7 +5897,7 @@ fn quit_asks_before_it_closes_the_tui() {
             "quit message must fit the dialog: {:?}",
             c.message
         );
-        assert!(!app.should_quit);
+        assert!(!app.chrome.should_quit);
 
         // Esc backs out to the panels, still running.
         handle_key(
@@ -5512,8 +5905,8 @@ fn quit_asks_before_it_closes_the_tui() {
             KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
             &mut out,
         );
-        assert!(app.overlay.is_none(), "Esc closes the confirm");
-        assert!(!app.should_quit, "Esc keeps the TUI up");
+        assert!(app.modals.overlay.is_none(), "Esc closes the confirm");
+        assert!(!app.chrome.should_quit, "Esc keeps the TUI up");
 
         // Asked again, `y` goes through.
         handle_key(&mut app, chord, &mut out);
@@ -5522,7 +5915,7 @@ fn quit_asks_before_it_closes_the_tui() {
             KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE),
             &mut out,
         );
-        assert!(app.should_quit, "y quits");
+        assert!(app.chrome.should_quit, "y quits");
     }
 
     // Ctrl+C twice is never a trap: the second press goes through.
@@ -5532,8 +5925,8 @@ fn quit_asks_before_it_closes_the_tui() {
     let ctrl_c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
     handle_key(&mut app, ctrl_c, &mut out);
     handle_key(&mut app, ctrl_c, &mut out);
-    assert!(app.should_quit, "a second Ctrl+C quits");
-    assert!(app.overlay.is_none());
+    assert!(app.chrome.should_quit, "a second Ctrl+C quits");
+    assert!(app.modals.overlay.is_none());
 }
 
 /// Picker/submenu tests resolve model/effort through `Config::load`, so
@@ -5559,12 +5952,12 @@ fn n_in_sessions_opens_agent_type_picker_and_enter_starts_the_session() {
     with_default_config(|| {
         let mut app = App::new();
         seed_tree(&mut app);
-        app.focus = Focus::Sessions;
+        app.nav.focus = Focus::Sessions;
         let mut out = Vec::new();
 
         open_picker(&mut app);
-        let Some(Overlay::Menu(menu)) = &app.overlay else {
-            panic!("expected agent-type picker, got {:?}", app.overlay);
+        let Some(Overlay::Menu(menu)) = &app.modals.overlay else {
+            panic!("expected agent-type picker, got {:?}", app.modals.overlay);
         };
         assert_eq!(menu.title.as_deref(), Some("New session"));
         assert_eq!(
@@ -5585,7 +5978,11 @@ fn n_in_sessions_opens_agent_type_picker_and_enter_starts_the_session() {
         // refilled right behind it, and that is the only prewarm: with
         // no box there is no typing to warm under.
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE, &mut out);
-        assert!(app.overlay.is_none(), "no box: {:?}", app.overlay);
+        assert!(
+            app.modals.overlay.is_none(),
+            "no box: {:?}",
+            app.modals.overlay
+        );
         assert!(
             matches!(
                 out.as_slice(),
@@ -5622,13 +6019,17 @@ fn a_picked_session_launches_into_the_selected_worktree_and_takes_the_pane() {
     with_default_config(|| {
         let mut app = App::new();
         seed_tree(&mut app);
-        app.focus = Focus::Sessions;
+        app.nav.focus = Focus::Sessions;
         let worktree = app.selected_worktree().unwrap().id.clone();
         let mut out = Vec::new();
 
         open_picker(&mut app);
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE, &mut out);
-        assert!(app.overlay.is_none(), "no box: {:?}", app.overlay);
+        assert!(
+            app.modals.overlay.is_none(),
+            "no box: {:?}",
+            app.modals.overlay
+        );
         assert!(
             matches!(
                 &out[0],
@@ -5666,8 +6067,8 @@ fn a_picked_session_launches_into_the_selected_worktree_and_takes_the_pane() {
                 created: Some(EntityId::Agent(AgentId("a2".into()))),
             },
         );
-        assert_eq!(app.focus, Focus::Terminal, "straight into the pane");
-        assert!(app.term_locked, "typing goes to the new agent");
+        assert_eq!(app.nav.focus, Focus::Terminal, "straight into the pane");
+        assert!(app.pane.term_locked, "typing goes to the new agent");
     })
 }
 
@@ -5676,12 +6077,12 @@ fn tab_on_claude_toggles_cloud_and_collects_a_multiline_task() {
     with_default_config(|| {
         let mut app = App::new();
         seed_tree(&mut app);
-        app.focus = Focus::Sessions;
+        app.nav.focus = Focus::Sessions;
         let mut out = Vec::new();
 
         open_picker(&mut app);
         press(&mut app, KeyCode::Tab, KeyModifiers::NONE, &mut out);
-        let Some(Overlay::Menu(menu)) = &app.overlay else {
+        let Some(Overlay::Menu(menu)) = &app.modals.overlay else {
             panic!("expected new-session picker");
         };
         assert_eq!(menu.items[0].label, "Claude · cloud");
@@ -5701,7 +6102,7 @@ fn tab_on_claude_toggles_cloud_and_collects_a_multiline_task() {
         // from the picker.
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE, &mut out);
         assert!(out.is_empty(), "cloud task entry must not prewarm: {out:?}");
-        let Some(Overlay::Prompt(prompt)) = &app.overlay else {
+        let Some(Overlay::Prompt(prompt)) = &app.modals.overlay else {
             panic!("expected Claude Cloud task prompt");
         };
         assert_eq!(prompt.title, "Claude Cloud task");
@@ -5717,13 +6118,13 @@ fn tab_on_claude_toggles_cloud_and_collects_a_multiline_task() {
             &mut out,
         );
         assert!(paste_into_overlay(&mut app, "Ship it"));
-        let Some(Overlay::Prompt(prompt)) = &app.overlay else {
+        let Some(Overlay::Prompt(prompt)) = &app.modals.overlay else {
             panic!("task prompt closed while editing");
         };
         assert_eq!(prompt.input.as_str(), "Fix auth\nRun the tests\nShip it");
 
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE, &mut out);
-        assert!(app.overlay.is_none());
+        assert!(app.modals.overlay.is_none());
         assert!(matches!(
             out.as_slice(),
             [ClientRequest::CreateAgent {
@@ -5752,9 +6153,12 @@ fn tab_on_claude_toggles_cloud_and_collects_a_multiline_task() {
             },
             &mut out,
         );
-        assert_eq!(app.flash.as_deref(), Some("cloud unavailable — retry"));
+        assert_eq!(
+            app.chrome.flash.as_deref(),
+            Some("cloud unavailable — retry")
+        );
         assert!(matches!(
-            &app.overlay,
+            &app.modals.overlay,
             Some(Overlay::Prompt(prompt))
                 if prompt.is_multiline()
                     && prompt.input.as_str() == "Fix auth\nRun the tests\nShip it"
@@ -5772,10 +6176,10 @@ fn tab_in_a_claude_submenu_toggles_cloud_for_the_whole_launch() {
     with_default_config(|| {
         let mut app = App::new();
         seed_tree(&mut app);
-        app.focus = Focus::Sessions;
+        app.nav.focus = Focus::Sessions;
         let mut out = Vec::new();
         fn menu(app: &App) -> &crate::app::ContextMenu {
-            match &app.overlay {
+            match &app.modals.overlay {
                 Some(Overlay::Menu(menu)) => menu,
                 other => panic!("expected a menu, got {other:?}"),
             }
@@ -5814,14 +6218,14 @@ fn tab_in_a_claude_submenu_toggles_cloud_for_the_whole_launch() {
         assert!(out.is_empty(), "the cloud task comes first: {out:?}");
         assert!(
             matches!(
-                &app.overlay,
+                &app.modals.overlay,
                 Some(Overlay::Prompt(p)) if matches!(
                     &p.kind,
                     PromptKind::ClaudeCloudTask { model: Some(m), .. } if m == "opus"
                 )
             ),
             "{:?}",
-            app.overlay
+            app.modals.overlay
         );
 
         // Codex's model list: Tab is nobody's, and the footer is the
@@ -5848,7 +6252,7 @@ fn cloud_task_is_still_required_though_the_picker_launches_directly() {
     with_default_config(|| {
         let mut app = App::new();
         seed_tree(&mut app);
-        app.focus = Focus::Sessions;
+        app.nav.focus = Focus::Sessions;
         let mut out = Vec::new();
 
         open_picker(&mut app);
@@ -5857,7 +6261,7 @@ fn cloud_task_is_still_required_though_the_picker_launches_directly() {
 
         assert!(out.is_empty(), "the task dialog comes before creation");
         assert!(matches!(
-            &app.overlay,
+            &app.modals.overlay,
             Some(Overlay::Prompt(p)) if p.is_multiline()
         ));
 
@@ -5866,22 +6270,22 @@ fn cloud_task_is_still_required_though_the_picker_launches_directly() {
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE, &mut out);
         assert!(out.is_empty());
         assert!(matches!(
-            &app.overlay,
+            &app.modals.overlay,
             Some(Overlay::Prompt(p)) if p.is_multiline()
         ));
 
-        let Some(Overlay::Prompt(prompt)) = &mut app.overlay else {
+        let Some(Overlay::Prompt(prompt)) = &mut app.modals.overlay else {
             unreachable!()
         };
         prompt.input.set_text("fix\0auth");
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE, &mut out);
         assert_eq!(
-            app.flash.as_deref(),
+            app.chrome.flash.as_deref(),
             Some("Claude Cloud task cannot contain NUL bytes")
         );
-        assert!(matches!(&app.overlay, Some(Overlay::Prompt(p)) if p.is_multiline()));
+        assert!(matches!(&app.modals.overlay, Some(Overlay::Prompt(p)) if p.is_multiline()));
 
-        let Some(Overlay::Prompt(prompt)) = &mut app.overlay else {
+        let Some(Overlay::Prompt(prompt)) = &mut app.modals.overlay else {
             unreachable!()
         };
         prompt
@@ -5889,10 +6293,10 @@ fn cloud_task_is_still_required_though_the_picker_launches_directly() {
             .set_text("x".repeat(MAX_CLOUD_PROMPT_BYTES + 1));
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE, &mut out);
         assert_eq!(
-            app.flash.as_deref(),
+            app.chrome.flash.as_deref(),
             Some("Claude Cloud task is too long (max 16 KiB)")
         );
-        assert!(matches!(&app.overlay, Some(Overlay::Prompt(p)) if p.is_multiline()));
+        assert!(matches!(&app.modals.overlay, Some(Overlay::Prompt(p)) if p.is_multiline()));
     });
 }
 
@@ -5900,7 +6304,7 @@ fn cloud_task_is_still_required_though_the_picker_launches_directly() {
 fn claude_cloud_task_prompt_soft_wraps_instead_of_horizontally_scrolling() {
     let mut app = App::new();
     seed_tree(&mut app);
-    app.overlay = Some(Overlay::Prompt(PromptDialog::new(
+    app.modals.overlay = Some(Overlay::Prompt(PromptDialog::new(
         "Claude Cloud task",
         "what should Claude do?",
         format!("BEGIN {} END", "word ".repeat(20)),
@@ -5919,7 +6323,7 @@ fn claude_cloud_task_prompt_soft_wraps_instead_of_horizontally_scrolling() {
     assert_ne!(begin.1, end.1, "long task should wrap across rows");
     assert!(buffer_text(&terminal).contains("Shift+Enter/^J: newline"));
 
-    let Some(Overlay::Prompt(prompt)) = &mut app.overlay else {
+    let Some(Overlay::Prompt(prompt)) = &mut app.modals.overlay else {
         unreachable!()
     };
     prompt.input.set_text("VISIBLE");
@@ -5940,14 +6344,14 @@ fn enter_on_a_submenu_model_row_creates_with_that_model() {
     with_default_config(|| {
         let mut app = App::new();
         seed_tree(&mut app);
-        app.focus = Focus::Sessions;
+        app.nav.focus = Focus::Sessions;
         let mut out = Vec::new();
 
         open_picker(&mut app);
         // → into Claude's model list, down to "opus", Enter.
         press(&mut app, KeyCode::Right, KeyModifiers::NONE, &mut out);
-        let Some(Overlay::Menu(menu)) = &app.overlay else {
-            panic!("expected model submenu, got {:?}", app.overlay);
+        let Some(Overlay::Menu(menu)) = &app.modals.overlay else {
+            panic!("expected model submenu, got {:?}", app.modals.overlay);
         };
         let opus = menu
             .items
@@ -5959,7 +6363,11 @@ fn enter_on_a_submenu_model_row_creates_with_that_model() {
             press(&mut app, KeyCode::Down, KeyModifiers::NONE, &mut out);
         }
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE, &mut out);
-        assert!(app.overlay.is_none(), "no box: {:?}", app.overlay);
+        assert!(
+            app.modals.overlay.is_none(),
+            "no box: {:?}",
+            app.modals.overlay
+        );
         assert!(matches!(
             &out[0],
             ClientRequest::CreateAgent {
@@ -5978,12 +6386,12 @@ fn picker_right_drills_into_model_then_effort_submenus() {
     with_default_config(|| {
         let mut app = App::new();
         seed_tree(&mut app);
-        app.focus = Focus::Sessions;
+        app.nav.focus = Focus::Sessions;
         let mut out = Vec::new();
 
         open_picker(&mut app);
-        let Some(Overlay::Menu(menu)) = &app.overlay else {
-            panic!("expected picker, got {:?}", app.overlay);
+        let Some(Overlay::Menu(menu)) = &app.modals.overlay else {
+            panic!("expected picker, got {:?}", app.modals.overlay);
         };
         // Every row advertises a model submenu (the ▸ affordance) —
         // Cursor too, since `cursor-agent --model` grew a catalogue.
@@ -5994,8 +6402,8 @@ fn picker_right_drills_into_model_then_effort_submenus() {
         // → opens the model list; nothing configured, so the "default"
         // row is checked and highlighted, and the parent is kept for ←.
         press(&mut app, KeyCode::Right, KeyModifiers::NONE, &mut out);
-        let Some(Overlay::Menu(menu)) = &app.overlay else {
-            panic!("expected model submenu, got {:?}", app.overlay);
+        let Some(Overlay::Menu(menu)) = &app.modals.overlay else {
+            panic!("expected model submenu, got {:?}", app.modals.overlay);
         };
         assert_eq!(menu.title.as_deref(), Some("Claude model"));
         assert_eq!(
@@ -6013,8 +6421,8 @@ fn picker_right_drills_into_model_then_effort_submenus() {
         press(&mut app, KeyCode::Down, KeyModifiers::NONE, &mut out);
         press(&mut app, KeyCode::Down, KeyModifiers::NONE, &mut out);
         press(&mut app, KeyCode::Right, KeyModifiers::NONE, &mut out);
-        let Some(Overlay::Menu(menu)) = &app.overlay else {
-            panic!("expected effort submenu, got {:?}", app.overlay);
+        let Some(Overlay::Menu(menu)) = &app.modals.overlay else {
+            panic!("expected effort submenu, got {:?}", app.modals.overlay);
         };
         assert_eq!(menu.title.as_deref(), Some("Claude effort"));
         assert_eq!(
@@ -6032,18 +6440,18 @@ fn picker_right_drills_into_model_then_effort_submenus() {
         // ← backs out to the models; Esc also backs out one level, and
         // only closes from the top.
         press(&mut app, KeyCode::Left, KeyModifiers::NONE, &mut out);
-        let Some(Overlay::Menu(menu)) = &app.overlay else {
+        let Some(Overlay::Menu(menu)) = &app.modals.overlay else {
             panic!("expected model submenu after ←");
         };
         assert_eq!(menu.title.as_deref(), Some("Claude model"));
         assert_eq!(menu.hover, 2, "← restores the parent's hover");
         press(&mut app, KeyCode::Esc, KeyModifiers::NONE, &mut out);
-        let Some(Overlay::Menu(menu)) = &app.overlay else {
+        let Some(Overlay::Menu(menu)) = &app.modals.overlay else {
             panic!("expected root picker after Esc");
         };
         assert_eq!(menu.title.as_deref(), Some("New session"));
         press(&mut app, KeyCode::Esc, KeyModifiers::NONE, &mut out);
-        assert!(app.overlay.is_none());
+        assert!(app.modals.overlay.is_none());
         assert!(
             !out.iter()
                 .any(|r| matches!(r, ClientRequest::CreateAgent { .. })),
@@ -6061,7 +6469,7 @@ fn question_mark_jumps_from_picker_to_harness_settings() {
     with_default_config(|| {
         let mut app = App::new();
         seed_tree(&mut app);
-        app.focus = Focus::Sessions;
+        app.nav.focus = Focus::Sessions;
         let mut out = Vec::new();
 
         open_picker(&mut app);
@@ -6069,8 +6477,8 @@ fn question_mark_jumps_from_picker_to_harness_settings() {
         // Codex's Enabled row.
         press(&mut app, KeyCode::Down, KeyModifiers::NONE, &mut out);
         press(&mut app, KeyCode::Char('?'), KeyModifiers::NONE, &mut out);
-        let Some(Overlay::Settings(view)) = &app.overlay else {
-            panic!("expected settings, got {:?}", app.overlay);
+        let Some(Overlay::Settings(view)) = &app.modals.overlay else {
+            panic!("expected settings, got {:?}", app.modals.overlay);
         };
         let (tab, row) = locate_agent("codex", HarnessField::Enabled).unwrap();
         assert_eq!(tab, agents_tab());
@@ -6081,8 +6489,8 @@ fn question_mark_jumps_from_picker_to_harness_settings() {
         // Esc, then `s`: back where `?` left.
         press(&mut app, KeyCode::Esc, KeyModifiers::NONE, &mut out);
         press(&mut app, KeyCode::Char('s'), KeyModifiers::NONE, &mut out);
-        let Some(Overlay::Settings(view)) = &app.overlay else {
-            panic!("expected settings, got {:?}", app.overlay);
+        let Some(Overlay::Settings(view)) = &app.modals.overlay else {
+            panic!("expected settings, got {:?}", app.modals.overlay);
         };
         assert_eq!((view.tab, view.selected), (tab, row));
 
@@ -6091,8 +6499,8 @@ fn question_mark_jumps_from_picker_to_harness_settings() {
         open_picker(&mut app);
         press(&mut app, KeyCode::Right, KeyModifiers::NONE, &mut out);
         press(&mut app, KeyCode::Char('?'), KeyModifiers::NONE, &mut out);
-        let Some(Overlay::Settings(view)) = &app.overlay else {
-            panic!("expected settings, got {:?}", app.overlay);
+        let Some(Overlay::Settings(view)) = &app.modals.overlay else {
+            panic!("expected settings, got {:?}", app.modals.overlay);
         };
         let (tab, row) = locate_agent("claude", HarnessField::Enabled).unwrap();
         assert_eq!((view.tab, view.selected), (tab, row));
@@ -6107,14 +6515,14 @@ fn s_jumps_on_the_picker_and_types_in_submenus() {
     with_default_config(|| {
         let mut app = App::new();
         seed_tree(&mut app);
-        app.focus = Focus::Sessions;
+        app.nav.focus = Focus::Sessions;
         let mut out = Vec::new();
 
         open_picker(&mut app);
         press(&mut app, KeyCode::Down, KeyModifiers::NONE, &mut out);
         press(&mut app, KeyCode::Char('s'), KeyModifiers::NONE, &mut out);
-        let Some(Overlay::Settings(view)) = &app.overlay else {
-            panic!("expected settings, got {:?}", app.overlay);
+        let Some(Overlay::Settings(view)) = &app.modals.overlay else {
+            panic!("expected settings, got {:?}", app.modals.overlay);
         };
         let (tab, row) = locate_agent("codex", HarnessField::Enabled).unwrap();
         assert_eq!(tab, agents_tab());
@@ -6126,7 +6534,7 @@ fn s_jumps_on_the_picker_and_types_in_submenus() {
         press(&mut app, KeyCode::Right, KeyModifiers::NONE, &mut out);
         press(&mut app, KeyCode::Char('s'), KeyModifiers::NONE, &mut out);
         assert!(
-            matches!(app.overlay, Some(Overlay::Menu(_))),
+            matches!(app.modals.overlay, Some(Overlay::Menu(_))),
             "`s` narrows instead of jumping"
         );
         assert!(
@@ -6144,10 +6552,10 @@ fn question_mark_ignores_menus_without_session_rows() {
     with_default_config(|| {
         let mut app = App::new();
         seed_tree(&mut app);
-        app.focus = Focus::Sessions;
+        app.nav.focus = Focus::Sessions;
         let mut out = Vec::new();
 
-        app.overlay = Some(Overlay::Menu(ContextMenu {
+        app.modals.overlay = Some(Overlay::Menu(ContextMenu {
             title: Some("test".into()),
             items: vec![MenuItem::new("x", MenuAction::ToggleArchived)],
             at: None,
@@ -6158,7 +6566,7 @@ fn question_mark_ignores_menus_without_session_rows() {
         }));
         press(&mut app, KeyCode::Char('?'), KeyModifiers::NONE, &mut out);
         assert!(
-            matches!(app.overlay, Some(Overlay::Menu(_))),
+            matches!(app.modals.overlay, Some(Overlay::Menu(_))),
             "`?` leaves other menus alone"
         );
 
@@ -6177,14 +6585,14 @@ fn picker_enter_on_effort_row_carries_model_and_effort() {
     with_default_config(|| {
         let mut app = App::new();
         seed_tree(&mut app);
-        app.focus = Focus::Sessions;
+        app.nav.focus = Focus::Sessions;
         let mut out = Vec::new();
 
         // n → Codex row → models → Luna → efforts → minimal → Enter.
         open_picker(&mut app);
         press(&mut app, KeyCode::Down, KeyModifiers::NONE, &mut out);
         press(&mut app, KeyCode::Right, KeyModifiers::NONE, &mut out);
-        let Some(Overlay::Menu(menu)) = &app.overlay else {
+        let Some(Overlay::Menu(menu)) = &app.modals.overlay else {
             panic!("expected codex model submenu");
         };
         assert_eq!(menu.title.as_deref(), Some("Codex model"));
@@ -6201,7 +6609,11 @@ fn picker_enter_on_effort_row_carries_model_and_effort() {
         press(&mut app, KeyCode::Down, KeyModifiers::NONE, &mut out);
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE, &mut out);
 
-        assert!(app.overlay.is_none(), "no box: {:?}", app.overlay);
+        assert!(
+            app.modals.overlay.is_none(),
+            "no box: {:?}",
+            app.modals.overlay
+        );
         assert!(
             matches!(
                 out.as_slice(),
@@ -6229,13 +6641,17 @@ fn picker_resolves_configured_defaults() {
     crate::config::with_config_path(path, || {
         let mut app = App::new();
         seed_tree(&mut app);
-        app.focus = Focus::Sessions;
+        app.nav.focus = Focus::Sessions;
         let mut out = Vec::new();
 
         // Enter straight on the Claude row: both settings apply.
         open_picker(&mut app);
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE, &mut out);
-        assert!(app.overlay.is_none(), "no box: {:?}", app.overlay);
+        assert!(
+            app.modals.overlay.is_none(),
+            "no box: {:?}",
+            app.modals.overlay
+        );
         assert!(
             matches!(
                 &out[0],
@@ -6254,7 +6670,7 @@ fn picker_resolves_configured_defaults() {
         // and its explicit "default" row resolves to the same setting.
         open_picker(&mut app);
         press(&mut app, KeyCode::Right, KeyModifiers::NONE, &mut out);
-        let Some(Overlay::Menu(menu)) = &app.overlay else {
+        let Some(Overlay::Menu(menu)) = &app.modals.overlay else {
             panic!("expected model submenu");
         };
         assert_eq!(menu.items[3].label, "sonnet ✓");
@@ -6263,7 +6679,11 @@ fn picker_resolves_configured_defaults() {
         press(&mut app, KeyCode::Up, KeyModifiers::NONE, &mut out);
         press(&mut app, KeyCode::Up, KeyModifiers::NONE, &mut out);
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE, &mut out);
-        assert!(app.overlay.is_none(), "no box: {:?}", app.overlay);
+        assert!(
+            app.modals.overlay.is_none(),
+            "no box: {:?}",
+            app.modals.overlay
+        );
         assert!(
             matches!(
                 &out[0],
@@ -6285,14 +6705,18 @@ fn picker_second_row_creates_codex_agent() {
     with_default_config(|| {
         let mut app = App::new();
         seed_tree(&mut app);
-        app.focus = Focus::Sessions;
+        app.nav.focus = Focus::Sessions;
         let mut out = Vec::new();
 
         open_picker(&mut app);
         for code in [KeyCode::Char('j'), KeyCode::Enter] {
             handle_key(&mut app, KeyEvent::new(code, KeyModifiers::NONE), &mut out);
         }
-        assert!(app.overlay.is_none(), "no box: {:?}", app.overlay);
+        assert!(
+            app.modals.overlay.is_none(),
+            "no box: {:?}",
+            app.modals.overlay
+        );
         assert!(matches!(
             out.last(),
             Some(ClientRequest::CreateAgent {
@@ -6309,14 +6733,18 @@ fn picker_third_row_creates_cursor_agent() {
     with_default_config(|| {
         let mut app = App::new();
         seed_tree(&mut app);
-        app.focus = Focus::Sessions;
+        app.nav.focus = Focus::Sessions;
         let mut out = Vec::new();
 
         open_picker(&mut app);
         for code in [KeyCode::Char('j'), KeyCode::Char('j'), KeyCode::Enter] {
             handle_key(&mut app, KeyEvent::new(code, KeyModifiers::NONE), &mut out);
         }
-        assert!(app.overlay.is_none(), "no box: {:?}", app.overlay);
+        assert!(
+            app.modals.overlay.is_none(),
+            "no box: {:?}",
+            app.modals.overlay
+        );
         assert!(matches!(
             out.last(),
             Some(ClientRequest::CreateAgent {
@@ -6332,8 +6760,8 @@ fn picker_third_row_creates_cursor_agent() {
 
 /// A row the hovered menu shows, without the `✓` a default row wears.
 fn hovered_choice(app: &App) -> String {
-    let Some(Overlay::Menu(menu)) = &app.overlay else {
-        panic!("expected a menu, got {:?}", app.overlay);
+    let Some(Overlay::Menu(menu)) = &app.modals.overlay else {
+        panic!("expected a menu, got {:?}", app.modals.overlay);
     };
     menu.items[menu.hover]
         .label
@@ -6350,7 +6778,7 @@ fn a_picker_launch_is_remembered_as_the_next_default_while_the_switch_is_on() {
     with_config_json(r#"{"remember_harness": true}"#, || {
         let mut app = App::new();
         seed_tree(&mut app);
-        app.focus = Focus::Sessions;
+        app.nav.focus = Focus::Sessions;
         let mut out = Vec::new();
 
         // The harness alone: Codex, second row.
@@ -6378,13 +6806,13 @@ fn a_picker_launch_is_remembered_as_the_next_default_while_the_switch_is_on() {
             cfg.codex_model, "default",
             "no model was picked, so none was written"
         );
-        assert!(app.flash.is_none(), "{:?}", app.flash);
+        assert!(app.chrome.flash.is_none(), "{:?}", app.chrome.flash);
 
         // The next picker opens on it.
         out.clear();
         open_picker(&mut app);
-        let Some(Overlay::Menu(menu)) = &app.overlay else {
-            panic!("{:?}", app.overlay);
+        let Some(Overlay::Menu(menu)) = &app.modals.overlay else {
+            panic!("{:?}", app.modals.overlay);
         };
         assert_eq!(menu.items[menu.hover].label, "Codex");
 
@@ -6392,8 +6820,8 @@ fn a_picker_launch_is_remembered_as_the_next_default_while_the_switch_is_on() {
         // Model row — the pick, not the fallback.
         press(&mut app, KeyCode::Up, KeyModifiers::NONE, &mut out);
         press(&mut app, KeyCode::Right, KeyModifiers::NONE, &mut out);
-        let Some(Overlay::Menu(menu)) = &app.overlay else {
-            panic!("{:?}", app.overlay);
+        let Some(Overlay::Menu(menu)) = &app.modals.overlay else {
+            panic!("{:?}", app.modals.overlay);
         };
         assert_eq!(menu.title.as_deref(), Some("Claude model"));
         assert!(menu.items.len() >= 2, "{:?}", menu.items);
@@ -6424,8 +6852,8 @@ fn a_picker_launch_is_remembered_as_the_next_default_while_the_switch_is_on() {
         open_picker(&mut app);
         assert_eq!(hovered_choice(&app), "Claude");
         press(&mut app, KeyCode::Right, KeyModifiers::NONE, &mut out);
-        let Some(Overlay::Menu(menu)) = &app.overlay else {
-            panic!("{:?}", app.overlay);
+        let Some(Overlay::Menu(menu)) = &app.modals.overlay else {
+            panic!("{:?}", app.modals.overlay);
         };
         assert_eq!(menu.items[menu.hover].label, format!("{picked} ✓"));
         press(&mut app, KeyCode::Esc, KeyModifiers::NONE, &mut out);
@@ -6439,7 +6867,7 @@ fn a_picker_launch_is_not_remembered_while_the_switch_is_off() {
     with_default_config(|| {
         let mut app = App::new();
         seed_tree(&mut app);
-        app.focus = Focus::Sessions;
+        app.nav.focus = Focus::Sessions;
         let mut out = Vec::new();
 
         open_picker(&mut app);
@@ -6473,7 +6901,7 @@ fn a_quick_prompt_fired_on_a_tab_picked_harness_is_remembered() {
     with_config_json(r#"{"remember_harness": true}"#, || {
         let mut app = App::new();
         seed_tree(&mut app);
-        app.focus = Focus::Sessions;
+        app.nav.focus = Focus::Sessions;
         let mut out = Vec::new();
 
         press(&mut app, KeyCode::Char('p'), KeyModifiers::NONE, &mut out);
@@ -6486,8 +6914,11 @@ fn a_quick_prompt_fired_on_a_tab_picked_harness_is_remembered() {
         );
         press(&mut app, KeyCode::Down, KeyModifiers::NONE, &mut out);
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE, &mut out);
-        let Some(Overlay::Prompt(prompt)) = &app.overlay else {
-            panic!("the pick should hand the box back, got {:?}", app.overlay);
+        let Some(Overlay::Prompt(prompt)) = &app.modals.overlay else {
+            panic!(
+                "the pick should hand the box back, got {:?}",
+                app.modals.overlay
+            );
         };
         assert_eq!(prompt.title, "Quick prompt (codex)");
         assert_eq!(
@@ -6515,8 +6946,8 @@ fn a_quick_prompt_fired_on_a_tab_picked_harness_is_remembered() {
         );
 
         press(&mut app, KeyCode::Char('p'), KeyModifiers::NONE, &mut out);
-        let Some(Overlay::Prompt(prompt)) = &app.overlay else {
-            panic!("{:?}", app.overlay);
+        let Some(Overlay::Prompt(prompt)) = &app.modals.overlay else {
+            panic!("{:?}", app.modals.overlay);
         };
         assert_eq!(prompt.title, "Quick prompt (codex)", "the next box follows");
         press(&mut app, KeyCode::Esc, KeyModifiers::NONE, &mut out);
@@ -6534,7 +6965,7 @@ fn a_preset_launch_is_not_remembered_as_the_default() {
 
         let mut app = App::new();
         seed_tree(&mut app);
-        app.focus = Focus::Sessions;
+        app.nav.focus = Focus::Sessions;
         let mut out = Vec::new();
         press(&mut app, KeyCode::Char('p'), KeyModifiers::NONE, &mut out);
         assert!(paste_into_overlay(&mut app, "Fix auth"));
@@ -6572,12 +7003,15 @@ fn picker_omits_a_disabled_harness() {
     with_config_json(r#"{"codex_enabled": false}"#, || {
         let mut app = App::new();
         seed_tree(&mut app);
-        app.focus = Focus::Sessions;
+        app.nav.focus = Focus::Sessions;
         let mut out = Vec::new();
 
         open_picker(&mut app);
-        let Some(Overlay::Menu(menu)) = &app.overlay else {
-            panic!("expected the NEW SESSION PICKER, got {:?}", app.overlay);
+        let Some(Overlay::Menu(menu)) = &app.modals.overlay else {
+            panic!(
+                "expected the NEW SESSION PICKER, got {:?}",
+                app.modals.overlay
+            );
         };
         let labels: Vec<&str> = menu.items.iter().map(|item| item.label.as_str()).collect();
         assert_eq!(
@@ -6589,7 +7023,11 @@ fn picker_omits_a_disabled_harness() {
         // The second row is now Cursor: the rows shift, nothing is dead.
         press(&mut app, KeyCode::Char('j'), KeyModifiers::NONE, &mut out);
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE, &mut out);
-        assert!(app.overlay.is_none(), "no box: {:?}", app.overlay);
+        assert!(
+            app.modals.overlay.is_none(),
+            "no box: {:?}",
+            app.modals.overlay
+        );
         assert!(
             matches!(
                 out.as_slice(),
@@ -6610,20 +7048,23 @@ fn picker_with_every_harness_disabled_flashes_instead_of_opening() {
         || {
             let mut app = App::new();
             seed_tree(&mut app);
-            app.focus = Focus::Sessions;
+            app.nav.focus = Focus::Sessions;
             let mut out = Vec::new();
 
             open_picker(&mut app);
-            assert!(app.overlay.is_none(), "an empty picker must never open");
-            let flash = app.flash.as_deref().expect("a flash says why");
+            assert!(
+                app.modals.overlay.is_none(),
+                "an empty picker must never open"
+            );
+            let flash = app.chrome.flash.as_deref().expect("a flash says why");
             assert!(flash.contains("Settings"), "{flash}");
 
             // The CONTEXT MENU's "New agent" row lands on the same guard.
-            app.flash = None;
+            app.chrome.flash = None;
             let worktree = app.selected_worktree().unwrap().id.clone();
             run_menu_action(&mut app, MenuAction::NewAgent(worktree), &mut out);
-            assert!(app.overlay.is_none());
-            assert!(app.flash.is_some());
+            assert!(app.modals.overlay.is_none());
+            assert!(app.chrome.flash.is_some());
         },
     );
 }
@@ -6634,7 +7075,7 @@ fn disabled_claude_skips_the_standing_prewarm() {
         let mut app = App::new();
         seed_tree(&mut app);
         let worktree = app.selected_worktree().unwrap().id.clone();
-        app.pending_prewarm = Some((worktree.clone(), std::time::Instant::now()));
+        app.requests.pending_prewarm = Some((worktree.clone(), std::time::Instant::now()));
         let mut out = Vec::new();
 
         fire_pending_prewarm(&mut app, &mut out);
@@ -6653,7 +7094,7 @@ fn disabled_claude_skips_the_standing_prewarm() {
             "keep-warm sends nothing for a disabled harness: {out:?}"
         );
         assert!(
-            app.next_keepwarm.is_some(),
+            app.requests.next_keepwarm.is_some(),
             "still re-armed, so re-enabling warms again"
         );
     });
@@ -6728,7 +7169,7 @@ fn agents_tab_toggles_a_harness_and_refuses_the_last_one() {
         assert!(matches!(level, crate::app::NoticeLevel::Warn));
         assert!(text.contains("at least one harness"), "{text}");
         assert!(
-            matches!(app.overlay, Some(Overlay::Settings(_))),
+            matches!(app.modals.overlay, Some(Overlay::Settings(_))),
             "the refusal keeps the overlay open"
         );
     });
@@ -6738,17 +7179,17 @@ fn agents_tab_toggles_a_harness_and_refuses_the_last_one() {
 fn esc_cancels_agent_type_picker() {
     let mut app = App::new();
     seed_tree(&mut app);
-    app.focus = Focus::Sessions;
+    app.nav.focus = Focus::Sessions;
     let mut out = Vec::new();
 
     open_picker(&mut app);
-    assert!(matches!(&app.overlay, Some(Overlay::Menu(_))));
+    assert!(matches!(&app.modals.overlay, Some(Overlay::Menu(_))));
     handle_key(
         &mut app,
         KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
         &mut out,
     );
-    assert!(app.overlay.is_none());
+    assert!(app.modals.overlay.is_none());
     assert!(
         !out.iter()
             .any(|r| matches!(r, ClientRequest::CreateAgent { .. })),
@@ -6769,7 +7210,7 @@ fn menu_new_agent_action_routes_through_picker() {
         &mut out,
     );
     assert!(matches!(
-        &app.overlay,
+        &app.modals.overlay,
         Some(Overlay::Menu(m)) if m.title.as_deref() == Some("New session")
     ));
 }
@@ -6798,7 +7239,7 @@ fn r_on_a_worktree_starts_its_run_and_again_stops_it() {
     use nebula_core::{Entity, TerminalId, TerminalTab, WorktreeId};
     let mut app = App::new();
     seed_tree(&mut app);
-    app.focus = Focus::Worktrees;
+    app.nav.focus = Focus::Worktrees;
     let mut out = Vec::new();
     press(&mut app, KeyCode::Char('r'), KeyModifiers::NONE, &mut out);
     let req_id = out
@@ -6808,7 +7249,10 @@ fn r_on_a_worktree_starts_its_run_and_again_stops_it() {
             _ => None,
         })
         .unwrap_or_else(|| panic!("r sends StartRun: {out:?}"));
-    assert!(app.overlay.is_none(), "no rename prompt on a worktree");
+    assert!(
+        app.modals.overlay.is_none(),
+        "no rename prompt on a worktree"
+    );
     assert!(!app.worktree_running(&WorktreeId("w1".into())));
 
     hse(
@@ -6831,9 +7275,12 @@ fn r_on_a_worktree_starts_its_run_and_again_stops_it() {
             created: Some(EntityId::Terminal(TerminalId("run1".into()))),
         },
     );
-    assert_eq!(app.flash.as_deref(), Some("▶ running npm run dev in main"));
+    assert_eq!(
+        app.chrome.flash.as_deref(),
+        Some("▶ running npm run dev in main")
+    );
     assert!(app.worktree_running(&WorktreeId("w1".into())));
-    assert_eq!(app.run_flash_when_seen, None);
+    assert_eq!(app.requests.run_flash_when_seen, None);
 
     out.clear();
     press(&mut app, KeyCode::Char('r'), KeyModifiers::NONE, &mut out);
@@ -6852,7 +7299,7 @@ fn a_run_ack_ahead_of_its_terminal_names_the_command_when_it_lands() {
     use nebula_core::{Entity, TerminalTab, WorktreeId};
     let mut app = App::new();
     seed_tree(&mut app);
-    app.focus = Focus::Worktrees;
+    app.nav.focus = Focus::Worktrees;
     let mut out = Vec::new();
     press(&mut app, KeyCode::Char('r'), KeyModifiers::NONE, &mut out);
     let req_id = out
@@ -6869,7 +7316,7 @@ fn a_run_ack_ahead_of_its_terminal_names_the_command_when_it_lands() {
             created: Some(EntityId::Terminal(TerminalId("run1".into()))),
         },
     );
-    assert_eq!(app.flash.as_deref(), Some("▶ running in main"));
+    assert_eq!(app.chrome.flash.as_deref(), Some("▶ running in main"));
 
     hse(
         &mut app,
@@ -6884,8 +7331,11 @@ fn a_run_ack_ahead_of_its_terminal_names_the_command_when_it_lands() {
             }),
         },
     );
-    assert_eq!(app.flash.as_deref(), Some("▶ running bun dev in main"));
-    assert_eq!(app.run_flash_when_seen, None, "spent");
+    assert_eq!(
+        app.chrome.flash.as_deref(),
+        Some("▶ running bun dev in main")
+    );
+    assert_eq!(app.requests.run_flash_when_seen, None, "spent");
 }
 
 /// `Shift+Enter` on a worktree fires its OPEN COMMAND — the project's
@@ -6901,17 +7351,17 @@ fn shift_enter_on_a_worktree_fires_its_open_command() {
     crate::config::with_config_path(config_path.clone(), || {
         let mut app = App::new();
         seed_repo_tree(&mut app, dir.path());
-        app.focus = Focus::Worktrees;
+        app.nav.focus = Focus::Worktrees;
         let mut out = Vec::new();
         press(&mut app, KeyCode::Enter, KeyModifiers::SHIFT, &mut out);
-        let flash = app.flash.clone().unwrap_or_default();
+        let flash = app.chrome.flash.clone().unwrap_or_default();
         assert!(
             flash.contains("no open command")
                 && flash.contains("Settings")
                 && flash.contains(".odyn.json"),
             "names both places: {flash}"
         );
-        assert_eq!(app.focus, Focus::Worktrees, "not Enter's drill-in");
+        assert_eq!(app.nav.focus, Focus::Worktrees, "not Enter's drill-in");
 
         std::fs::write(
             dir.path().join(".odyn.json"),
@@ -6919,28 +7369,40 @@ fn shift_enter_on_a_worktree_fires_its_open_command() {
         )
         .unwrap();
         press(&mut app, KeyCode::Enter, KeyModifiers::SHIFT, &mut out);
-        assert_eq!(app.flash.as_deref(), Some("↗ open http://localhost:3000"));
+        assert_eq!(
+            app.chrome.flash.as_deref(),
+            Some("↗ open http://localhost:3000")
+        );
 
         // The setting wins over the file, and is read fresh per press.
         let mut cfg = crate::config::Config::load();
         assert!(cfg.set_project_text(dir.path(), OpenCommand, "open http://localhost:5173"));
         cfg.save_to(&config_path).unwrap();
         press(&mut app, KeyCode::Enter, KeyModifiers::SHIFT, &mut out);
-        assert_eq!(app.flash.as_deref(), Some("↗ open http://localhost:5173"));
+        assert_eq!(
+            app.chrome.flash.as_deref(),
+            Some("↗ open http://localhost:5173")
+        );
 
         // Sessions panel, Shift+O: the same worktree is under the
         // cursor, so the same command fires, and focus stays put.
-        app.focus = Focus::Sessions;
-        app.flash = None;
+        app.nav.focus = Focus::Sessions;
+        app.chrome.flash = None;
         press(&mut app, KeyCode::Char('O'), KeyModifiers::SHIFT, &mut out);
-        assert_eq!(app.flash.as_deref(), Some("↗ open http://localhost:5173"));
-        assert_eq!(app.focus, Focus::Sessions);
+        assert_eq!(
+            app.chrome.flash.as_deref(),
+            Some("↗ open http://localhost:5173")
+        );
+        assert_eq!(app.nav.focus, Focus::Sessions);
         // Alt+Enter — the ESC CR a terminal without the kitty protocol
         // sends for a mapped Shift+Enter — is the same key.
-        app.flash = None;
+        app.chrome.flash = None;
         press(&mut app, KeyCode::Enter, KeyModifiers::ALT, &mut out);
-        assert_eq!(app.flash.as_deref(), Some("↗ open http://localhost:5173"));
-        assert_eq!(app.focus, Focus::Sessions, "still not Enter's drill-in");
+        assert_eq!(
+            app.chrome.flash.as_deref(),
+            Some("↗ open http://localhost:5173")
+        );
+        assert_eq!(app.nav.focus, Focus::Sessions, "still not Enter's drill-in");
         assert!(
             out.is_empty(),
             "opening is the TUI's own doing, never a request"
@@ -6953,7 +7415,7 @@ fn t_creates_terminal_in_selected_worktree() {
     use nebula_core::WorktreeId;
     let mut app = App::new();
     seed_tree(&mut app);
-    app.focus = Focus::Sessions;
+    app.nav.focus = Focus::Sessions;
     let mut out = Vec::new();
 
     handle_key(
@@ -6988,8 +7450,8 @@ fn t_from_projects_targets_the_root_checkout() {
             }),
         },
     );
-    app.sel_worktree = 1; // the feat worktree
-    app.focus = Focus::Projects;
+    app.nav.sel_worktree = 1; // the feat worktree
+    app.nav.focus = Focus::Projects;
     let mut out = Vec::new();
 
     handle_key(
@@ -7011,7 +7473,7 @@ fn create_terminal_ack_attaches_and_selects_it() {
     use nebula_core::TerminalId;
     let mut app = App::new();
     seed_tree(&mut app);
-    app.focus = Focus::Sessions;
+    app.nav.focus = Focus::Sessions;
     let mut out = Vec::new();
 
     handle_key(
@@ -7034,12 +7496,18 @@ fn create_terminal_ack_attaches_and_selects_it() {
         },
     );
     assert_eq!(
-        app.term.as_ref().map(|t| t.sref.clone()),
+        app.pane.term.as_ref().map(|t| t.sref.clone()),
         Some(SessionRef::Terminal(TerminalId("t1".into())))
     );
-    assert_eq!(app.focus, Focus::Terminal);
-    assert!(app.term_locked, "a created terminal takes the input lock");
-    assert_eq!(app.sel_session, 1, "selection follows the new terminal row");
+    assert_eq!(app.nav.focus, Focus::Terminal);
+    assert!(
+        app.pane.term_locked,
+        "a created terminal takes the input lock"
+    );
+    assert_eq!(
+        app.nav.sel_session, 1,
+        "selection follows the new terminal row"
+    );
 }
 
 #[test]
@@ -7048,8 +7516,8 @@ fn d_on_terminal_row_confirms_then_closes() {
     let mut app = App::new();
     seed_tree(&mut app);
     seed_terminal(&mut app, "t1", "term-1");
-    app.focus = Focus::Sessions;
-    app.sel_session = 1;
+    app.nav.focus = Focus::Sessions;
+    app.nav.sel_session = 1;
     let mut out = Vec::new();
 
     handle_key(
@@ -7058,7 +7526,7 @@ fn d_on_terminal_row_confirms_then_closes() {
         &mut out,
     );
     assert!(matches!(
-        &app.overlay,
+        &app.modals.overlay,
         Some(Overlay::Confirm(c)) if matches!(c.action, PendingAction::CloseTerminal(_))
     ));
 
@@ -7079,8 +7547,8 @@ fn r_on_terminal_row_renames_it() {
     let mut app = App::new();
     seed_tree(&mut app);
     seed_terminal(&mut app, "t1", "term-1");
-    app.focus = Focus::Sessions;
-    app.sel_session = 1;
+    app.nav.focus = Focus::Sessions;
+    app.nav.sel_session = 1;
     let mut out = Vec::new();
 
     handle_key(
@@ -7088,8 +7556,8 @@ fn r_on_terminal_row_renames_it() {
         KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE),
         &mut out,
     );
-    let Some(Overlay::Prompt(p)) = &app.overlay else {
-        panic!("expected rename prompt, got {:?}", app.overlay);
+    let Some(Overlay::Prompt(p)) = &app.modals.overlay else {
+        panic!("expected rename prompt, got {:?}", app.modals.overlay);
     };
     assert_eq!(p.title, "Rename terminal");
     assert_eq!(p.input, "term-1", "prompt starts from the current name");
@@ -7117,14 +7585,14 @@ fn menu_confirms_match_the_key_path_word_for_word() {
     seed_terminal(&mut app, "t1", "term-1");
 
     fn take_confirm(app: &mut App) -> ConfirmDialog {
-        match app.overlay.take() {
+        match app.modals.overlay.take() {
             Some(Overlay::Confirm(c)) => c,
             other => panic!("expected a confirm, got {other:?}"),
         }
     }
     let via_key = |app: &mut App, focus: Focus, row: usize| {
-        app.focus = focus;
-        app.sel_session = row;
+        app.nav.focus = focus;
+        app.nav.sel_session = row;
         press(app, KeyCode::Char('d'), KeyModifiers::NONE, &mut Vec::new());
         take_confirm(app)
     };
@@ -7187,9 +7655,9 @@ fn paste_into_a_locked_pane_is_bracketed() {
     let sref = SessionRef::Agent(AgentId("a1".into()));
     let mut term = AttachedTerm::new(sref.clone(), 80, 24);
     term.apply_output(0, b"\x1b[?2004h");
-    app.term = Some(term);
-    app.focus = Focus::Terminal;
-    app.term_locked = true;
+    app.pane.term = Some(term);
+    app.nav.focus = Focus::Terminal;
+    app.pane.term_locked = true;
 
     handle_terminal_event(&mut app, Event::Paste("fn main() {}\n".into()), &mut out);
     match out.as_slice() {
@@ -7201,7 +7669,7 @@ fn paste_into_a_locked_pane_is_bracketed() {
     }
 
     out.clear();
-    app.term_locked = false;
+    app.pane.term_locked = false;
     handle_terminal_event(&mut app, Event::Paste("x".into()), &mut out);
     assert!(out.is_empty(), "an unlocked pane takes no paste: {out:?}");
 }
@@ -7221,9 +7689,9 @@ fn paste_into_a_program_that_never_asked_is_not_bracketed() {
     // when it runs the command; the command's prompt never asks.
     let screen = b"$ \x1b[?2004huv run hf auth login\r\n\x1b[?2004lEnter your token: ";
     term.apply_output(0, screen);
-    app.term = Some(term);
-    app.focus = Focus::Terminal;
-    app.term_locked = true;
+    app.pane.term = Some(term);
+    app.nav.focus = Focus::Terminal;
+    app.pane.term_locked = true;
 
     handle_terminal_event(&mut app, Event::Paste("hf_token".into()), &mut out);
     handle_terminal_event(&mut app, Event::Paste("one\ntwo\r\n".into()), &mut out);
@@ -7244,25 +7712,25 @@ fn escape_hatches_leave_terminal_lock() {
     let mut out = Vec::new();
 
     let sref = SessionRef::Agent(AgentId("a1".into()));
-    app.term = Some(AttachedTerm::new(sref, 80, 24));
+    app.pane.term = Some(AttachedTerm::new(sref, 80, 24));
 
     // Ctrl+q plus the fallback: Ctrl+] in both spellings (kitty reports
     // ']', legacy 0x1D parses as Ctrl+5).
     let hatches = [KeyCode::Char('q'), KeyCode::Char(']'), KeyCode::Char('5')];
     for code in hatches {
-        app.focus = Focus::Terminal;
-        app.term_locked = true;
+        app.nav.focus = Focus::Terminal;
+        app.pane.term_locked = true;
         handle_key(
             &mut app,
             KeyEvent::new(code, KeyModifiers::CONTROL),
             &mut out,
         );
         assert_eq!(
-            app.focus,
+            app.nav.focus,
             Focus::Sessions,
             "Ctrl+{code:?} leaves terminal input"
         );
-        assert!(!app.term_locked, "Ctrl+{code:?} clears the input lock");
+        assert!(!app.pane.term_locked, "Ctrl+{code:?} clears the input lock");
         assert!(out.is_empty(), "Ctrl+{code:?} must not reach the pty");
     }
 
@@ -7270,19 +7738,19 @@ fn escape_hatches_leave_terminal_lock() {
     // crossterm may spell it either as 'H' or as shift + 'h', and
     // `from_event` folds both.
     for code in [KeyCode::Char('H'), KeyCode::Char('h')] {
-        app.focus = Focus::Terminal;
-        app.term_locked = true;
+        app.nav.focus = Focus::Terminal;
+        app.pane.term_locked = true;
         handle_key(
             &mut app,
             KeyEvent::new(code, KeyModifiers::CONTROL | KeyModifiers::SHIFT),
             &mut out,
         );
         assert_eq!(
-            app.focus,
+            app.nav.focus,
             Focus::Sessions,
             "Ctrl+Shift+{code:?} leaves terminal input"
         );
-        assert!(!app.term_locked, "Ctrl+Shift+{code:?} clears the lock");
+        assert!(!app.pane.term_locked, "Ctrl+Shift+{code:?} clears the lock");
         assert!(out.is_empty(), "Ctrl+Shift+{code:?} must not reach the pty");
     }
 
@@ -7290,30 +7758,34 @@ fn escape_hatches_leave_terminal_lock() {
     // word-left, as Ctrl+→ is its word-right. They stay in the
     // session and reach the pty.
     for code in [KeyCode::Esc, KeyCode::Left] {
-        app.focus = Focus::Terminal;
-        app.term_locked = true;
+        app.nav.focus = Focus::Terminal;
+        app.pane.term_locked = true;
         out.clear();
         handle_key(
             &mut app,
             KeyEvent::new(code, KeyModifiers::CONTROL),
             &mut out,
         );
-        assert_eq!(app.focus, Focus::Terminal, "Ctrl+{code:?} does not escape");
-        assert!(app.term_locked, "Ctrl+{code:?} keeps the input lock");
+        assert_eq!(
+            app.nav.focus,
+            Focus::Terminal,
+            "Ctrl+{code:?} does not escape"
+        );
+        assert!(app.pane.term_locked, "Ctrl+{code:?} keeps the input lock");
     }
     out.clear();
 
     // Bare Esc is NOT a hatch: it forwards to the pty untouched — Claude
     // Code owns Esc (interrupt) and double-Esc (clear input / jump back).
-    app.focus = Focus::Terminal;
-    app.term_locked = true;
+    app.nav.focus = Focus::Terminal;
+    app.pane.term_locked = true;
     handle_key(
         &mut app,
         KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
         &mut out,
     );
-    assert_eq!(app.focus, Focus::Terminal, "Esc stays in the terminal");
-    assert!(app.term_locked, "Esc keeps the input lock");
+    assert_eq!(app.nav.focus, Focus::Terminal, "Esc stays in the terminal");
+    assert!(app.pane.term_locked, "Esc keeps the input lock");
     assert!(
         matches!(out.last(), Some(ClientRequest::Input { data, .. }) if data == b"\x1b"),
         "Esc forwards to the pty immediately"
@@ -7322,15 +7794,15 @@ fn escape_hatches_leave_terminal_lock() {
 
     // Cmd+Left is not a hatch: it stays in the terminal (and is
     // swallowed rather than forwarded — no legacy encoding for Super).
-    app.focus = Focus::Terminal;
-    app.term_locked = true;
+    app.nav.focus = Focus::Terminal;
+    app.pane.term_locked = true;
     handle_key(
         &mut app,
         KeyEvent::new(KeyCode::Left, KeyModifiers::SUPER),
         &mut out,
     );
-    assert_eq!(app.focus, Focus::Terminal, "Cmd+Left does not escape");
-    assert!(app.term_locked, "Cmd+Left keeps the input lock");
+    assert_eq!(app.nav.focus, Focus::Terminal, "Cmd+Left does not escape");
+    assert!(app.pane.term_locked, "Cmd+Left keeps the input lock");
     assert!(out.is_empty(), "Cmd+Left has no legacy pty encoding");
 }
 
@@ -7341,8 +7813,8 @@ fn focus_without_lock_navigates_instead_of_forwarding() {
     let mut out = Vec::new();
 
     let sref = SessionRef::Agent(AgentId("a1".into()));
-    app.term = Some(AttachedTerm::new(sref, 80, 24));
-    app.focus = Focus::Terminal; // focused via Tab/arrows — NOT locked
+    app.pane.term = Some(AttachedTerm::new(sref, 80, 24));
+    app.nav.focus = Focus::Terminal; // focused via Tab/arrows — NOT locked
 
     // The GRID over it takes the arrows; nothing reaches the pty.
     handle_key(
@@ -7361,9 +7833,9 @@ fn focus_without_lock_navigates_instead_of_forwarding() {
         KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
         &mut out,
     );
-    assert_eq!(app.focus, Focus::Terminal);
+    assert_eq!(app.nav.focus, Focus::Terminal);
     assert!(
-        app.term_locked,
+        app.pane.term_locked,
         "Enter on a session locks input into the terminal"
     );
 
@@ -7373,8 +7845,8 @@ fn focus_without_lock_navigates_instead_of_forwarding() {
         KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL),
         &mut out,
     );
-    assert_eq!(app.focus, Focus::Sessions);
-    assert!(!app.term_locked);
+    assert_eq!(app.nav.focus, Focus::Sessions);
+    assert!(!app.pane.term_locked);
 }
 
 /// The other half of the rule above: a session the daemon has reaped
@@ -7406,25 +7878,26 @@ fn walking_onto_a_reaped_session_still_waits_out_the_debounce() {
                 status_changed_at: 0,
                 alive: false,
                 issue_url: None,
+                role: nebula_core::AgentRole::Worker,
                 recent_prompts: Vec::new(),
             }),
         },
     );
-    app.focus = Focus::Sessions;
+    app.nav.focus = Focus::Sessions;
     // The grid's geometry: the step across is by cards on a row, so
     // the body has to be the size a frame would give it.
-    app.body_area = ratatui::layout::Rect::new(0, 0, 120, 35);
+    app.chrome.body_area = ratatui::layout::Rect::new(0, 0, 120, 35);
     let mut out = Vec::new();
 
     let a2 = SessionRef::Agent(AgentId("a2".into()));
     for code in [KeyCode::Right, KeyCode::Down, KeyCode::Left, KeyCode::Up] {
         press(&mut app, code, KeyModifiers::NONE, &mut out);
-        if app.term.as_ref().map(|t| t.sref.clone()) == Some(a2.clone()) {
+        if app.pane.term.as_ref().map(|t| t.sref.clone()) == Some(a2.clone()) {
             break;
         }
     }
     assert_eq!(
-        app.term.as_ref().map(|t| t.sref.clone()),
+        app.pane.term.as_ref().map(|t| t.sref.clone()),
         Some(a2.clone()),
         "the pane still swaps at once"
     );
@@ -7434,7 +7907,7 @@ fn walking_onto_a_reaped_session_still_waits_out_the_debounce() {
         "but a dead session isn't booted by a passing cursor: {out:?}"
     );
     assert_eq!(
-        app.pending_attach.as_ref().map(|(s, _)| s.clone()),
+        app.pane.pending_attach.as_ref().map(|(s, _)| s.clone()),
         Some(a2.clone()),
         "the attach is armed for the walked-to session"
     );
@@ -7472,7 +7945,7 @@ fn switching_worktrees_onto_a_live_session_attaches_at_once() {
 
     select_worktree_row(&mut app, 1, &mut out);
     assert!(
-        app.pending_attach.is_none(),
+        app.pane.pending_attach.is_none(),
         "a live session needs no debounce: {out:?}"
     );
     assert!(
@@ -7480,7 +7953,7 @@ fn switching_worktrees_onto_a_live_session_attaches_at_once() {
         "the switch attaches the worktree's session at once: {out:?}"
     );
     assert!(
-        !app.term.as_ref().expect("pane").booting,
+        !app.pane.term.as_ref().expect("pane").booting,
         "nothing is booting, so the pane shows no notice while the replay lands"
     );
 }
@@ -7520,12 +7993,12 @@ fn switching_worktrees_onto_a_reaped_session_waits_out_the_debounce() {
         "a passing cursor boots nothing: {out:?}"
     );
     assert_eq!(
-        app.pending_attach.as_ref().map(|(s, _)| s.clone()),
+        app.pane.pending_attach.as_ref().map(|(s, _)| s.clone()),
         Some(a2.clone()),
         "the attach is armed for when the cursor settles"
     );
     assert!(
-        app.term.as_ref().expect("pane").booting,
+        app.pane.term.as_ref().expect("pane").booting,
         "the pane says the session is booting while it waits"
     );
     fire_pending_attach(&mut app, &mut out);
@@ -7561,7 +8034,11 @@ fn a_refused_attach_tells_the_pane_why_until_the_session_starts() {
             message: "elsewhere".into(),
         },
     );
-    assert_eq!(app.term.as_ref().unwrap().refused, None, "not this pane's");
+    assert_eq!(
+        app.pane.term.as_ref().unwrap().refused,
+        None,
+        "not this pane's"
+    );
 
     hse(
         &mut app,
@@ -7570,9 +8047,12 @@ fn a_refused_attach_tells_the_pane_why_until_the_session_starts() {
             message: why.into(),
         },
     );
-    assert_eq!(app.term.as_ref().unwrap().refused.as_deref(), Some(why));
     assert_eq!(
-        app.flash.as_deref(),
+        app.pane.term.as_ref().unwrap().refused.as_deref(),
+        Some(why)
+    );
+    assert_eq!(
+        app.chrome.flash.as_deref(),
         Some("couldn't start this session: the checkout for 'feat' is gone from disk (/x/feat)")
     );
 
@@ -7595,11 +8075,11 @@ fn a_refused_attach_tells_the_pane_why_until_the_session_starts() {
         },
     );
     assert_eq!(
-        app.term.as_ref().unwrap().refused,
+        app.pane.term.as_ref().unwrap().refused,
         None,
         "started after all"
     );
-    assert_eq!(app.flash, None, "the refusal no longer stands");
+    assert_eq!(app.chrome.flash, None, "the refusal no longer stands");
 }
 
 #[test]
@@ -7628,7 +8108,8 @@ fn returning_to_a_session_keeps_its_screen_and_asks_for_the_delta() {
     // Away, and back.
     attach_now(&mut app, a2.clone(), &mut out);
     assert_eq!(
-        app.term_cache
+        app.pane
+            .term_cache
             .iter()
             .map(|t| t.sref.clone())
             .collect::<Vec<_>>(),
@@ -7637,7 +8118,7 @@ fn returning_to_a_session_keeps_its_screen_and_asks_for_the_delta() {
     );
     out.clear();
     attach_now(&mut app, a1.clone(), &mut out);
-    let term = app.term.as_ref().expect("pane");
+    let term = app.pane.term.as_ref().expect("pane");
     let contents = term.parser.screen().contents();
     assert!(
         term.painted && contents.contains("hello"),
@@ -7651,7 +8132,7 @@ fn returning_to_a_session_keeps_its_screen_and_asks_for_the_delta() {
         "the attach asks for what it missed: {out:?}"
     );
     assert!(
-        app.term_cache.is_empty(),
+        app.pane.term_cache.is_empty(),
         "the screen is back in the pane, not the cache"
     );
 
@@ -7664,7 +8145,14 @@ fn returning_to_a_session_keeps_its_screen_and_asks_for_the_delta() {
             data: b" world".to_vec(),
         },
     );
-    let contents = app.term.as_ref().expect("pane").parser.screen().contents();
+    let contents = app
+        .pane
+        .term
+        .as_ref()
+        .expect("pane")
+        .parser
+        .screen()
+        .contents();
     assert!(contents.contains("hello world"), "{contents:?}");
 
     // Anything else starts the screen over.
@@ -7676,7 +8164,7 @@ fn returning_to_a_session_keeps_its_screen_and_asks_for_the_delta() {
             data: b"fresh".to_vec(),
         },
     );
-    let term = app.term.as_ref().expect("pane");
+    let term = app.pane.term.as_ref().expect("pane");
     let contents = term.parser.screen().contents();
     assert!(
         contents.contains("fresh") && !contents.contains("hello"),
@@ -7711,7 +8199,7 @@ fn a_session_that_died_is_not_shown_from_the_cache() {
         },
     );
     attach_now(&mut app, a2.clone(), &mut out);
-    assert_eq!(app.term_cache.len(), 1);
+    assert_eq!(app.pane.term_cache.len(), 1);
 
     app.tree
         .agents
@@ -7722,7 +8210,7 @@ fn a_session_that_died_is_not_shown_from_the_cache() {
     out.clear();
     attach_now(&mut app, a1.clone(), &mut out);
     assert!(
-        !app.term.as_ref().expect("pane").painted,
+        !app.pane.term.as_ref().expect("pane").painted,
         "a fresh, blank pane"
     );
     assert!(
@@ -7733,7 +8221,7 @@ fn a_session_that_died_is_not_shown_from_the_cache() {
         "and a whole-ring replay is asked for: {out:?}"
     );
     assert!(
-        app.term_cache.is_empty(),
+        app.pane.term_cache.is_empty(),
         "the dead session's screen is gone"
     );
 }
@@ -7777,7 +8265,8 @@ fn the_screen_cache_keeps_the_last_few_sessions() {
         .map(|id| SessionRef::Agent(AgentId(id.clone())))
         .collect();
     assert_eq!(
-        app.term_cache
+        app.pane
+            .term_cache
             .iter()
             .map(|t| t.sref.clone())
             .collect::<Vec<_>>(),
@@ -7826,11 +8315,11 @@ fn a_long_history_is_let_go_and_the_screen_still_returns_at_once() {
     let cols = pane_size(&app).0 as usize;
     let lines = crate::app::TERM_CACHE_CELLS / cols + 50;
     pane_with_history(&mut app, &a1, lines);
-    let seen = app.term.as_ref().expect("pane").next_seq;
+    let seen = app.pane.term.as_ref().expect("pane").next_seq;
 
     let mut out = Vec::new();
     attach_now(&mut app, a2.clone(), &mut out);
-    let kept = app.term_cache.first().expect("a1's screen is kept");
+    let kept = app.pane.term_cache.first().expect("a1's screen is kept");
     assert!(kept.history_dropped, "without its history");
     assert_eq!(kept.parser.screen().scrollback_rows(), 0);
     assert!(
@@ -7840,7 +8329,7 @@ fn a_long_history_is_let_go_and_the_screen_still_returns_at_once() {
 
     out.clear();
     attach_now(&mut app, a1.clone(), &mut out);
-    let pane = app.term.as_ref().expect("pane");
+    let pane = app.pane.term.as_ref().expect("pane");
     assert!(pane.painted, "the screen is up on this frame");
     assert!(
         pane.parser.screen().contents().contains("$ "),
@@ -7865,9 +8354,9 @@ fn scrolling_up_replays_a_history_that_was_let_go() {
     seed_tree(&mut app);
     let a1 = SessionRef::Agent(AgentId("a1".into()));
     pane_with_history(&mut app, &a1, 200);
-    let end = app.term.as_ref().expect("pane").next_seq;
-    app.term.as_mut().expect("pane").drop_history();
-    assert!(app.term.as_ref().expect("pane").history_dropped);
+    let end = app.pane.term.as_ref().expect("pane").next_seq;
+    app.pane.term.as_mut().expect("pane").drop_history();
+    assert!(app.pane.term.as_ref().expect("pane").history_dropped);
 
     let mut out = Vec::new();
     rehydrate_history(&mut app, 3, &mut out);
@@ -7897,7 +8386,7 @@ fn scrolling_up_replays_a_history_that_was_let_go() {
             data,
         },
     );
-    let pane = app.term.as_ref().expect("pane");
+    let pane = app.pane.term.as_ref().expect("pane");
     assert!(!pane.history_dropped && pane.pending_scroll.is_none());
     assert!(
         pane.parser.screen().scrollback_rows() > 100,
@@ -7960,7 +8449,7 @@ fn a_removed_session_leaves_the_screen_cache() {
         },
     );
     attach_now(&mut app, a2.clone(), &mut out);
-    assert_eq!(app.term_cache.len(), 1);
+    assert_eq!(app.pane.term_cache.len(), 1);
     hse(
         &mut app,
         ServerEvent::EntityRemoved {
@@ -7968,7 +8457,7 @@ fn a_removed_session_leaves_the_screen_cache() {
         },
     );
     assert!(
-        app.term_cache.is_empty(),
+        app.pane.term_cache.is_empty(),
         "the removed session's screen is gone"
     );
 }
@@ -7993,6 +8482,7 @@ fn archived_agent(id: &str, name: &str, archived_at: i64, sort: i64) -> nebula_c
         status_changed_at: 0,
         alive: false,
         issue_url: None,
+        role: nebula_core::AgentRole::Worker,
         recent_prompts: Vec::new(),
     })
 }
@@ -8011,7 +8501,7 @@ fn archived_group_orders_newest_first() {
     ] {
         hse(&mut app, ServerEvent::EntityUpserted { entity: ev });
     }
-    app.show_archived = true;
+    app.launcher.show_archived = true;
     let names: Vec<String> = app
         .visible_session_rows()
         .iter()
@@ -8037,8 +8527,8 @@ fn collapsing_archived_relands_the_cursor() {
             entity: archived_agent("a9", "old-agent", 100, 9),
         },
     );
-    app.show_archived = true;
-    app.focus = Focus::Sessions;
+    app.launcher.show_archived = true;
+    app.nav.focus = Focus::Sessions;
     let mut out = Vec::new();
     press(&mut app, KeyCode::Down, KeyModifiers::NONE, &mut out);
     assert!(
@@ -8048,7 +8538,7 @@ fn collapsing_archived_relands_the_cursor() {
     );
 
     press(&mut app, KeyCode::Char('A'), KeyModifiers::SHIFT, &mut out);
-    assert!(!app.show_archived, "A collapses the group");
+    assert!(!app.launcher.show_archived, "A collapses the group");
     assert_eq!(
         app.selected_session().map(|a| a.name),
         Some("agent-1".into()),
@@ -8073,7 +8563,7 @@ fn archived_collapse_is_global_across_worktrees() {
     ] {
         hse(&mut app, ServerEvent::EntityUpserted { entity });
     }
-    app.show_archived = true;
+    app.launcher.show_archived = true;
     let mut out = Vec::new();
     let w1 = WorktreeId("w1".into());
     let w2 = WorktreeId("w2".into());
@@ -8084,19 +8574,22 @@ fn archived_collapse_is_global_across_worktrees() {
     );
 
     // Collapse under w1.
-    app.focus = Focus::Sessions;
+    app.nav.focus = Focus::Sessions;
     press(&mut app, KeyCode::Char('A'), KeyModifiers::SHIFT, &mut out);
-    assert!(!app.show_archived, "A collapses the group");
+    assert!(!app.launcher.show_archived, "A collapses the group");
     assert!(
         !archived_visible(&app),
         "collapsed: w1 hides its archived row"
     );
 
     // Walk to w2: still collapsed there, the header still counts the row.
-    app.focus = Focus::Worktrees;
+    app.nav.focus = Focus::Worktrees;
     move_selection(&mut app, 1, &mut out);
     assert_eq!(app.selected_worktree().map(|w| w.id.clone()), Some(w2));
-    assert!(!app.show_archived, "a worktree switch never re-expands");
+    assert!(
+        !app.launcher.show_archived,
+        "a worktree switch never re-expands"
+    );
     assert!(
         !archived_visible(&app),
         "collapsed: w2 hides its archived row too"
@@ -8108,13 +8601,16 @@ fn archived_collapse_is_global_across_worktrees() {
     );
 
     // Expand under w2, walk back to w1: expanded there as well.
-    app.focus = Focus::Sessions;
+    app.nav.focus = Focus::Sessions;
     press(&mut app, KeyCode::Char('A'), KeyModifiers::SHIFT, &mut out);
     assert!(archived_visible(&app), "expanded under w2");
-    app.focus = Focus::Worktrees;
+    app.nav.focus = Focus::Worktrees;
     move_selection(&mut app, -1, &mut out);
     assert_eq!(app.selected_worktree().map(|w| w.id.clone()), Some(w1));
-    assert!(app.show_archived, "a worktree switch never re-collapses");
+    assert!(
+        app.launcher.show_archived,
+        "a worktree switch never re-collapses"
+    );
     assert!(archived_visible(&app), "expanded under w1 again");
 
     // One flag in the persisted blob, restored the same for every worktree.
@@ -8123,7 +8619,7 @@ fn archived_collapse_is_global_across_worktrees() {
     let mut restored = App::new();
     seed_tree(&mut restored);
     restore_ui_state(&mut restored, &json);
-    assert!(restored.show_archived);
+    assert!(restored.launcher.show_archived);
 }
 
 #[test]
@@ -8135,9 +8631,11 @@ fn drag_selection_selects_and_extracts_text() {
     let sref = SessionRef::Agent(AgentId("a1".into()));
     let mut term = AttachedTerm::new(sref, 80, 24);
     term.parser.process(b"hello world");
-    app.term = Some(term);
-    app.term_area = ratatui::layout::Rect::new(0, 0, 80, 24);
-    app.hits.push((app.term_area, HitTarget::TerminalPane));
+    app.pane.term = Some(term);
+    app.pane.term_area = ratatui::layout::Rect::new(0, 0, 80, 24);
+    app.chrome
+        .hits
+        .push((app.pane.term_area, HitTarget::TerminalPane));
 
     let ev = |kind, column, row| MouseEvent {
         kind,
@@ -8152,8 +8650,14 @@ fn drag_selection_selects_and_extracts_text() {
         ev(MouseEventKind::Down(MouseButton::Left), 0, 0),
         &mut out,
     );
-    assert!(app.term_selection.is_some_and(|s| s.dragging && !s.active));
-    assert!(app.term_locked, "click into the pane still locks input");
+    assert!(app
+        .pane
+        .term_selection
+        .is_some_and(|s| s.dragging && !s.active));
+    assert!(
+        app.pane.term_locked,
+        "click into the pane still locks input"
+    );
 
     // Dragging extends the selection; the text under it is extractable.
     handle_mouse(
@@ -8161,7 +8665,7 @@ fn drag_selection_selects_and_extracts_text() {
         ev(MouseEventKind::Drag(MouseButton::Left), 10, 0),
         &mut out,
     );
-    let sel = app.term_selection.expect("drag keeps the selection");
+    let sel = app.pane.term_selection.expect("drag keeps the selection");
     assert!(
         sel.active,
         "leaving the anchor cell activates the selection"
@@ -8175,7 +8679,10 @@ fn drag_selection_selects_and_extracts_text() {
         ev(MouseEventKind::Drag(MouseButton::Left), 200, 50),
         &mut out,
     );
-    assert_eq!(app.term_selection.expect("still selecting").head, (79, 23));
+    assert_eq!(
+        app.pane.term_selection.expect("still selecting").head,
+        (79, 23)
+    );
 
     // Mouse-up copies AND keeps the highlight (dragging over).
     handle_mouse(
@@ -8184,11 +8691,13 @@ fn drag_selection_selects_and_extracts_text() {
         &mut out,
     );
     let sel = app
+        .pane
         .term_selection
         .expect("highlight persists after release");
     assert!(!sel.dragging && sel.active);
     assert!(
-        app.flash
+        app.chrome
+            .flash
             .as_deref()
             .is_some_and(|f| f.starts_with("copied")),
         "release copies the selection"
@@ -8199,14 +8708,14 @@ fn drag_selection_selects_and_extracts_text() {
     );
 
     // A fresh click outside the pane clears the highlight.
-    app.hits.clear();
+    app.chrome.hits.clear();
     handle_mouse(
         &mut app,
         ev(MouseEventKind::Down(MouseButton::Left), 0, 0),
         &mut out,
     );
     assert!(
-        app.term_selection.is_none(),
+        app.pane.term_selection.is_none(),
         "click elsewhere clears the selection"
     );
 }
@@ -8220,9 +8729,11 @@ fn plain_click_without_drag_leaves_no_selection() {
     let sref = SessionRef::Agent(AgentId("a1".into()));
     let mut term = AttachedTerm::new(sref, 80, 24);
     term.parser.process(b"hello world");
-    app.term = Some(term);
-    app.term_area = ratatui::layout::Rect::new(0, 0, 80, 24);
-    app.hits.push((app.term_area, HitTarget::TerminalPane));
+    app.pane.term = Some(term);
+    app.pane.term_area = ratatui::layout::Rect::new(0, 0, 80, 24);
+    app.chrome
+        .hits
+        .push((app.pane.term_area, HitTarget::TerminalPane));
 
     handle_mouse(
         &mut app,
@@ -8235,10 +8746,10 @@ fn plain_click_without_drag_leaves_no_selection() {
         &mut out,
     );
     assert!(
-        app.term_selection.is_none(),
+        app.pane.term_selection.is_none(),
         "a click that never dragged is not a selection"
     );
-    assert!(app.flash.is_none(), "nothing was copied");
+    assert!(app.chrome.flash.is_none(), "nothing was copied");
 }
 
 /// Twenty numbered lines into a five-row pane whose top row is host
@@ -8251,9 +8762,11 @@ fn twenty_line_pane(app: &mut App, y: u16) {
     let lines: Vec<String> = (0..20).map(|i| format!("line {i}")).collect();
     term.parser.process(b"\x1b[?25l");
     term.parser.process(lines.join("\r\n").as_bytes());
-    app.term = Some(term);
-    app.term_area = ratatui::layout::Rect::new(0, y, 80, 5);
-    app.hits.push((app.term_area, HitTarget::TerminalPane));
+    app.pane.term = Some(term);
+    app.pane.term_area = ratatui::layout::Rect::new(0, y, 80, 5);
+    app.chrome
+        .hits
+        .push((app.pane.term_area, HitTarget::TerminalPane));
 }
 
 /// `line from` through `line to`, one per row, as a copy reads back.
@@ -8265,11 +8778,17 @@ fn lines_text(from: usize, to: usize) -> String {
 }
 
 fn history_base(app: &App) -> u64 {
-    app.term.as_ref().unwrap().parser.screen().history_base()
+    app.pane
+        .term
+        .as_ref()
+        .unwrap()
+        .parser
+        .screen()
+        .history_base()
 }
 
 fn bounds(app: &App) -> ((u16, u64), (u16, u64)) {
-    app.term_selection.expect("a selection").bounds()
+    app.pane.term_selection.expect("a selection").bounds()
 }
 
 /// A drag under way is anchored to the text, not to screen rows: the
@@ -8304,7 +8823,8 @@ fn a_drag_is_pinned_to_its_text_through_new_output_and_the_wheel() {
     // Two more lines arrive mid-drag and push everything up two rows:
     // the selection still names lines 17–18, and the next drag report
     // — same host row — reads the text now under the pointer.
-    app.term
+    app.pane
+        .term
         .as_mut()
         .unwrap()
         .parser
@@ -8324,7 +8844,7 @@ fn a_drag_is_pinned_to_its_text_through_new_output_and_the_wheel() {
 
     // The wheel mid-drag scrolls the view; the selection rides along.
     handle_mouse(&mut app, mev(MouseEventKind::ScrollUp, 40, 3), &mut out);
-    assert_eq!(app.term.as_ref().unwrap().scroll_offset(), 1);
+    assert_eq!(app.pane.term.as_ref().unwrap().scroll_offset(), 1);
     assert_eq!(
         bounds(&app),
         ((0, 17), (6, 20)),
@@ -8342,13 +8862,14 @@ fn a_drag_is_pinned_to_its_text_through_new_output_and_the_wheel() {
         Some(lines_text(17, 20).as_str())
     );
     assert!(app
+        .chrome
         .flash
         .as_deref()
         .is_some_and(|f| f.starts_with("copied")));
 
     // A finished selection goes with the wheel, as it always has.
     handle_mouse(&mut app, mev(MouseEventKind::ScrollUp, 40, 3), &mut out);
-    assert!(app.term_selection.is_none());
+    assert!(app.pane.term_selection.is_none());
 }
 
 /// Dragging past the pane's top edge — onto the rule above it — scrolls
@@ -8363,7 +8884,7 @@ fn dragging_past_the_top_edge_scrolls_the_history_under_the_pointer() {
     let mut out = Vec::new();
     // Pane at host rows 3–7: rows 0–2 are past its top edge.
     twenty_line_pane(&mut app, 3);
-    let scroll = |app: &App| app.term.as_ref().unwrap().scroll_offset();
+    let scroll = |app: &App| app.pane.term.as_ref().unwrap().scroll_offset();
 
     // Press at the end of `line 17`, drag to the pane's top row:
     // inside, so no beat.
@@ -8379,7 +8900,7 @@ fn dragging_past_the_top_edge_scrolls_the_history_under_the_pointer() {
     );
     assert_eq!(bounds(&app), ((0, 15), (79, 17)));
     assert!(
-        app.next_drag_autoscroll.is_none(),
+        app.pane.next_drag_autoscroll.is_none(),
         "the top row is inside the pane"
     );
     assert_eq!(scroll(&app), 0);
@@ -8396,13 +8917,13 @@ fn dragging_past_the_top_edge_scrolls_the_history_under_the_pointer() {
         ((0, 14), (79, 17)),
         "the head is on the edge row's new text"
     );
-    assert!(app.next_drag_autoscroll.is_some());
+    assert!(app.pane.next_drag_autoscroll.is_some());
 
     // A tick: another line, with no mouse report in between.
     drag_autoscroll_tick(&mut app, &mut out);
     assert_eq!(scroll(&app), 2);
     assert_eq!(bounds(&app), ((0, 13), (79, 17)));
-    assert!(app.next_drag_autoscroll.is_some());
+    assert!(app.pane.next_drag_autoscroll.is_some());
 
     // Three rows past the edge: three lines a tick.
     handle_mouse(
@@ -8426,7 +8947,7 @@ fn dragging_past_the_top_edge_scrolls_the_history_under_the_pointer() {
     }
     assert_eq!(scroll(&app), 15, "stops at the oldest row");
     assert_eq!(bounds(&app), ((0, 0), (79, 17)));
-    assert!(app.next_drag_autoscroll.is_some());
+    assert!(app.pane.next_drag_autoscroll.is_some());
 
     // Back inside: the beat stops and the head is under the pointer.
     handle_mouse(
@@ -8434,7 +8955,7 @@ fn dragging_past_the_top_edge_scrolls_the_history_under_the_pointer() {
         mev(MouseEventKind::Drag(MouseButton::Left), 0, 4),
         &mut out,
     );
-    assert!(app.next_drag_autoscroll.is_none());
+    assert!(app.pane.next_drag_autoscroll.is_none());
     assert_eq!(bounds(&app), ((0, 1), (79, 17)));
 
     // The release copies the whole run — 17 rows into a 5-row pane.
@@ -8443,7 +8964,7 @@ fn dragging_past_the_top_edge_scrolls_the_history_under_the_pointer() {
         mev(MouseEventKind::Up(MouseButton::Left), 0, 4),
         &mut out,
     );
-    assert!(app.next_drag_autoscroll.is_none());
+    assert!(app.pane.next_drag_autoscroll.is_none());
     assert_eq!(
         selection_text(&app).as_deref(),
         Some(lines_text(1, 17).as_str())
@@ -8461,8 +8982,8 @@ fn dragging_past_the_bottom_edge_scrolls_back_toward_the_tail() {
     // Pane at host rows 1–5, scrolled to the top of its history: rows
     // 6 and up are past its bottom edge.
     twenty_line_pane(&mut app, 1);
-    app.term.as_mut().unwrap().set_scroll(15);
-    let scroll = |app: &App| app.term.as_ref().unwrap().scroll_offset();
+    app.pane.term.as_mut().unwrap().set_scroll(15);
+    let scroll = |app: &App| app.pane.term.as_ref().unwrap().scroll_offset();
 
     // Press on `line 2` (host row 3), drag two rows past the bottom.
     handle_mouse(
@@ -8486,7 +9007,7 @@ fn dragging_past_the_bottom_edge_scrolls_back_toward_the_tail() {
     }
     assert_eq!(scroll(&app), 0, "stops at the live tail");
     assert_eq!(bounds(&app), ((0, 2), (79, 19)));
-    assert!(app.next_drag_autoscroll.is_some());
+    assert!(app.pane.next_drag_autoscroll.is_some());
 
     handle_mouse(
         &mut app,
@@ -8535,7 +9056,10 @@ fn a_rebuilding_replay_carries_a_drag_across_and_drops_a_finished_selection() {
         },
     );
     assert_eq!(history_base(&app), 17);
-    let sel = app.term_selection.expect("the drag survives the replay");
+    let sel = app
+        .pane
+        .term_selection
+        .expect("the drag survives the replay");
     assert!(sel.dragging);
     assert_eq!(sel.bounds(), ((0, 19), (6, 20)));
     assert_eq!(
@@ -8548,7 +9072,7 @@ fn a_rebuilding_replay_carries_a_drag_across_and_drops_a_finished_selection() {
         mev(MouseEventKind::Up(MouseButton::Left), 6, 4),
         &mut out,
     );
-    assert!(app.term_selection.is_some_and(|s| !s.dragging));
+    assert!(app.pane.term_selection.is_some_and(|s| !s.dragging));
     hse(
         &mut app,
         ServerEvent::Scrollback {
@@ -8558,7 +9082,7 @@ fn a_rebuilding_replay_carries_a_drag_across_and_drops_a_finished_selection() {
         },
     );
     assert!(
-        app.term_selection.is_none(),
+        app.pane.term_selection.is_none(),
         "a rebuild drops a finished highlight"
     );
 }
@@ -8576,11 +9100,19 @@ fn a_selection_keeps_its_text_as_the_scrollback_ring_turns() {
     let mut term = AttachedTerm::new(sref, 80, 5);
     let lines: Vec<String> = (0..10_010).map(|i| format!("l{i}")).collect();
     term.parser.process(lines.join("\r\n").as_bytes());
-    app.term = Some(term);
-    app.term_area = ratatui::layout::Rect::new(0, 1, 80, 5);
-    app.hits.push((app.term_area, HitTarget::TerminalPane));
+    app.pane.term = Some(term);
+    app.pane.term_area = ratatui::layout::Rect::new(0, 1, 80, 5);
+    app.chrome
+        .hits
+        .push((app.pane.term_area, HitTarget::TerminalPane));
     assert_eq!(
-        app.term.as_ref().unwrap().parser.screen().scrollback_rows(),
+        app.pane
+            .term
+            .as_ref()
+            .unwrap()
+            .parser
+            .screen()
+            .scrollback_rows(),
         10_000
     );
     assert_eq!(
@@ -8604,7 +9136,8 @@ fn a_selection_keeps_its_text_as_the_scrollback_ring_turns() {
 
     // Three more lines: three more rows off the ring, the selected row
     // into the scrollback.
-    app.term
+    app.pane
+        .term
         .as_mut()
         .unwrap()
         .parser
@@ -8612,7 +9145,7 @@ fn a_selection_keeps_its_text_as_the_scrollback_ring_turns() {
     assert_eq!(history_base(&app), 10_008);
     assert_eq!(selection_text(&app).as_deref(), Some("l10005"));
 
-    app.term_selection = Some(TermSelection {
+    app.pane.term_selection = Some(TermSelection {
         anchor: (0, 2),
         head: (5, 2),
         dragging: false,
@@ -8631,9 +9164,11 @@ fn double_click_selects_word_and_persists() {
     let sref = SessionRef::Agent(AgentId("a1".into()));
     let mut term = AttachedTerm::new(sref, 80, 24);
     term.parser.process(b"hello world");
-    app.term = Some(term);
-    app.term_area = ratatui::layout::Rect::new(0, 0, 80, 24);
-    app.hits.push((app.term_area, HitTarget::TerminalPane));
+    app.pane.term = Some(term);
+    app.pane.term_area = ratatui::layout::Rect::new(0, 0, 80, 24);
+    app.chrome
+        .hits
+        .push((app.pane.term_area, HitTarget::TerminalPane));
 
     // Click, release, click again on the same cell (a fast double-click).
     handle_mouse(
@@ -8651,12 +9186,16 @@ fn double_click_selects_word_and_persists() {
         mev(MouseEventKind::Down(MouseButton::Left), 2, 0),
         &mut out,
     );
-    let sel = app.term_selection.expect("double-click selects the word");
+    let sel = app
+        .pane
+        .term_selection
+        .expect("double-click selects the word");
     assert!(sel.active && !sel.dragging);
     assert_eq!(sel.bounds(), ((0, 0), (4, 0)));
     assert_eq!(selection_text(&app).as_deref(), Some("hello"));
     assert!(
-        app.flash
+        app.chrome
+            .flash
             .as_deref()
             .is_some_and(|f| f.starts_with("copied")),
         "double-click copies the word"
@@ -8668,7 +9207,7 @@ fn double_click_selects_word_and_persists() {
         mev(MouseEventKind::Up(MouseButton::Left), 2, 0),
         &mut out,
     );
-    assert!(app.term_selection.is_some_and(|s| s.active));
+    assert!(app.pane.term_selection.is_some_and(|s| s.active));
 }
 
 #[test]
@@ -8680,9 +9219,11 @@ fn double_click_selects_single_char_word() {
     let sref = SessionRef::Agent(AgentId("a1".into()));
     let mut term = AttachedTerm::new(sref, 80, 24);
     term.parser.process(b"a bc");
-    app.term = Some(term);
-    app.term_area = ratatui::layout::Rect::new(0, 0, 80, 24);
-    app.hits.push((app.term_area, HitTarget::TerminalPane));
+    app.pane.term = Some(term);
+    app.pane.term_area = ratatui::layout::Rect::new(0, 0, 80, 24);
+    app.chrome
+        .hits
+        .push((app.pane.term_area, HitTarget::TerminalPane));
 
     handle_mouse(
         &mut app,
@@ -8700,7 +9241,7 @@ fn double_click_selects_single_char_word() {
         &mut out,
     );
     // A one-cell word: anchor == head but the selection is real.
-    let sel = app.term_selection.expect("single-char word selected");
+    let sel = app.pane.term_selection.expect("single-char word selected");
     assert!(sel.active);
     assert_eq!(sel.bounds(), ((0, 0), (0, 0)));
     assert_eq!(selection_text(&app).as_deref(), Some("a"));
@@ -8715,12 +9256,14 @@ fn slow_second_click_arms_a_plain_drag() {
     let sref = SessionRef::Agent(AgentId("a1".into()));
     let mut term = AttachedTerm::new(sref, 80, 24);
     term.parser.process(b"hello world");
-    app.term = Some(term);
-    app.term_area = ratatui::layout::Rect::new(0, 0, 80, 24);
-    app.hits.push((app.term_area, HitTarget::TerminalPane));
+    app.pane.term = Some(term);
+    app.pane.term_area = ratatui::layout::Rect::new(0, 0, 80, 24);
+    app.chrome
+        .hits
+        .push((app.pane.term_area, HitTarget::TerminalPane));
 
     // A stale first click, well outside the double-click window.
-    app.last_term_click = Some((
+    app.pane.last_term_click = Some((
         std::time::Instant::now() - Duration::from_millis(500),
         (2, 0),
     ));
@@ -8730,7 +9273,9 @@ fn slow_second_click_arms_a_plain_drag() {
         &mut out,
     );
     assert!(
-        app.term_selection.is_some_and(|s| s.dragging && !s.active),
+        app.pane
+            .term_selection
+            .is_some_and(|s| s.dragging && !s.active),
         "slow second click starts a fresh drag, not a word selection"
     );
 }
@@ -8744,11 +9289,14 @@ fn alt_click_opens_link_under_cursor() {
     let sref = SessionRef::Agent(AgentId("a1".into()));
     let mut term = AttachedTerm::new(sref, 80, 24);
     term.parser.process(b"see https://example.com ok");
-    app.term = Some(term);
-    app.term_area = ratatui::layout::Rect::new(0, 0, 80, 24);
-    app.hits.push((app.term_area, HitTarget::TerminalPane));
-    app.term_links = crate::links::visible_links(app.term.as_ref().unwrap().parser.screen());
-    assert_eq!(app.term_links.len(), 1);
+    app.pane.term = Some(term);
+    app.pane.term_area = ratatui::layout::Rect::new(0, 0, 80, 24);
+    app.chrome
+        .hits
+        .push((app.pane.term_area, HitTarget::TerminalPane));
+    app.pane.term_links =
+        crate::links::visible_links(app.pane.term.as_ref().unwrap().parser.screen());
+    assert_eq!(app.pane.term_links.len(), 1);
 
     let alt = |kind, column, row| MouseEvent {
         kind,
@@ -8758,31 +9306,31 @@ fn alt_click_opens_link_under_cursor() {
     };
 
     // ⌥click on the link opens it and swallows the click entirely.
-    app.focus = Focus::Projects;
+    app.nav.focus = Focus::Projects;
     handle_mouse(
         &mut app,
         alt(MouseEventKind::Down(MouseButton::Left), 6, 0),
         &mut out,
     );
     assert_eq!(
-        app.flash.as_deref(),
+        app.chrome.flash.as_deref(),
         Some("opened https://example.com"),
         "the URL under the cursor is opened"
     );
-    assert_eq!(app.focus, Focus::Projects, "focus is untouched");
-    assert!(!app.term_locked, "input stays unlocked");
-    assert!(app.term_selection.is_none(), "no selection armed");
+    assert_eq!(app.nav.focus, Focus::Projects, "focus is untouched");
+    assert!(!app.pane.term_locked, "input stays unlocked");
+    assert!(app.pane.term_selection.is_none(), "no selection armed");
 
     // ⌥click on a non-link cell falls through to a normal click.
-    app.flash = None;
+    app.chrome.flash = None;
     handle_mouse(
         &mut app,
         alt(MouseEventKind::Down(MouseButton::Left), 0, 0),
         &mut out,
     );
-    assert!(app.flash.is_none());
-    assert_eq!(app.focus, Focus::Terminal);
-    assert!(app.term_selection.is_some_and(|s| s.dragging));
+    assert!(app.chrome.flash.is_none());
+    assert_eq!(app.nav.focus, Focus::Terminal);
+    assert!(app.pane.term_selection.is_some_and(|s| s.dragging));
 }
 
 #[test]
@@ -8796,12 +9344,14 @@ fn alt_click_on_file_path_resolves_against_attached_worktree() {
     let sref = SessionRef::Agent(AgentId("a1".into()));
     let mut term = AttachedTerm::new(sref, 80, 24);
     term.parser.process(b"edited src/nope.rs:12 just now");
-    app.term = Some(term);
-    app.term_area = ratatui::layout::Rect::new(0, 0, 80, 24);
-    app.hits.push((app.term_area, HitTarget::TerminalPane));
-    app.term_file_links =
-        crate::links::visible_file_links(app.term.as_ref().unwrap().parser.screen());
-    assert_eq!(app.term_file_links.len(), 1);
+    app.pane.term = Some(term);
+    app.pane.term_area = ratatui::layout::Rect::new(0, 0, 80, 24);
+    app.chrome
+        .hits
+        .push((app.pane.term_area, HitTarget::TerminalPane));
+    app.pane.term_file_links =
+        crate::links::visible_file_links(app.pane.term.as_ref().unwrap().parser.screen());
+    assert_eq!(app.pane.term_file_links.len(), 1);
 
     let alt = |column| MouseEvent {
         kind: MouseEventKind::Down(MouseButton::Left),
@@ -8810,12 +9360,15 @@ fn alt_click_on_file_path_resolves_against_attached_worktree() {
         modifiers: KeyModifiers::ALT,
     };
 
-    app.focus = Focus::Projects;
+    app.nav.focus = Focus::Projects;
     handle_mouse(&mut app, alt(9), &mut out);
-    assert_eq!(app.flash.as_deref(), Some("file not found: src/nope.rs"));
-    assert!(app.vim.is_none());
-    assert_eq!(app.focus, Focus::Projects, "the click is swallowed");
-    assert!(app.term_selection.is_none(), "no selection armed");
+    assert_eq!(
+        app.chrome.flash.as_deref(),
+        Some("file not found: src/nope.rs")
+    );
+    assert!(app.pane.vim.is_none());
+    assert_eq!(app.nav.focus, Focus::Projects, "the click is swallowed");
+    assert!(app.pane.term_selection.is_none(), "no selection armed");
 }
 
 #[test]
@@ -8872,9 +9425,11 @@ fn wheel_forwards_mouse_report_when_child_wants_mouse() {
     // Claude's alt-screen entry: 1049 + tracking modes + SGR encoding.
     term.parser
         .process(b"\x1b[?1049h\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h");
-    app.term = Some(term);
-    app.term_area = ratatui::layout::Rect::new(0, 0, 80, 24);
-    app.hits.push((app.term_area, HitTarget::TerminalPane));
+    app.pane.term = Some(term);
+    app.pane.term_area = ratatui::layout::Rect::new(0, 0, 80, 24);
+    app.chrome
+        .hits
+        .push((app.pane.term_area, HitTarget::TerminalPane));
 
     handle_mouse(&mut app, mev(MouseEventKind::ScrollUp, 10, 5), &mut out);
     match out.as_slice() {
@@ -8903,9 +9458,11 @@ fn wheel_sends_arrows_to_mouseless_alt_screen_apps() {
     let sref = SessionRef::Agent(AgentId("a1".into()));
     let mut term = AttachedTerm::new(sref, 80, 24);
     term.parser.process(b"\x1b[?1049h");
-    app.term = Some(term);
-    app.term_area = ratatui::layout::Rect::new(0, 0, 80, 24);
-    app.hits.push((app.term_area, HitTarget::TerminalPane));
+    app.pane.term = Some(term);
+    app.pane.term_area = ratatui::layout::Rect::new(0, 0, 80, 24);
+    app.chrome
+        .hits
+        .push((app.pane.term_area, HitTarget::TerminalPane));
 
     handle_mouse(&mut app, mev(MouseEventKind::ScrollUp, 10, 5), &mut out);
     match out.as_slice() {
@@ -8920,13 +9477,15 @@ fn scrolling_pane(app: &mut App, lines: usize) {
     let sref = SessionRef::Agent(AgentId("a1".into()));
     let mut term = AttachedTerm::new(sref, 80, 24);
     term.parser.process(&b"line\r\n".repeat(lines));
-    app.term = Some(term);
-    app.term_area = ratatui::layout::Rect::new(0, 0, 80, 24);
-    app.hits.push((app.term_area, HitTarget::TerminalPane));
+    app.pane.term = Some(term);
+    app.pane.term_area = ratatui::layout::Rect::new(0, 0, 80, 24);
+    app.chrome
+        .hits
+        .push((app.pane.term_area, HitTarget::TerminalPane));
 }
 
 fn pane_offset(app: &App) -> usize {
-    app.term.as_ref().unwrap().scroll_offset()
+    app.pane.term.as_ref().unwrap().scroll_offset()
 }
 
 /// The wheel stops at the top of the history: a notch past it lands on
@@ -8938,7 +9497,14 @@ fn the_wheel_stops_at_the_top_of_the_history() {
     let mut app = App::new();
     let mut out = Vec::new();
     scrolling_pane(&mut app, 30);
-    let top = app.term.as_ref().unwrap().parser.screen().scrollback_rows();
+    let top = app
+        .pane
+        .term
+        .as_ref()
+        .unwrap()
+        .parser
+        .screen()
+        .scrollback_rows();
     assert!(top > 0 && top < 20, "a few rows of history: {top}");
 
     for _ in 0..20 {
@@ -8947,7 +9513,7 @@ fn the_wheel_stops_at_the_top_of_the_history() {
     assert_eq!(pane_offset(&app), top, "the top, not twenty notches up");
     assert!(out.is_empty(), "nothing forwarded: {out:?}");
 
-    app.dirty = false;
+    app.chrome.dirty = false;
     handle_mouse(&mut app, mev(MouseEventKind::ScrollUp, 10, 5), &mut out);
     assert_eq!(pane_offset(&app), top, "a notch at the top stays there");
 
@@ -8957,7 +9523,7 @@ fn the_wheel_stops_at_the_top_of_the_history() {
         top - 1,
         "and the first notch down moves the view"
     );
-    assert!(app.dirty);
+    assert!(app.chrome.dirty);
 }
 
 /// Output arriving while scrolled back moves the offset up under the
@@ -8968,9 +9534,10 @@ fn the_wheel_counts_from_where_output_left_the_view() {
     let mut app = App::new();
     let mut out = Vec::new();
     scrolling_pane(&mut app, 30);
-    app.term.as_mut().unwrap().set_scroll(3);
+    app.pane.term.as_mut().unwrap().set_scroll(3);
     // Four more lines scroll out under the view.
-    app.term
+    app.pane
+        .term
         .as_mut()
         .unwrap()
         .parser
@@ -8989,9 +9556,11 @@ fn notches_while_the_history_is_on_its_way_back_move_the_landing() {
     seed_tree(&mut app);
     let a1 = SessionRef::Agent(AgentId("a1".into()));
     pane_with_history(&mut app, &a1, 200);
-    app.term.as_mut().expect("pane").drop_history();
-    app.term_area = ratatui::layout::Rect::new(0, 0, 80, 24);
-    app.hits.push((app.term_area, HitTarget::TerminalPane));
+    app.pane.term.as_mut().expect("pane").drop_history();
+    app.pane.term_area = ratatui::layout::Rect::new(0, 0, 80, 24);
+    app.chrome
+        .hits
+        .push((app.pane.term_area, HitTarget::TerminalPane));
 
     let mut out = Vec::new();
     handle_mouse(&mut app, mev(MouseEventKind::ScrollUp, 10, 5), &mut out);
@@ -9002,14 +9571,14 @@ fn notches_while_the_history_is_on_its_way_back_move_the_landing() {
         ),
         "the first notch asks for the whole ring: {out:?}"
     );
-    assert_eq!(app.term.as_ref().unwrap().pending_scroll, Some(1));
+    assert_eq!(app.pane.term.as_ref().unwrap().pending_scroll, Some(1));
     assert_eq!(pane_offset(&app), 1, "and the header counts it");
 
     out.clear();
     handle_mouse(&mut app, mev(MouseEventKind::ScrollUp, 10, 5), &mut out);
     handle_mouse(&mut app, mev(MouseEventKind::ScrollUp, 10, 5), &mut out);
     assert!(out.is_empty(), "no second ask: {out:?}");
-    assert_eq!(app.term.as_ref().unwrap().pending_scroll, Some(3));
+    assert_eq!(app.pane.term.as_ref().unwrap().pending_scroll, Some(3));
 
     let mut data = Vec::new();
     for n in 0..200 {
@@ -9024,7 +9593,7 @@ fn notches_while_the_history_is_on_its_way_back_move_the_landing() {
             data,
         },
     );
-    let pane = app.term.as_ref().expect("pane");
+    let pane = app.pane.term.as_ref().expect("pane");
     assert!(pane.pending_scroll.is_none());
     assert_eq!(
         pane.scroll_offset(),
@@ -9044,9 +9613,11 @@ fn mouse_owning_pane(app: &mut App, modes: &[u16]) {
     for mode in modes {
         term.parser.process(format!("\x1b[?{mode}h").as_bytes());
     }
-    app.term = Some(term);
-    app.term_area = ratatui::layout::Rect::new(10, 2, 80, 24);
-    app.hits.push((app.term_area, HitTarget::TerminalPane));
+    app.pane.term = Some(term);
+    app.pane.term_area = ratatui::layout::Rect::new(10, 2, 80, 24);
+    app.chrome
+        .hits
+        .push((app.pane.term_area, HitTarget::TerminalPane));
 }
 
 fn only_input(out: &[ClientRequest]) -> &[u8] {
@@ -9073,11 +9644,17 @@ fn the_left_button_goes_to_a_program_that_asked_for_the_mouse() {
         &mut out,
     );
     assert_eq!(only_input(&out), b"\x1b[<0;6;4M");
-    assert!(app.term_selection.is_none(), "no selection of nebula's");
-    assert!(app.term_locked, "a click into the pane still locks input");
-    assert_eq!(app.focus, Focus::Terminal);
     assert!(
-        app.term_mouse_grab.is_some(),
+        app.pane.term_selection.is_none(),
+        "no selection of nebula's"
+    );
+    assert!(
+        app.pane.term_locked,
+        "a click into the pane still locks input"
+    );
+    assert_eq!(app.nav.focus, Focus::Terminal);
+    assert!(
+        app.pane.term_mouse_grab.is_some(),
         "the program holds the button"
     );
 
@@ -9088,7 +9665,7 @@ fn the_left_button_goes_to_a_program_that_asked_for_the_mouse() {
         &mut out,
     );
     assert_eq!(only_input(&out), b"\x1b[<32;11;5M");
-    assert!(app.term_selection.is_none());
+    assert!(app.pane.term_selection.is_none());
 
     // Wandering off the pane clamps to its edge, as our own drag does.
     out.clear();
@@ -9106,9 +9683,9 @@ fn the_left_button_goes_to_a_program_that_asked_for_the_mouse() {
         &mut out,
     );
     assert_eq!(only_input(&out), b"\x1b[<0;11;5m");
-    assert!(app.term_mouse_grab.is_none(), "the release lets go");
-    assert!(app.flash.is_none(), "nebula copied nothing");
-    assert!(app.term_selection.is_none());
+    assert!(app.pane.term_mouse_grab.is_none(), "the release lets go");
+    assert!(app.chrome.flash.is_none(), "nebula copied nothing");
+    assert!(app.pane.term_selection.is_none());
 }
 
 /// Press-only tracking (`?9h`) has no drag or release reports, and a
@@ -9138,7 +9715,7 @@ fn press_only_tracking_gets_the_press_alone_in_x10_bytes() {
         &mut out,
     );
     assert!(out.is_empty(), "nothing after the press: {out:?}");
-    assert!(app.term_mouse_grab.is_none());
+    assert!(app.pane.term_mouse_grab.is_none());
 }
 
 /// Press/release tracking (`?1000h`) hears the press and the release but
@@ -9200,7 +9777,7 @@ fn an_exited_programs_screen_is_still_ours_to_select() {
     let mut app = App::new();
     let mut out = Vec::new();
     mouse_owning_pane(&mut app, &[1002, 1006]);
-    let term = app.term.as_mut().unwrap();
+    let term = app.pane.term.as_mut().unwrap();
     term.parser.process(b"hello world");
     term.exited = true;
 
@@ -9210,7 +9787,10 @@ fn an_exited_programs_screen_is_still_ours_to_select() {
         &mut out,
     );
     assert!(out.is_empty(), "nothing to forward to: {out:?}");
-    assert!(app.term_selection.is_some_and(|s| s.dragging && !s.active));
+    assert!(app
+        .pane
+        .term_selection
+        .is_some_and(|s| s.dragging && !s.active));
 
     handle_mouse(
         &mut app,
@@ -9228,7 +9808,7 @@ fn a_programs_clipboard_write_is_relayed_to_the_terminal() {
     let mut app = App::new();
     let mut out = Vec::new();
     let sref = SessionRef::Agent(AgentId("a1".into()));
-    app.term = Some(AttachedTerm::new(sref.clone(), 80, 24));
+    app.pane.term = Some(AttachedTerm::new(sref.clone(), 80, 24));
 
     handle_server_event(
         &mut app,
@@ -9239,17 +9819,18 @@ fn a_programs_clipboard_write_is_relayed_to_the_terminal() {
         },
         &mut out,
     );
-    assert_eq!(app.pending_clipboard.as_deref(), Some("aGVsbG8="));
+    assert_eq!(app.chrome.pending_clipboard.as_deref(), Some("aGVsbG8="));
     assert!(
-        app.flash
+        app.chrome
+            .flash
             .as_deref()
             .is_some_and(|f| f.contains("via terminal")),
         "flash names the route: {:?}",
-        app.flash
+        app.chrome.flash
     );
 
-    app.pending_clipboard = None;
-    app.flash = None;
+    app.chrome.pending_clipboard = None;
+    app.chrome.flash = None;
     handle_server_event(
         &mut app,
         ServerEvent::Scrollback {
@@ -9260,10 +9841,10 @@ fn a_programs_clipboard_write_is_relayed_to_the_terminal() {
         &mut out,
     );
     assert!(
-        app.pending_clipboard.is_none(),
+        app.chrome.pending_clipboard.is_none(),
         "a replay is history, not a fresh copy"
     );
-    assert!(app.flash.is_none());
+    assert!(app.chrome.flash.is_none());
 }
 
 #[test]
@@ -9291,31 +9872,31 @@ fn launcher_pane_edge_drags_the_pane_taller_and_shorter() {
     let mut app = App::new();
     // A pane along the bottom, whose edge trades rows; the one beside
     // the cards has its own drag test in `event_loop::launcher`.
-    app.launcher_pane_at = crate::launcher::PaneSide::Bottom;
+    app.launcher.launcher_pane_at = crate::launcher::PaneSide::Bottom;
     // Tall enough that the default share, and a drag either side of
     // it, sit clear of both stops — the stops get their own drags below.
     let body = ratatui::layout::Rect::new(0, 0, 120, 60);
-    app.launcher_body = body;
+    app.launcher.launcher_body = body;
     let boundary = body.height - pane_height(body, None).expect("60 rows fits a pane");
-    app.hits.push((
+    app.chrome.hits.push((
         ratatui::layout::Rect::new(0, boundary - 1, 120, 2),
         HitTarget::LauncherPaneSplitter,
     ));
     let mut out = Vec::new();
 
     // Hover the edge: the other arrows, and the grip lit.
-    app.dirty = false;
+    app.chrome.dirty = false;
     handle_mouse(&mut app, mev(MouseEventKind::Moved, 60, boundary), &mut out);
-    assert_eq!(app.pointer_shape, PointerShape::RowResize);
-    assert!(app.hover_launcher_pane);
-    assert!(app.dirty, "hover change repaints the grip");
+    assert_eq!(app.chrome.pointer_shape, PointerShape::RowResize);
+    assert!(app.launcher.hover_launcher_pane);
+    assert!(app.chrome.dirty, "hover change repaints the grip");
 
     // Off it: back to default, grip resting.
-    app.dirty = false;
+    app.chrome.dirty = false;
     handle_mouse(&mut app, mev(MouseEventKind::Moved, 60, 2), &mut out);
-    assert_eq!(app.pointer_shape, PointerShape::Default);
-    assert!(!app.hover_launcher_pane);
-    assert!(app.dirty);
+    assert_eq!(app.chrome.pointer_shape, PointerShape::Default);
+    assert!(!app.launcher.hover_launcher_pane);
+    assert!(app.chrome.dirty);
 
     handle_mouse(
         &mut app,
@@ -9323,12 +9904,12 @@ fn launcher_pane_edge_drags_the_pane_taller_and_shorter() {
         &mut out,
     );
     assert_eq!(
-        app.launcher_pane_drag,
+        app.launcher.launcher_pane_drag,
         Some(0),
         "grabbed on the edge itself"
     );
     assert!(
-        app.term_selection.is_none(),
+        app.pane.term_selection.is_none(),
         "a pane-edge grab must not arm a terminal selection"
     );
     assert!(
@@ -9342,7 +9923,10 @@ fn launcher_pane_edge_drags_the_pane_taller_and_shorter() {
         mev(MouseEventKind::Drag(MouseButton::Left), 60, boundary - 5),
         &mut out,
     );
-    assert_eq!(app.launcher_pane_h, Some(body.height - boundary + 5));
+    assert_eq!(
+        app.launcher.launcher_pane_h,
+        Some(body.height - boundary + 5)
+    );
 
     // A motion report with no button named, mid-drag, is still the
     // drag: a host that lost the button between two reports.
@@ -9351,7 +9935,10 @@ fn launcher_pane_edge_drags_the_pane_taller_and_shorter() {
         mev(MouseEventKind::Moved, 60, boundary - 2),
         &mut out,
     );
-    assert_eq!(app.launcher_pane_h, Some(body.height - boundary + 2));
+    assert_eq!(
+        app.launcher.launcher_pane_h,
+        Some(body.height - boundary + 2)
+    );
 
     // Down again: the cards get them back.
     handle_mouse(
@@ -9359,7 +9946,10 @@ fn launcher_pane_edge_drags_the_pane_taller_and_shorter() {
         mev(MouseEventKind::Drag(MouseButton::Left), 60, boundary + 3),
         &mut out,
     );
-    assert_eq!(app.launcher_pane_h, Some(body.height - boundary - 3));
+    assert_eq!(
+        app.launcher.launcher_pane_h,
+        Some(body.height - boundary - 3)
+    );
 
     // Past the top: the header and a row of cards are kept.
     handle_mouse(
@@ -9367,7 +9957,10 @@ fn launcher_pane_edge_drags_the_pane_taller_and_shorter() {
         mev(MouseEventKind::Drag(MouseButton::Left), 60, 0),
         &mut out,
     );
-    assert_eq!(app.launcher_pane_h, Some(body.height - (HEAD_H + CARD_H)));
+    assert_eq!(
+        app.launcher.launcher_pane_h,
+        Some(body.height - (HEAD_H + CARD_H))
+    );
 
     // Past the bottom: the pane keeps its own minimum.
     handle_mouse(
@@ -9375,14 +9968,17 @@ fn launcher_pane_edge_drags_the_pane_taller_and_shorter() {
         mev(MouseEventKind::Drag(MouseButton::Left), 60, body.height),
         &mut out,
     );
-    assert_eq!(app.launcher_pane_h, Some(PANE_MIN_H));
+    assert_eq!(app.launcher.launcher_pane_h, Some(PANE_MIN_H));
 
     handle_mouse(
         &mut app,
         mev(MouseEventKind::Up(MouseButton::Left), 60, body.height),
         &mut out,
     );
-    assert!(app.launcher_pane_drag.is_none(), "mouse-up ends the drag");
+    assert!(
+        app.launcher.launcher_pane_drag.is_none(),
+        "mouse-up ends the drag"
+    );
     assert!(!app.mouse_held(), "…and the mode re-ask beat resumes");
 }
 
@@ -9391,20 +9987,23 @@ fn launcher_pane_edge_drags_the_pane_taller_and_shorter() {
 #[test]
 fn ui_state_roundtrip_includes_the_issues_fold() {
     let mut app = App::new();
-    app.issues_collapsed = true;
+    app.launcher.issues_collapsed = true;
     let json = ui_state_json(&app);
     assert!(json.contains(r#""issues_collapsed":true"#), "{json}");
 
     let mut restored = App::new();
     restore_ui_state(&mut restored, &json);
-    assert!(restored.issues_collapsed);
+    assert!(restored.launcher.issues_collapsed);
 
     let mut legacy = App::new();
     restore_ui_state(
         &mut legacy,
         r#"{"project":null,"worktree":null,"session_agent":null,"show_archived":false,"collapsed":false}"#,
     );
-    assert!(!legacy.issues_collapsed, "old blobs keep the group open");
+    assert!(
+        !legacy.launcher.issues_collapsed,
+        "old blobs keep the group open"
+    );
 }
 
 /// The fold is remembered like the ARCHIVED toggle: it rides the
@@ -9413,20 +10012,23 @@ fn ui_state_roundtrip_includes_the_issues_fold() {
 #[test]
 fn ui_state_roundtrip_includes_the_open_prs_fold() {
     let mut app = App::new();
-    app.open_prs_collapsed = true;
+    app.launcher.open_prs_collapsed = true;
     let json = ui_state_json(&app);
     assert!(json.contains(r#""open_prs_collapsed":true"#), "{json}");
 
     let mut restored = App::new();
     restore_ui_state(&mut restored, &json);
-    assert!(restored.open_prs_collapsed);
+    assert!(restored.launcher.open_prs_collapsed);
 
     let mut legacy = App::new();
     restore_ui_state(
         &mut legacy,
         r#"{"project":null,"worktree":null,"session_agent":null,"show_archived":false,"collapsed":false}"#,
     );
-    assert!(!legacy.open_prs_collapsed, "old blobs keep the group open");
+    assert!(
+        !legacy.launcher.open_prs_collapsed,
+        "old blobs keep the group open"
+    );
 }
 
 fn project(id: &str, name: &str, sort_order: i64) -> nebula_core::Entity {
@@ -9461,7 +10063,7 @@ fn selection_follows_the_selected_agent_when_the_daemon_rehomes_it() {
             }),
         },
     );
-    app.focus = Focus::Sessions;
+    app.nav.focus = Focus::Sessions;
     let moved = |worktree: &str| Agent {
         id: AgentId("a1".into()),
         worktree_id: WorktreeId(worktree.into()),
@@ -9480,6 +10082,7 @@ fn selection_follows_the_selected_agent_when_the_daemon_rehomes_it() {
         status_changed_at: 0,
         alive: true,
         issue_url: None,
+        role: nebula_core::AgentRole::Worker,
         recent_prompts: Vec::new(),
     };
 
@@ -9497,18 +10100,21 @@ fn selection_follows_the_selected_agent_when_the_daemon_rehomes_it() {
         "worktree selection followed the re-homed agent"
     );
     assert_eq!(app.selected_session().map(|a| a.id.0), Some("a1".into()));
-    assert!(app.select_when_seen.is_none(), "follow intent consumed");
+    assert!(
+        app.requests.select_when_seen.is_none(),
+        "follow intent consumed"
+    );
 
     // An agent that is NOT selected moving elsewhere leaves the cursor
     // where the user put it.
-    app.sel_worktree = 0;
+    app.nav.sel_worktree = 0;
     hse(
         &mut app,
         ServerEvent::EntityUpserted {
             entity: Entity::Agent(moved("w1")),
         },
     );
-    app.sel_session = 0;
+    app.nav.sel_session = 0;
     let before = app.selected_worktree().map(|w| w.id.clone());
     hse(
         &mut app,
@@ -9529,7 +10135,7 @@ fn selection_follows_the_selected_agent_when_the_daemon_rehomes_it() {
         },
     );
     assert_eq!(app.selected_worktree().map(|w| w.id.clone()), before);
-    assert!(app.select_when_seen.is_none());
+    assert!(app.requests.select_when_seen.is_none());
 }
 
 /// `r` in the Projects panel retitles the row: the prompt opens on the
@@ -9541,10 +10147,10 @@ fn r_renames_the_selected_project_row() {
     let mut app = App::new();
     seed_tree(&mut app); // p1 "demo" at /tmp/demo
     let mut out = Vec::new();
-    app.focus = Focus::Projects;
+    app.nav.focus = Focus::Projects;
 
     press(&mut app, KeyCode::Char('r'), KeyModifiers::NONE, &mut out);
-    match &app.overlay {
+    match &app.modals.overlay {
         Some(Overlay::Prompt(p)) => {
             assert_eq!(
                 p.kind,
@@ -9589,7 +10195,7 @@ fn renaming_a_project_to_nothing_undoes_the_rename() {
     app.tree.projects[0].name = "Acme API".into();
     app.tree.projects[0].repo_path = "/tmp/acme-repo".into();
     let mut out = Vec::new();
-    app.focus = Focus::Projects;
+    app.nav.focus = Focus::Projects;
 
     press(&mut app, KeyCode::Char('r'), KeyModifiers::NONE, &mut out);
     press(
@@ -9607,12 +10213,12 @@ fn renaming_a_project_to_nothing_undoes_the_rename() {
                 if id.as_str() == "p1" && name.is_empty()
         ),
         "an empty name is the undo, not a cancel: {out:?} flash={:?}",
-        app.flash
+        app.chrome.flash
     );
     assert!(
-        app.overlay.is_none(),
+        app.modals.overlay.is_none(),
         "the prompt closes: {:?}",
-        app.overlay
+        app.modals.overlay
     );
 }
 
@@ -9629,7 +10235,7 @@ fn shifted_keys_no_longer_reorder_projects() {
         },
     );
     let mut out = Vec::new();
-    app.focus = Focus::Projects;
+    app.nav.focus = Focus::Projects;
     for key in [
         KeyEvent::new(KeyCode::Down, KeyModifiers::SHIFT),
         KeyEvent::new(KeyCode::Char('J'), KeyModifiers::SHIFT),
@@ -9671,6 +10277,7 @@ fn agent_stamped(id: &str, wt: &str, at: i64) -> nebula_core::Entity {
         status_changed_at: at,
         alive: true,
         issue_url: None,
+        role: nebula_core::AgentRole::Worker,
         recent_prompts: Vec::new(),
     })
 }
@@ -9716,10 +10323,10 @@ fn projects_sort_by_last_interaction_and_selection_follows() {
 
     // Rest on "two", then its session finishes a turn: the project
     // heads the column and the cursor stays on it.
-    app.focus = Focus::Projects;
-    app.sel_project = 1;
-    app.sel_worktree = 0;
-    app.sel_session = 0;
+    app.nav.focus = Focus::Projects;
+    app.nav.sel_project = 1;
+    app.nav.sel_worktree = 0;
+    app.nav.sel_session = 0;
     let now = crate::app::now_ms();
     hse(
         &mut app,
@@ -9732,7 +10339,7 @@ fn projects_sort_by_last_interaction_and_selection_follows() {
     );
     assert_eq!(names(&app), ["two", "demo"]);
     assert_eq!(
-        app.sel_project, 0,
+        app.nav.sel_project, 0,
         "selection follows the project it was on"
     );
     assert_eq!(app.selected_worktree().map(|w| w.id.as_str()), Some("w2"));
@@ -9749,7 +10356,7 @@ fn projects_sort_by_last_interaction_and_selection_follows() {
         },
     );
     assert_eq!(names(&app), ["demo", "two"]);
-    assert_eq!(app.sel_project, 1, "still on \"two\"");
+    assert_eq!(app.nav.sel_project, 1, "still on \"two\"");
 }
 
 /// Worktrees sort most-recently-interacted first below the root
@@ -9800,8 +10407,8 @@ fn worktrees_sort_by_last_interaction() {
 
     // Rest on "older", then its session finishes: it overtakes "feat"
     // but never the root, and the cursor follows it.
-    app.focus = Focus::Worktrees;
-    app.sel_worktree = 2;
+    app.nav.focus = Focus::Worktrees;
+    app.nav.sel_worktree = 2;
     hse(
         &mut app,
         ServerEvent::StatusChanged {
@@ -9812,7 +10419,10 @@ fn worktrees_sort_by_last_interaction() {
         },
     );
     assert_eq!(branches(&app), ["main", "older", "feat"]);
-    assert_eq!(app.sel_worktree, 1, "selection follows the \"older\" row");
+    assert_eq!(
+        app.nav.sel_worktree, 1,
+        "selection follows the \"older\" row"
+    );
 }
 
 #[test]
@@ -9867,9 +10477,9 @@ fn created_worktree_gets_selected() {
             created: Some(EntityId::Worktree(w2.id.clone())),
         },
     );
-    assert_eq!(app.focus, Focus::Sessions);
+    assert_eq!(app.nav.focus, Focus::Sessions);
     assert_eq!(app.selected_worktree().map(|w| w.id.clone()), Some(w2.id));
-    assert_eq!(app.sel_session, 0);
+    assert_eq!(app.nav.sel_session, 0);
 }
 
 /// A branch is often described as a sentence ("fix login redirect");
@@ -9880,7 +10490,7 @@ fn typed_worktree_name_hyphenates_spaces() {
     let mut app = App::new();
     seed_tree(&mut app); // p1/w1(main) + agent-1
     let mut out = Vec::new();
-    app.focus = Focus::Worktrees;
+    app.nav.focus = Focus::Worktrees;
 
     let project = app.selected_project().expect("a project").id.clone();
     open_new_worktree_prompt(&mut app, project);
@@ -9909,11 +10519,11 @@ fn empty_worktree_prompt_uses_the_offered_random_name() {
     let mut app = App::new();
     seed_tree(&mut app); // p1/w1(main) + agent-1
     let mut out = Vec::new();
-    app.focus = Focus::Worktrees;
+    app.nav.focus = Focus::Worktrees;
 
     let project = app.selected_project().expect("a project").id.clone();
     open_new_worktree_prompt(&mut app, project);
-    let Some(Overlay::Prompt(prompt)) = &app.overlay else {
+    let Some(Overlay::Prompt(prompt)) = &app.modals.overlay else {
         panic!("the new-worktree prompt is up");
     };
     let PromptKind::NewWorktree { suggestion, .. } = &prompt.kind else {
@@ -9945,7 +10555,7 @@ fn whitespace_only_worktree_name_falls_back_to_the_random_one() {
     let mut app = App::new();
     seed_tree(&mut app); // p1/w1(main) + agent-1
     let mut out = Vec::new();
-    app.focus = Focus::Worktrees;
+    app.nav.focus = Focus::Worktrees;
 
     let project = app.selected_project().expect("a project").id.clone();
     open_new_worktree_prompt(&mut app, project);
@@ -10012,16 +10622,16 @@ fn a_worktree_with_nothing_remembered_shows_its_most_recent_session() {
     out.clear();
 
     // First visit: nothing is remembered for w2.
-    assert!(!app.last_session_for_worktree.contains_key(&w2));
+    assert!(!app.nav.last_session_for_worktree.contains_key(&w2));
     select_worktree_row(&mut app, 1, &mut out);
     assert_eq!(
         app.selected_worktree().map(|w| w.branch.clone()),
         Some("other".into())
     );
     fire_pending_attach(&mut app, &mut out);
-    assert_eq!(app.sel_session, 0, "cursor on the top row");
+    assert_eq!(app.nav.sel_session, 0, "cursor on the top row");
     assert_eq!(
-        app.term.as_ref().map(|t| t.sref.clone()),
+        app.pane.term.as_ref().map(|t| t.sref.clone()),
         Some(a3.clone()),
         "the pane shows the most recently interacted session"
     );
@@ -10036,18 +10646,19 @@ fn a_worktree_with_nothing_remembered_shows_its_most_recent_session() {
     select_worktree_row(&mut app, 0, &mut out);
     fire_pending_attach(&mut app, &mut out);
     assert_eq!(
-        app.term.as_ref().map(|t| t.sref.clone()),
+        app.pane.term.as_ref().map(|t| t.sref.clone()),
         Some(a1.clone()),
         "back on w1, its remembered session"
     );
-    app.last_session_for_worktree
+    app.nav
+        .last_session_for_worktree
         .insert(w2.clone(), SessionRef::Agent(AgentId("gone".into())));
     out.clear();
     select_worktree_row(&mut app, 1, &mut out);
     fire_pending_attach(&mut app, &mut out);
-    assert_eq!(app.sel_session, 0);
+    assert_eq!(app.nav.sel_session, 0);
     assert_eq!(
-        app.term.as_ref().map(|t| t.sref.clone()),
+        app.pane.term.as_ref().map(|t| t.sref.clone()),
         Some(a3.clone()),
         "a vanished memory lands on the top row"
     );
@@ -10064,18 +10675,18 @@ fn switching_contexts_restores_the_remembered_session() {
     let mut app = App::new();
     seed_tree(&mut app); // p1/w1(main) + agent-1
     let sref = SessionRef::Agent(AgentId("a1".into()));
-    app.term = Some(AttachedTerm::new(sref.clone(), 40, 10));
+    app.pane.term = Some(AttachedTerm::new(sref.clone(), 40, 10));
     let mut out = Vec::new();
 
     // Moving within the session's own context keeps the pane: the
     // worktree list clamps at its single row.
-    app.focus = Focus::Worktrees;
+    app.nav.focus = Focus::Worktrees;
     handle_key(
         &mut app,
         KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE),
         &mut out,
     );
-    assert!(app.term.is_some(), "clamped move keeps the pane");
+    assert!(app.pane.term.is_some(), "clamped move keeps the pane");
 
     // Walking onto a sibling worktree with no history blanks the pane.
     hse(
@@ -10100,7 +10711,7 @@ fn switching_contexts_restores_the_remembered_session() {
         matches!(out.last(), Some(ClientRequest::Detach { session }) if *session == sref),
         "leaving the worktree detaches: {out:?}"
     );
-    assert!(app.term.is_none(), "no history on w2 — pane blanks");
+    assert!(app.pane.term.is_none(), "no history on w2 — pane blanks");
 
     // Walking back restores the remembered session, re-attached.
     assert!(select_worktree_by_id(
@@ -10116,10 +10727,10 @@ fn switching_contexts_restores_the_remembered_session() {
         "returning to w1 re-attaches its session: {out:?}"
     );
     assert_eq!(
-        app.term.as_ref().map(|t| t.sref.clone()),
+        app.pane.term.as_ref().map(|t| t.sref.clone()),
         Some(sref.clone())
     );
-    assert_eq!(app.sel_session, 0);
+    assert_eq!(app.nav.sel_session, 0);
 
     // Project switches remember the whole context: leaving p1 blanks
     // (p2 has no history), returning restores worktree AND session.
@@ -10134,16 +10745,16 @@ fn switching_contexts_restores_the_remembered_session() {
         app.selected_project().map(|p| p.name.clone()),
         Some("two".into())
     );
-    assert!(app.term.is_none(), "no history on p2 — pane blanks");
+    assert!(app.pane.term.is_none(), "no history on p2 — pane blanks");
 
     select_project_row(&mut app, 0, &mut out);
     assert_eq!(
         app.selected_project().map(|p| p.name.clone()),
         Some("demo".into())
     );
-    assert_eq!(app.sel_worktree, 0, "p1 remembered its worktree row");
+    assert_eq!(app.nav.sel_worktree, 0, "p1 remembered its worktree row");
     assert_eq!(
-        app.term.as_ref().map(|t| t.sref.clone()),
+        app.pane.term.as_ref().map(|t| t.sref.clone()),
         Some(sref),
         "returning to p1 re-shows its session"
     );
@@ -10155,33 +10766,39 @@ fn backspace_opens_delete_confirm_per_panel() {
     seed_tree(&mut app);
     let mut out = Vec::new();
 
-    app.focus = Focus::Projects;
+    app.nav.focus = Focus::Projects;
     press(&mut app, KeyCode::Backspace, KeyModifiers::NONE, &mut out);
     assert!(
         matches!(
-            &app.overlay,
+            &app.modals.overlay,
             Some(Overlay::Confirm(c)) if matches!(c.action, PendingAction::RemoveProject(_))
         ),
         "backspace on a project confirms removal: {:?}",
-        app.overlay
+        app.modals.overlay
     );
     press(&mut app, KeyCode::Esc, KeyModifiers::NONE, &mut out);
 
     // The seeded worktree is the main checkout — deletion is refused.
-    app.focus = Focus::Worktrees;
+    app.nav.focus = Focus::Worktrees;
     press(&mut app, KeyCode::Backspace, KeyModifiers::NONE, &mut out);
-    assert!(app.overlay.is_none(), "main checkout never gets a confirm");
-    assert!(app.flash.is_some(), "main checkout delete flashes instead");
+    assert!(
+        app.modals.overlay.is_none(),
+        "main checkout never gets a confirm"
+    );
+    assert!(
+        app.chrome.flash.is_some(),
+        "main checkout delete flashes instead"
+    );
 
-    app.focus = Focus::Sessions;
+    app.nav.focus = Focus::Sessions;
     press(&mut app, KeyCode::Backspace, KeyModifiers::NONE, &mut out);
     assert!(
         matches!(
-            &app.overlay,
+            &app.modals.overlay,
             Some(Overlay::Confirm(c)) if matches!(c.action, PendingAction::DeleteAgent(_))
         ),
         "backspace on a session confirms agent delete: {:?}",
-        app.overlay
+        app.modals.overlay
     );
 }
 
@@ -10192,11 +10809,11 @@ fn exited_session_does_not_trap_keys() {
     let mut out = Vec::new();
 
     let sref = SessionRef::Agent(AgentId("a1".into()));
-    app.term = Some(AttachedTerm::new(sref, 80, 24));
-    app.term.as_mut().unwrap().exited = true;
-    app.focus = Focus::Terminal;
-    app.term_locked = true;
-    app.collapsed = true;
+    app.pane.term = Some(AttachedTerm::new(sref, 80, 24));
+    app.pane.term.as_mut().unwrap().exited = true;
+    app.nav.focus = Focus::Terminal;
+    app.pane.term_locked = true;
+    app.pane.collapsed = true;
 
     // No input reaches a dead PTY.
     handle_key(
@@ -10212,12 +10829,12 @@ fn exited_session_does_not_trap_keys() {
         KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
         &mut out,
     );
-    assert_eq!(app.focus, Focus::Sessions, "Esc leaves an exited pane");
-    assert!(!app.collapsed, "escape expands sidebars");
+    assert_eq!(app.nav.focus, Focus::Sessions, "Esc leaves an exited pane");
+    assert!(!app.pane.collapsed, "escape expands sidebars");
 
     // Keys fall through to the grid instead of being swallowed by a
     // pane with nothing behind it.
-    app.focus = Focus::Terminal;
+    app.nav.focus = Focus::Terminal;
     out.clear();
     handle_key(
         &mut app,
@@ -10251,7 +10868,7 @@ fn seed_linked_worktree(app: &mut App) {
 }
 
 fn branch_switch_target(app: &App) -> Option<WorktreeId> {
-    match &app.overlay {
+    match &app.modals.overlay {
         Some(Overlay::BranchSwitch(view)) => Some(view.worktree.clone()),
         _ => None,
     }
@@ -10271,29 +10888,30 @@ fn c_opens_the_branch_switcher_on_the_root_and_refuses_a_linked_worktree() {
     let mains: Vec<bool> = app.visible_worktrees().iter().map(|w| w.is_main).collect();
     assert_eq!(mains, [true, false], "the root row leads");
 
-    app.focus = Focus::Worktrees;
-    app.sel_worktree = 1;
+    app.nav.focus = Focus::Worktrees;
+    app.nav.sel_worktree = 1;
     press(&mut app, KeyCode::Char('c'), KeyModifiers::NONE, &mut out);
-    assert!(app.overlay.is_none(), "{:?}", app.overlay);
+    assert!(app.modals.overlay.is_none(), "{:?}", app.modals.overlay);
     assert!(
-        app.flash
+        app.chrome
+            .flash
             .as_deref()
             .is_some_and(|f| f.contains("root checkout")),
         "{:?}",
-        app.flash
+        app.chrome.flash
     );
 
-    app.focus = Focus::Projects;
+    app.nav.focus = Focus::Projects;
     press(&mut app, KeyCode::Char('c'), KeyModifiers::NONE, &mut out);
     assert_eq!(
         branch_switch_target(&app),
         Some(root.clone()),
         "the Projects panel means the project's root"
     );
-    app.overlay = None;
+    app.modals.overlay = None;
 
-    app.focus = Focus::Worktrees;
-    app.sel_worktree = 0;
+    app.nav.focus = Focus::Worktrees;
+    app.nav.sel_worktree = 0;
     press(&mut app, KeyCode::Char('c'), KeyModifiers::NONE, &mut out);
     assert_eq!(branch_switch_target(&app), Some(root));
 }
@@ -10306,8 +10924,8 @@ fn the_root_rows_menu_offers_switch_branch_and_a_worktree_row_offers_delete() {
     let mut out = Vec::new();
     seed_tree(&mut app);
     seed_linked_worktree(&mut app);
-    app.focus = Focus::Worktrees;
-    let labels = |app: &App| match &app.overlay {
+    app.nav.focus = Focus::Worktrees;
+    let labels = |app: &App| match &app.modals.overlay {
         Some(Overlay::Menu(menu)) => menu
             .items
             .iter()
@@ -10316,14 +10934,14 @@ fn the_root_rows_menu_offers_switch_branch_and_a_worktree_row_offers_delete() {
         other => panic!("no menu: {other:?}"),
     };
 
-    app.sel_worktree = 1;
+    app.nav.sel_worktree = 1;
     open_row_menu(&mut app);
     let linked = labels(&app);
     assert!(linked.iter().any(|l| l == "Delete worktree"), "{linked:?}");
     assert!(!linked.iter().any(|l| l == "Switch branch…"), "{linked:?}");
-    app.overlay = None;
+    app.modals.overlay = None;
 
-    app.sel_worktree = 0;
+    app.nav.sel_worktree = 0;
     open_row_menu(&mut app);
     let root = labels(&app);
     assert!(!root.iter().any(|l| l == "Delete worktree"), "{root:?}");
@@ -10331,7 +10949,7 @@ fn the_root_rows_menu_offers_switch_branch_and_a_worktree_row_offers_delete() {
         .iter()
         .position(|l| l == "Switch branch…")
         .expect("the root row offers it");
-    if let Some(Overlay::Menu(menu)) = &mut app.overlay {
+    if let Some(Overlay::Menu(menu)) = &mut app.modals.overlay {
         menu.hover = at;
     }
     press(&mut app, KeyCode::Enter, KeyModifiers::NONE, &mut out);
@@ -10350,13 +10968,13 @@ fn the_branch_switcher_moves_a_real_root_through_the_key_path() {
     let mut app = App::new();
     let mut out = Vec::new();
     seed_repo_tree(&mut app, &repo);
-    app.focus = Focus::Worktrees;
+    app.nav.focus = Focus::Worktrees;
     press(&mut app, KeyCode::Char('c'), KeyModifiers::NONE, &mut out);
     for c in "feat".chars() {
         press(&mut app, KeyCode::Char(c), KeyModifiers::NONE, &mut out);
     }
     press(&mut app, KeyCode::Enter, KeyModifiers::NONE, &mut out);
-    assert!(app.overlay.is_none(), "{:?}", app.overlay);
+    assert!(app.modals.overlay.is_none(), "{:?}", app.modals.overlay);
     let head = std::process::Command::new("git")
         .arg("-C")
         .arg(&repo)
@@ -10489,7 +11107,7 @@ fn g_opens_diff_modal_and_esc_closes() {
     seed_repo_tree(&mut app, &repo);
     let mut out = Vec::new();
     press(&mut app, KeyCode::Char('g'), KeyModifiers::NONE, &mut out);
-    match &app.overlay {
+    match &app.modals.overlay {
         Some(Overlay::Diff(v)) => {
             assert_eq!(v.files.len(), 2, "{:?}", v.files);
             assert_eq!(v.branch, "main");
@@ -10501,7 +11119,7 @@ fn g_opens_diff_modal_and_esc_closes() {
         other => panic!("expected diff overlay, got {other:?}"),
     }
     press(&mut app, KeyCode::Esc, KeyModifiers::NONE, &mut out);
-    assert!(app.overlay.is_none(), "Esc closes the modal");
+    assert!(app.modals.overlay.is_none(), "Esc closes the modal");
     assert!(out.is_empty(), "the diff modal never talks to the daemon");
 }
 
@@ -10513,14 +11131,15 @@ fn g_with_clean_repo_flashes_no_changes() {
     seed_repo_tree(&mut app, &repo);
     let mut out = Vec::new();
     press(&mut app, KeyCode::Char('g'), KeyModifiers::NONE, &mut out);
-    assert!(app.overlay.is_none(), "clean tree opens no modal");
+    assert!(app.modals.overlay.is_none(), "clean tree opens no modal");
     assert!(
-        app.flash
+        app.chrome
+            .flash
             .as_deref()
             .unwrap_or("")
             .contains("no changes in main"),
         "{:?}",
-        app.flash
+        app.chrome.flash
     );
 }
 
@@ -10539,8 +11158,11 @@ fn shift_g_opens_the_repos_remote_in_the_browser() {
     seed_repo_tree(&mut app, &repo);
     let mut out = Vec::new();
     press(&mut app, KeyCode::Char('G'), KeyModifiers::SHIFT, &mut out);
-    assert_eq!(app.flash.as_deref(), Some("opened github.com/o/r"));
-    assert!(app.overlay.is_none(), "the browser is the whole feature");
+    assert_eq!(app.chrome.flash.as_deref(), Some("opened github.com/o/r"));
+    assert!(
+        app.modals.overlay.is_none(),
+        "the browser is the whole feature"
+    );
     assert!(out.is_empty(), "nothing to tell the daemon about");
 }
 
@@ -10552,7 +11174,10 @@ fn shift_g_without_a_remote_says_so() {
     seed_repo_tree(&mut app, &repo);
     let mut out = Vec::new();
     press(&mut app, KeyCode::Char('G'), KeyModifiers::SHIFT, &mut out);
-    assert_eq!(app.flash.as_deref(), Some("no git remote on this repo"));
+    assert_eq!(
+        app.chrome.flash.as_deref(),
+        Some("no git remote on this repo")
+    );
 }
 
 /// The badge cache follows the checkout: dirty counts (staged, unstaged
@@ -10565,22 +11190,22 @@ fn refresh_git_changes_tracks_the_checkout() {
     let mut app = App::new();
     seed_repo_tree(&mut app, &repo);
 
-    app.dirty = false;
+    app.chrome.dirty = false;
     refresh_git_changes(&mut app);
     assert_eq!(app.selected_worktree_changes(), Some(0), "clean tree");
-    assert!(app.dirty, "first computation redraws");
+    assert!(app.chrome.dirty, "first computation redraws");
     assert!(!app.git_changes_stale(), "cache matches the selection");
 
     std::fs::write(repo.join("a.txt"), "changed\n").unwrap();
     std::fs::write(repo.join("z.txt"), "fresh\n").unwrap();
-    app.dirty = false;
+    app.chrome.dirty = false;
     refresh_git_changes(&mut app);
     assert_eq!(app.selected_worktree_changes(), Some(2), "dirty tree");
-    assert!(app.dirty, "count change redraws");
+    assert!(app.chrome.dirty, "count change redraws");
 
-    app.dirty = false;
+    app.chrome.dirty = false;
     refresh_git_changes(&mut app);
-    assert!(!app.dirty, "an unchanged count skips the redraw");
+    assert!(!app.chrome.dirty, "an unchanged count skips the redraw");
 
     run_git(&repo, &["add", "."]);
     run_git(&repo, &["commit", "-m", "wip"]);
@@ -10595,10 +11220,10 @@ fn refresh_git_changes_tracks_the_checkout() {
 fn a_count_for_another_checkout_keeps_the_badge_quiet() {
     let mut app = App::new();
     seed_tree(&mut app); // w1 selected
-    app.git_changes_inflight = Some(WorktreeId("w2".into()));
+    app.jobs.git_changes_inflight = Some(WorktreeId("w2".into()));
     land_git_changes(&mut app, WorktreeId("w2".into()), Some(5));
     assert!(
-        app.git_changes_inflight.is_none(),
+        app.jobs.git_changes_inflight.is_none(),
         "the answer frees the slot"
     );
     assert_eq!(
@@ -10729,11 +11354,15 @@ fn g_with_missing_path_flashes() {
     seed_repo_tree(&mut app, &dir.path().join("nope"));
     let mut out = Vec::new();
     press(&mut app, KeyCode::Char('g'), KeyModifiers::NONE, &mut out);
-    assert!(app.overlay.is_none());
+    assert!(app.modals.overlay.is_none());
     assert!(
-        app.flash.as_deref().unwrap_or("").contains("missing"),
+        app.chrome
+            .flash
+            .as_deref()
+            .unwrap_or("")
+            .contains("missing"),
         "{:?}",
-        app.flash
+        app.chrome.flash
     );
 }
 
@@ -10741,9 +11370,9 @@ fn g_with_missing_path_flashes() {
 fn diff_modal_keys_switch_files_and_scroll() {
     let mut app = App::new();
     seed_tree(&mut app);
-    app.overlay = Some(Overlay::Diff(fake_diff_view(100)));
+    app.modals.overlay = Some(Overlay::Diff(fake_diff_view(100)));
     let mut out = Vec::new();
-    let scroll = |app: &App| match &app.overlay {
+    let scroll = |app: &App| match &app.modals.overlay {
         Some(Overlay::Diff(v)) => (v.selected, v.scroll),
         _ => panic!("diff overlay gone"),
     };
@@ -10786,7 +11415,7 @@ fn diff_modal_keys_switch_files_and_scroll() {
     assert_eq!(scroll(&app).0, 0, "Ctrl+u walks it back");
 
     press(&mut app, KeyCode::Esc, KeyModifiers::NONE, &mut out);
-    assert!(app.overlay.is_none(), "Esc closes the modal");
+    assert!(app.modals.overlay.is_none(), "Esc closes the modal");
     assert!(out.is_empty());
 }
 
@@ -10800,9 +11429,9 @@ fn diff_modal_wheel_over_file_list_walks_files() {
     view.area = ratatui::layout::Rect::new(0, 0, 100, 30);
     view.files_width = 30;
     view.list_area = ratatui::layout::Rect::new(1, 2, 28, 26);
-    app.overlay = Some(Overlay::Diff(view));
+    app.modals.overlay = Some(Overlay::Diff(view));
     let mut out = Vec::new();
-    let state = |app: &App| match &app.overlay {
+    let state = |app: &App| match &app.modals.overlay {
         Some(Overlay::Diff(v)) => (v.selected, v.scroll),
         _ => panic!("diff overlay gone"),
     };
@@ -10854,9 +11483,9 @@ fn diff_modal_ctrl_d_u_half_the_file_list() {
     view.list_area = ratatui::layout::Rect::new(1, 2, 28, 10);
     let mut app = App::new();
     seed_tree(&mut app);
-    app.overlay = Some(Overlay::Diff(view));
+    app.modals.overlay = Some(Overlay::Diff(view));
     let mut out = Vec::new();
-    let cursor = |app: &App| match &app.overlay {
+    let cursor = |app: &App| match &app.modals.overlay {
         Some(Overlay::Diff(v)) => v.cursor(),
         _ => panic!("diff overlay gone"),
     };
@@ -10875,7 +11504,7 @@ fn diff_modal_ctrl_d_u_half_the_file_list() {
     assert_eq!(cursor(&app), 29, "clamps on the last file");
 
     ctrl(&mut app, 't', &mut out);
-    let Some(Overlay::Diff(v)) = &mut app.overlay else {
+    let Some(Overlay::Diff(v)) = &mut app.modals.overlay else {
         panic!("diff overlay gone")
     };
     assert!(v.tree.is_some(), "Ctrl+t showed the tree");
@@ -10891,9 +11520,9 @@ fn diff_modal_ctrl_d_u_half_the_file_list() {
 fn diff_modal_type_to_filter() {
     let mut app = App::new();
     seed_tree(&mut app);
-    app.overlay = Some(Overlay::Diff(fake_diff_view(10)));
+    app.modals.overlay = Some(Overlay::Diff(fake_diff_view(10)));
     let mut out = Vec::new();
-    let view = |app: &App| match &app.overlay {
+    let view = |app: &App| match &app.modals.overlay {
         Some(Overlay::Diff(v)) => v.clone(),
         _ => panic!("diff overlay gone"),
     };
@@ -10931,13 +11560,13 @@ fn diff_modal_type_to_filter() {
     assert_eq!(v.matches.len(), 2, "full list restored in git order");
     assert_eq!(v.selected_file().unwrap().path, "alpha.rs");
     press(&mut app, KeyCode::Esc, KeyModifiers::NONE, &mut out);
-    assert!(app.overlay.is_none(), "second Esc closes the modal");
+    assert!(app.modals.overlay.is_none(), "second Esc closes the modal");
     assert!(out.is_empty(), "filtering never talks to the daemon");
 }
 
 /// The current diff view, or panic.
 fn diff_view(app: &App) -> &crate::app::DiffView {
-    match &app.overlay {
+    match &app.modals.overlay {
         Some(Overlay::Diff(v)) => v,
         other => panic!("expected diff overlay, got {other:?}"),
     }
@@ -11080,9 +11709,9 @@ fn a_commit_resets_reviewed_marks() {
 fn diff_modal_ctrl_u_clears_filter_before_moving() {
     let mut app = App::new();
     seed_tree(&mut app);
-    app.overlay = Some(Overlay::Diff(fake_diff_view(100)));
+    app.modals.overlay = Some(Overlay::Diff(fake_diff_view(100)));
     let mut out = Vec::new();
-    let view = |app: &App| match &app.overlay {
+    let view = |app: &App| match &app.modals.overlay {
         Some(Overlay::Diff(v)) => v.clone(),
         _ => panic!("diff overlay gone"),
     };
@@ -11116,7 +11745,7 @@ fn diff_modal_ctrl_u_clears_filter_before_moving() {
     assert_eq!(v.filter, "", "Ctrl+u clears the filter");
     assert_eq!(v.matches.len(), 2, "full list restored");
     assert!(
-        matches!(app.overlay, Some(Overlay::Diff(_))),
+        matches!(app.modals.overlay, Some(Overlay::Diff(_))),
         "the modal stays open"
     );
     assert!(out.is_empty(), "filtering never talks to the daemon");
@@ -11151,7 +11780,7 @@ fn diff_modal_renders_two_panes() {
     let mut view = fake_diff_view(4);
     view.diff = "diff --git a/a.rs b/a.rs\n@@ -1,2 +1,2 @@\n-old line\n+new line".into();
     view.diff_line_count = 4;
-    app.overlay = Some(Overlay::Diff(view));
+    app.modals.overlay = Some(Overlay::Diff(view));
 
     let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
     terminal.draw(|f| ui::draw(f, &mut app)).unwrap();
@@ -11161,7 +11790,7 @@ fn diff_modal_renders_two_panes() {
     assert!(text.contains("type to filter"), "filter row:\n{text}");
     assert!(text.contains("+new line"), "diff body:\n{text}");
     assert!(text.contains("type: filter"), "footer hint:\n{text}");
-    match &app.overlay {
+    match &app.modals.overlay {
         Some(Overlay::Diff(v)) => {
             assert!(v.view_height > 0, "view_height written back during draw")
         }
@@ -11173,8 +11802,8 @@ fn diff_modal_renders_two_panes() {
 fn diff_modal_swallows_mouse_and_wheel_scrolls() {
     let mut app = App::new();
     seed_tree(&mut app);
-    app.focus = Focus::Projects;
-    app.overlay = Some(Overlay::Diff(fake_diff_view(100)));
+    app.nav.focus = Focus::Projects;
+    app.modals.overlay = Some(Overlay::Diff(fake_diff_view(100)));
     let mut out = Vec::new();
 
     let wheel = MouseEvent {
@@ -11184,12 +11813,12 @@ fn diff_modal_swallows_mouse_and_wheel_scrolls() {
         modifiers: KeyModifiers::NONE,
     };
     handle_mouse(&mut app, wheel, &mut out);
-    match &app.overlay {
+    match &app.modals.overlay {
         Some(Overlay::Diff(v)) => assert_eq!(v.scroll, 3, "wheel scrolls the diff"),
         _ => panic!("diff overlay gone"),
     }
 
-    let (focus_before, sel_before) = (app.focus, app.sel_project);
+    let (focus_before, sel_before) = (app.nav.focus, app.nav.sel_project);
     let click = MouseEvent {
         kind: MouseEventKind::Down(MouseButton::Left),
         column: 2,
@@ -11198,11 +11827,11 @@ fn diff_modal_swallows_mouse_and_wheel_scrolls() {
     };
     handle_mouse(&mut app, click, &mut out);
     assert!(
-        matches!(app.overlay, Some(Overlay::Diff(_))),
+        matches!(app.modals.overlay, Some(Overlay::Diff(_))),
         "clicks do not close the modal"
     );
-    assert_eq!(app.focus, focus_before, "clicks do not change focus");
-    assert_eq!(app.sel_project, sel_before);
+    assert_eq!(app.nav.focus, focus_before, "clicks do not change focus");
+    assert_eq!(app.nav.sel_project, sel_before);
     assert!(out.is_empty(), "mouse in the modal sends nothing");
 }
 
@@ -11210,10 +11839,10 @@ fn diff_modal_swallows_mouse_and_wheel_scrolls() {
 fn diff_modal_click_selects_file_row() {
     let mut app = App::new();
     seed_tree(&mut app);
-    app.overlay = Some(Overlay::Diff(fake_diff_view(4)));
+    app.modals.overlay = Some(Overlay::Diff(fake_diff_view(4)));
     let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
     terminal.draw(|f| ui::draw(f, &mut app)).unwrap();
-    let area = match &app.overlay {
+    let area = match &app.modals.overlay {
         Some(Overlay::Diff(v)) => v.list_area,
         _ => panic!("diff overlay gone"),
     };
@@ -11234,7 +11863,7 @@ fn diff_modal_click_selects_file_row() {
         ),
         &mut out,
     );
-    match &app.overlay {
+    match &app.modals.overlay {
         Some(Overlay::Diff(v)) => {
             assert_eq!(v.selected, 1);
             assert_eq!(v.selected_file().unwrap().path, "beta.rs");
@@ -11253,7 +11882,7 @@ fn diff_modal_click_selects_file_row() {
         ),
         &mut out,
     );
-    match &app.overlay {
+    match &app.modals.overlay {
         Some(Overlay::Diff(v)) => assert_eq!(v.selected, 1, "empty-row click ignored"),
         _ => panic!("diff overlay gone"),
     }
@@ -11264,10 +11893,10 @@ fn diff_modal_click_selects_file_row() {
 fn diff_modal_border_drag_resizes_file_list() {
     let mut app = App::new();
     seed_tree(&mut app);
-    app.overlay = Some(Overlay::Diff(fake_diff_view(4)));
+    app.modals.overlay = Some(Overlay::Diff(fake_diff_view(4)));
     let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
     terminal.draw(|f| ui::draw(f, &mut app)).unwrap();
-    let (area, width_before) = match &app.overlay {
+    let (area, width_before) = match &app.modals.overlay {
         Some(Overlay::Diff(v)) => (v.area, v.files_width),
         _ => panic!("diff overlay gone"),
     };
@@ -11282,7 +11911,7 @@ fn diff_modal_border_drag_resizes_file_list() {
         mev(MouseEventKind::Down(MouseButton::Left), bx - 1, area.y + 5),
         &mut out,
     );
-    match &app.overlay {
+    match &app.modals.overlay {
         Some(Overlay::Diff(v)) => {
             assert!(v.files_drag.is_some(), "border click arms the drag");
             assert_eq!(v.selected, 0, "border click selects no row");
@@ -11298,12 +11927,12 @@ fn diff_modal_border_drag_resizes_file_list() {
         mev(MouseEventKind::Drag(MouseButton::Left), bx + 9, area.y + 5),
         &mut out,
     );
-    match &app.overlay {
+    match &app.modals.overlay {
         Some(Overlay::Diff(v)) => assert_eq!(v.files_width, width_before + 10),
         _ => panic!("diff overlay gone"),
     }
     assert_eq!(
-        app.diff_files_width,
+        app.modals.diff_files_width,
         width_before + 10,
         "width remembered for the next open"
     );
@@ -11315,7 +11944,7 @@ fn diff_modal_border_drag_resizes_file_list() {
         mev(MouseEventKind::Drag(MouseButton::Left), area.x + 200, 5),
         &mut out,
     );
-    match &app.overlay {
+    match &app.modals.overlay {
         Some(Overlay::Diff(v)) => {
             assert_eq!(v.files_width, area.width - crate::app::MIN_DIFF_PANE_W)
         }
@@ -11326,7 +11955,7 @@ fn diff_modal_border_drag_resizes_file_list() {
         mev(MouseEventKind::Drag(MouseButton::Left), area.x, 5),
         &mut out,
     );
-    match &app.overlay {
+    match &app.modals.overlay {
         Some(Overlay::Diff(v)) => {
             assert_eq!(v.files_width, crate::app::MIN_DIFF_FILES_W)
         }
@@ -11338,7 +11967,7 @@ fn diff_modal_border_drag_resizes_file_list() {
         mev(MouseEventKind::Up(MouseButton::Left), area.x, 5),
         &mut out,
     );
-    match &app.overlay {
+    match &app.modals.overlay {
         Some(Overlay::Diff(v)) => assert!(v.files_drag.is_none(), "mouse-up ends the drag"),
         _ => panic!("diff overlay gone"),
     }
@@ -11400,6 +12029,7 @@ fn seed_second_project(app: &mut App) {
                 status_changed_at: 0,
                 alive: true,
                 issue_url: None,
+                role: nebula_core::AgentRole::Worker,
                 recent_prompts: Vec::new(),
             }),
         },
@@ -11425,6 +12055,7 @@ fn seed_second_project(app: &mut App) {
                 status_changed_at: 0,
                 alive: false,
                 issue_url: None,
+                role: nebula_core::AgentRole::Worker,
                 recent_prompts: Vec::new(),
             }),
         },
@@ -11432,7 +12063,7 @@ fn seed_second_project(app: &mut App) {
 }
 
 fn palette(app: &App) -> &crate::app::Palette {
-    match &app.overlay {
+    match &app.modals.overlay {
         Some(Overlay::Palette(p)) => p,
         other => panic!("expected palette overlay, got {other:?}"),
     }
@@ -11441,7 +12072,7 @@ fn palette(app: &App) -> &crate::app::Palette {
 /// Pin the open palette's Enter behavior: `/` snapshots it from the
 /// machine's real config.json, which tests must not depend on.
 fn set_enter_attaches(app: &mut App, v: bool) {
-    match &mut app.overlay {
+    match &mut app.modals.overlay {
         Some(Overlay::Palette(p)) => p.enter_attaches = v,
         other => panic!("expected palette overlay, got {other:?}"),
     }
@@ -11455,6 +12086,7 @@ fn slash_opens_palette_listing_projects_then_worktrees_then_sessions() {
     let mut out = Vec::new();
     press(&mut app, KeyCode::Char('/'), KeyModifiers::NONE, &mut out);
     let texts: Vec<&str> = palette(&app)
+        .list
         .items
         .iter()
         .map(|i| i.text.as_str())
@@ -11475,9 +12107,10 @@ fn slash_opens_palette_listing_projects_then_worktrees_then_sessions() {
     // flat — the projects and worktrees wait for a query.
     let p = palette(&app);
     let shown: Vec<&str> = p
+        .list
         .matches
         .iter()
-        .map(|m| p.items[m.item].text.as_str())
+        .map(|m| p.list.items[m.item].text.as_str())
         .collect();
     assert_eq!(shown, ["demo/main/agent-1", "nebula/feat-x/codex-1"]);
     assert!(out.is_empty(), "opening the palette sends nothing");
@@ -11492,10 +12125,11 @@ fn palette_never_lists_archived_sessions() {
         let mut app = App::new();
         seed_tree(&mut app);
         seed_second_project(&mut app);
-        app.show_archived = show_archived;
+        app.launcher.show_archived = show_archived;
         let mut out = Vec::new();
         press(&mut app, KeyCode::Char('/'), KeyModifiers::NONE, &mut out);
         let listed: Vec<&str> = palette(&app)
+            .list
             .items
             .iter()
             .map(|i| i.text.as_str())
@@ -11519,23 +12153,24 @@ fn palette_typing_filters_best_match_first_and_esc_is_two_stage() {
     }
     {
         let p = palette(&app);
-        assert_eq!(p.query, "main");
-        let top = &p.items[p.matches[p.selected].item];
+        assert_eq!(p.list.query, "main");
+        let top = &p.list.items[p.list.matches[p.list.cursor].item];
         // Same boundary match; the attention order breaks the tie, and
         // for two never-run rows that is build order — the worktree
         // before its session.
         assert_eq!(top.text, "demo/main");
         assert!(p
+            .list
             .matches
             .iter()
-            .all(|m| p.items[m.item].text.contains("main")));
+            .all(|m| p.list.items[m.item].text.contains("main")));
     }
     // First Esc clears the query, second closes.
     press(&mut app, KeyCode::Esc, KeyModifiers::NONE, &mut out);
-    assert_eq!(palette(&app).query, "");
-    assert!(!palette(&app).matches.is_empty());
+    assert_eq!(palette(&app).list.query, "");
+    assert!(!palette(&app).list.matches.is_empty());
     press(&mut app, KeyCode::Esc, KeyModifiers::NONE, &mut out);
-    assert!(app.overlay.is_none());
+    assert!(app.modals.overlay.is_none());
     assert!(out.is_empty(), "browsing the palette sends nothing");
 }
 
@@ -11552,12 +12187,15 @@ fn palette_enter_on_session_selects_the_chain_and_attaches() {
     }
     press(&mut app, KeyCode::Enter, KeyModifiers::NONE, &mut out);
 
-    assert!(app.overlay.is_none());
+    assert!(app.modals.overlay.is_none());
     assert_eq!(app.selected_project().unwrap().name, "nebula");
     assert_eq!(app.selected_worktree().unwrap().branch, "feat-x");
     assert_eq!(app.selected_session().unwrap().name, "codex-1");
-    assert_eq!(app.focus, Focus::Terminal);
-    assert!(app.term_locked, "a session pick locks input immediately");
+    assert_eq!(app.nav.focus, Focus::Terminal);
+    assert!(
+        app.pane.term_locked,
+        "a session pick locks input immediately"
+    );
     assert!(
         out.iter()
             .any(|r| matches!(r, ClientRequest::Attach { session, .. }
@@ -11579,14 +12217,17 @@ fn palette_enter_only_focuses_the_row_when_auto_attach_is_off() {
     }
     press(&mut app, KeyCode::Enter, KeyModifiers::NONE, &mut out);
 
-    assert!(app.overlay.is_none());
+    assert!(app.modals.overlay.is_none());
     assert_eq!(app.selected_session().unwrap().name, "codex-1");
     assert_eq!(
-        app.focus,
+        app.nav.focus,
         Focus::Sessions,
         "lands on the list, not the terminal"
     );
-    assert!(!app.term_locked, "no input lock — Enter on the row commits");
+    assert!(
+        !app.pane.term_locked,
+        "no input lock — Enter on the row commits"
+    );
     assert!(
         out.iter()
             .any(|r| matches!(r, ClientRequest::Attach { session, .. }
@@ -11621,10 +12262,13 @@ fn palette_enter_attaches_a_red_session_with_auto_attach_off() {
     }
     press(&mut app, KeyCode::Enter, KeyModifiers::NONE, &mut out);
 
-    assert!(app.overlay.is_none());
+    assert!(app.modals.overlay.is_none());
     assert_eq!(app.selected_session().unwrap().name, "codex-1");
-    assert_eq!(app.focus, Focus::Terminal, "a red row attaches anyway");
-    assert!(app.term_locked, "and takes the input lock, ready to answer");
+    assert_eq!(app.nav.focus, Focus::Terminal, "a red row attaches anyway");
+    assert!(
+        app.pane.term_locked,
+        "and takes the input lock, ready to answer"
+    );
 }
 
 /// The override is Enter's alone: `Ctrl+F` asked for the quiet landing
@@ -11656,10 +12300,14 @@ fn palette_ctrl_f_still_only_focuses_a_red_session() {
         &mut out,
     );
 
-    assert!(app.overlay.is_none());
+    assert!(app.modals.overlay.is_none());
     assert_eq!(app.selected_session().unwrap().name, "codex-1");
-    assert_eq!(app.focus, Focus::Sessions, "the chord named the landing");
-    assert!(!app.term_locked);
+    assert_eq!(
+        app.nav.focus,
+        Focus::Sessions,
+        "the chord named the landing"
+    );
+    assert!(!app.pane.term_locked);
 }
 
 #[test]
@@ -11680,10 +12328,10 @@ fn palette_ctrl_o_opens_the_session_regardless_of_the_setting() {
         &mut out,
     );
 
-    assert!(app.overlay.is_none());
+    assert!(app.modals.overlay.is_none());
     assert_eq!(app.selected_session().unwrap().name, "codex-1");
-    assert_eq!(app.focus, Focus::Terminal);
-    assert!(app.term_locked);
+    assert_eq!(app.nav.focus, Focus::Terminal);
+    assert!(app.pane.term_locked);
 }
 
 #[test]
@@ -11704,10 +12352,10 @@ fn palette_ctrl_f_focuses_the_row_regardless_of_the_setting() {
         &mut out,
     );
 
-    assert!(app.overlay.is_none());
+    assert!(app.modals.overlay.is_none());
     assert_eq!(app.selected_session().unwrap().name, "codex-1");
-    assert_eq!(app.focus, Focus::Sessions);
-    assert!(!app.term_locked);
+    assert_eq!(app.nav.focus, Focus::Sessions);
+    assert!(!app.pane.term_locked);
 }
 
 // ---- `.` / `,`: the palette's attention order with no modal ----
@@ -11738,6 +12386,7 @@ fn seed_attention_ring(app: &mut App) {
         status_changed_at: 500,
         alive: true,
         issue_url: None,
+        role: nebula_core::AgentRole::Worker,
         recent_prompts: Vec::new(),
     };
     for a in [
@@ -11776,9 +12425,9 @@ fn next_attention_walks_the_palette_order_and_wraps() {
     seed_tree(&mut app);
     seed_second_project(&mut app);
     seed_attention_ring(&mut app);
-    app.show_archived = true;
-    app.focus = Focus::Sessions;
-    app.sel_session = row_of(&app, "a1");
+    app.launcher.show_archived = true;
+    app.nav.focus = Focus::Sessions;
+    app.nav.sel_session = row_of(&app, "a1");
 
     assert_eq!(
         walk_attention(&mut app, 1, 6),
@@ -11786,7 +12435,7 @@ fn next_attention_walks_the_palette_order_and_wraps() {
     );
     assert_eq!(app.selected_project().unwrap().name, "nebula");
     assert_eq!(app.selected_worktree().unwrap().branch, "feat-x");
-    assert!(app.flash.is_none(), "flash: {:?}", app.flash);
+    assert!(app.chrome.flash.is_none(), "flash: {:?}", app.chrome.flash);
 }
 
 /// `,` is the same ring backwards, wrapping from the top to the bottom.
@@ -11796,8 +12445,8 @@ fn prev_attention_walks_the_same_ring_backwards() {
     seed_tree(&mut app);
     seed_second_project(&mut app);
     seed_attention_ring(&mut app);
-    app.focus = Focus::Sessions;
-    app.sel_session = row_of(&app, "a1");
+    app.nav.focus = Focus::Sessions;
+    app.nav.sel_session = row_of(&app, "a1");
 
     assert_eq!(
         walk_attention(&mut app, -1, 6),
@@ -11852,18 +12501,18 @@ fn attention_keys_jump_and_land_like_the_palettes_enter() {
     seed_tree(&mut app);
     seed_second_project(&mut app);
     seed_attention_ring(&mut app);
-    app.focus = Focus::Projects;
-    app.sel_session = row_of(&app, "a1");
+    app.nav.focus = Focus::Projects;
+    app.nav.sel_session = row_of(&app, "a1");
     let mut out = Vec::new();
 
     with_default_config(|| {
         press(&mut app, KeyCode::Char('.'), KeyModifiers::NONE, &mut out);
     });
-    assert!(app.overlay.is_none(), "no modal opened");
+    assert!(app.modals.overlay.is_none(), "no modal opened");
     assert_eq!(app.selected_session().unwrap().name, "codex-1");
-    assert_eq!(app.focus, Focus::Terminal);
+    assert_eq!(app.nav.focus, Focus::Terminal);
     assert!(
-        app.term_locked,
+        app.pane.term_locked,
         "the default landing attaches, like / Enter"
     );
     assert!(
@@ -11891,16 +12540,16 @@ fn attention_keys_only_focus_the_row_when_auto_attach_is_off() {
     seed_tree(&mut app);
     seed_second_project(&mut app);
     seed_attention_ring(&mut app);
-    app.focus = Focus::Sessions;
-    app.sel_session = row_of(&app, "a1");
+    app.nav.focus = Focus::Sessions;
+    app.nav.sel_session = row_of(&app, "a1");
     let mut out = Vec::new();
 
     with_config_json(r#"{"palette_enter_attaches": false}"#, || {
         press(&mut app, KeyCode::Char('.'), KeyModifiers::NONE, &mut out);
     });
     assert_eq!(app.selected_session().unwrap().name, "codex-1");
-    assert_eq!(app.focus, Focus::Sessions, "lands on the list");
-    assert!(!app.term_locked, "no input lock");
+    assert_eq!(app.nav.focus, Focus::Sessions, "lands on the list");
+    assert!(!app.pane.term_locked, "no input lock");
     assert!(
         out.iter()
             .any(|r| matches!(r, ClientRequest::Attach { session, .. }
@@ -11918,23 +12567,27 @@ fn bracket_keys_attach_a_red_session_with_auto_attach_off() {
     seed_tree(&mut app);
     seed_second_project(&mut app);
     seed_attention_ring(&mut app);
-    app.focus = Focus::Sessions;
-    app.sel_session = row_of(&app, "a1");
+    app.nav.focus = Focus::Sessions;
+    app.nav.sel_session = row_of(&app, "a1");
     let mut out = Vec::new();
 
     with_config_json(r#"{"palette_enter_attaches": false}"#, || {
         press(&mut app, KeyCode::Char('.'), KeyModifiers::NONE, &mut out);
     });
     assert_eq!(app.selected_session().unwrap().name, "codex-1");
-    assert_eq!(app.focus, Focus::Sessions, "a never-run row only lands");
-    assert!(!app.term_locked);
+    assert_eq!(app.nav.focus, Focus::Sessions, "a never-run row only lands");
+    assert!(!app.pane.term_locked);
 
     with_config_json(r#"{"palette_enter_attaches": false}"#, || {
         press(&mut app, KeyCode::Char('.'), KeyModifiers::NONE, &mut out);
     });
     assert_eq!(app.selected_session().unwrap().name, "ask");
-    assert_eq!(app.focus, Focus::Terminal, "the red row attaches anyway");
-    assert!(app.term_locked);
+    assert_eq!(
+        app.nav.focus,
+        Focus::Terminal,
+        "the red row attaches anyway"
+    );
+    assert!(app.pane.term_locked);
 }
 
 /// The ring spans every project: a RUNNING session in another project
@@ -11947,15 +12600,15 @@ fn next_attention_crosses_into_another_project_and_back() {
     seed_tree(&mut app);
     seed_other_project(&mut app);
     seed_background_run(&mut app);
-    app.focus = Focus::Sessions;
-    app.sel_session = row_of(&app, "a1");
+    app.nav.focus = Focus::Sessions;
+    app.nav.sel_session = row_of(&app, "a1");
     let mut out = Vec::new();
 
     jump_attention(&mut app, 1, false, &mut out);
     assert_eq!(app.selected_project().unwrap().name, "secret");
     assert_eq!(app.selected_worktree().unwrap().branch, "main");
     assert_eq!(app.selected_session().unwrap().name, "bg-run");
-    assert_eq!(app.focus, Focus::Sessions);
+    assert_eq!(app.nav.focus, Focus::Sessions);
     assert!(
         out.iter()
             .any(|r| matches!(r, ClientRequest::Attach { session, .. }
@@ -11979,13 +12632,13 @@ fn next_attention_reads_the_unseen_finish_it_lands_on() {
     seed_second_agent(&mut app, AgentStatus::Running);
     let a2 = AgentId("a2".into());
     let (w1, p1) = (WorktreeId("w1".into()), ProjectId("p1".into()));
-    app.term = Some(AttachedTerm::new(
+    app.pane.term = Some(AttachedTerm::new(
         SessionRef::Agent(AgentId("a1".into())),
         40,
         10,
     ));
-    app.focus = Focus::Sessions;
-    app.sel_session = row_of(&app, "a1");
+    app.nav.focus = Focus::Sessions;
+    app.nav.sel_session = row_of(&app, "a1");
     hse(
         &mut app,
         ServerEvent::StatusChanged {
@@ -12038,13 +12691,13 @@ fn next_attention_with_no_sessions_flashes() {
             }),
         },
     );
-    app.focus = Focus::Sessions;
+    app.nav.focus = Focus::Sessions;
     let mut out = Vec::new();
     with_default_config(|| {
         press(&mut app, KeyCode::Char('.'), KeyModifiers::NONE, &mut out);
     });
-    assert_eq!(app.flash.as_deref(), Some(NO_SESSIONS_TO_JUMP));
-    assert_eq!(app.focus, Focus::Sessions);
+    assert_eq!(app.chrome.flash.as_deref(), Some(NO_SESSIONS_TO_JUMP));
+    assert_eq!(app.nav.focus, Focus::Sessions);
     assert!(out.is_empty(), "nothing to attach: {out:?}");
 }
 
@@ -12060,11 +12713,11 @@ fn palette_enter_on_worktree_previews_its_top_session_without_locking() {
     }
     press(&mut app, KeyCode::Enter, KeyModifiers::NONE, &mut out);
 
-    assert!(app.overlay.is_none());
+    assert!(app.modals.overlay.is_none());
     assert_eq!(app.selected_project().unwrap().name, "nebula");
     assert_eq!(app.selected_worktree().unwrap().branch, "feat-x");
     assert_eq!(
-        app.focus,
+        app.nav.focus,
         Focus::Sessions,
         "a worktree pick lands in its Sessions panel, not the Worktrees column"
     );
@@ -12072,9 +12725,12 @@ fn palette_enter_on_worktree_previews_its_top_session_without_locking() {
     // on its top row and previews it, exactly like a manual switch —
     // a preview, not Enter on the row, so the pane is not locked.
     let a2 = SessionRef::Agent(AgentId("a2".into()));
-    assert_eq!(app.sel_session, 0);
-    assert_eq!(app.term.as_ref().map(|t| t.sref.clone()), Some(a2.clone()));
-    assert!(!app.term_locked);
+    assert_eq!(app.nav.sel_session, 0);
+    assert_eq!(
+        app.pane.term.as_ref().map(|t| t.sref.clone()),
+        Some(a2.clone())
+    );
+    assert!(!app.pane.term_locked);
     assert!(
         out.iter()
             .any(|r| matches!(r, ClientRequest::Attach { session, .. } if *session == a2)),
@@ -12089,7 +12745,7 @@ fn palette_rebuilds_when_the_tree_changes_under_it() {
     seed_tree(&mut app);
     let mut out = Vec::new();
     press(&mut app, KeyCode::Char('/'), KeyModifiers::NONE, &mut out);
-    assert_eq!(palette(&app).items.len(), 3);
+    assert_eq!(palette(&app).list.items.len(), 3);
     // Park the cursor on the session row before the tree churns.
     press(&mut app, KeyCode::Down, KeyModifiers::NONE, &mut out);
     press(&mut app, KeyCode::Down, KeyModifiers::NONE, &mut out);
@@ -12106,7 +12762,7 @@ fn palette_rebuilds_when_the_tree_changes_under_it() {
         },
     );
     assert!(
-        palette(&app).items.iter().any(|i| i.text == "fresh"),
+        palette(&app).list.items.iter().any(|i| i.text == "fresh"),
         "an upsert lands in the open palette"
     );
     assert_eq!(
@@ -12121,7 +12777,7 @@ fn palette_rebuilds_when_the_tree_changes_under_it() {
         },
     );
     assert!(
-        !palette(&app).items.iter().any(|i| i.text == "fresh"),
+        !palette(&app).list.items.iter().any(|i| i.text == "fresh"),
         "a removal drops out of the open palette"
     );
 }
@@ -12160,7 +12816,7 @@ fn palette_renders_with_kind_glyphs_and_column_headers() {
     let text = buffer_text(&terminal);
     assert!(text.contains("▸ demo/main"), "worktree glyph row:\n{text}");
     // Rects for mouse hit-testing were written back during the draw.
-    assert!(palette(&app).list_area.width > 0);
+    assert!(palette(&app).list.list_area.width > 0);
 }
 
 /// A palette row wears the status its panel row wears: the session's
@@ -12195,6 +12851,7 @@ fn palette_rows_take_their_status_color_and_sweep() {
                 status_changed_at: 0,
                 alive: true,
                 issue_url: None,
+                role: nebula_core::AgentRole::Worker,
                 recent_prompts: Vec::new(),
             }),
         },
@@ -12269,9 +12926,9 @@ fn s_opens_settings_and_esc_closes() {
     let mut app = App::new();
     let mut out = Vec::new();
     press(&mut app, KeyCode::Char('s'), KeyModifiers::NONE, &mut out);
-    assert!(matches!(app.overlay, Some(Overlay::Settings(_))));
+    assert!(matches!(app.modals.overlay, Some(Overlay::Settings(_))));
     press(&mut app, KeyCode::Esc, KeyModifiers::NONE, &mut out);
-    assert!(app.overlay.is_none());
+    assert!(app.modals.overlay.is_none());
 }
 
 #[test]
@@ -12280,7 +12937,7 @@ fn s_toggles_settings_closed_like_help() {
     let mut out = Vec::new();
     press(&mut app, KeyCode::Char('s'), KeyModifiers::NONE, &mut out);
     press(&mut app, KeyCode::Char('s'), KeyModifiers::NONE, &mut out);
-    assert!(app.overlay.is_none());
+    assert!(app.modals.overlay.is_none());
 }
 
 #[test]
@@ -12289,17 +12946,17 @@ fn settings_j_k_move_selection() {
     let mut out = Vec::new();
     open_settings_on(&mut app, 0, &mut out);
     press(&mut app, KeyCode::Char('j'), KeyModifiers::NONE, &mut out);
-    let Some(Overlay::Settings(view)) = &app.overlay else {
+    let Some(Overlay::Settings(view)) = &app.modals.overlay else {
         panic!("settings closed");
     };
     assert_eq!(view.selected, 1);
     press(&mut app, KeyCode::Char('k'), KeyModifiers::NONE, &mut out);
-    let Some(Overlay::Settings(view)) = &app.overlay else {
+    let Some(Overlay::Settings(view)) = &app.modals.overlay else {
         panic!("settings closed");
     };
     assert_eq!(view.selected, 0);
     press(&mut app, KeyCode::Char('k'), KeyModifiers::NONE, &mut out);
-    let Some(Overlay::Settings(view)) = &app.overlay else {
+    let Some(Overlay::Settings(view)) = &app.modals.overlay else {
         panic!("settings closed");
     };
     assert_eq!(view.selected, 0, "selection does not wrap");
@@ -12314,7 +12971,7 @@ fn settings_reopens_on_last_focused_row() {
     press(&mut app, KeyCode::Char('j'), KeyModifiers::NONE, &mut out);
     press(&mut app, KeyCode::Esc, KeyModifiers::NONE, &mut out);
     press(&mut app, KeyCode::Char('s'), KeyModifiers::NONE, &mut out);
-    let Some(Overlay::Settings(view)) = &app.overlay else {
+    let Some(Overlay::Settings(view)) = &app.modals.overlay else {
         panic!("settings closed");
     };
     assert_eq!(view.selected, 2, "reopen lands on the last focused row");
@@ -12353,7 +13010,7 @@ fn settings_memory_expires_a_minute_after_closing() {
     let mut app = App::new();
     let mut out = Vec::new();
     assert!(
-        app.settings_closed_at.is_none() && !app.settings_memory_expired(),
+        app.modals.settings_closed_at.is_none() && !app.settings_memory_expired(),
         "nothing to forget before the first close"
     );
     // Park the cursor somewhere distinctive: tab 1, second row, in the list.
@@ -12362,7 +13019,10 @@ fn settings_memory_expires_a_minute_after_closing() {
     let (tab, row) = (settings_view(&app).tab, settings_view(&app).selected);
     assert_eq!((tab, row), (1, 1));
     press(&mut app, KeyCode::Esc, KeyModifiers::NONE, &mut out);
-    assert!(app.settings_closed_at.is_some(), "Esc stamps the close");
+    assert!(
+        app.modals.settings_closed_at.is_some(),
+        "Esc stamps the close"
+    );
 
     // Straight back in: everything restored.
     press(&mut app, KeyCode::Char('s'), KeyModifiers::NONE, &mut out);
@@ -12372,7 +13032,7 @@ fn settings_memory_expires_a_minute_after_closing() {
     press(&mut app, KeyCode::Esc, KeyModifiers::NONE, &mut out);
 
     // Pretend the close was a minute ago.
-    app.settings_closed_at = std::time::Instant::now().checked_sub(SETTINGS_MEMORY_TTL);
+    app.modals.settings_closed_at = std::time::Instant::now().checked_sub(SETTINGS_MEMORY_TTL);
     assert!(app.settings_memory_expired());
     press(&mut app, KeyCode::Char('s'), KeyModifiers::NONE, &mut out);
     assert_eq!(settings_view(&app).tab, 0, "stale memory: first tab");
@@ -12384,7 +13044,7 @@ fn settings_memory_expires_a_minute_after_closing() {
         "the other tabs' rows are forgotten too"
     );
     assert!(
-        app.settings_closed_at.is_none(),
+        app.modals.settings_closed_at.is_none(),
         "the stale stamp is cleared, so the visit is a fresh one"
     );
 }
@@ -12402,9 +13062,9 @@ fn settings_reset_round_trip_ignores_the_memory_clock() {
         let mut out = Vec::new();
         open_settings_on(&mut app, 1, &mut out);
         // A stamp that would expire the memory if it were consulted.
-        app.settings_closed_at = std::time::Instant::now().checked_sub(SETTINGS_MEMORY_TTL);
+        app.modals.settings_closed_at = std::time::Instant::now().checked_sub(SETTINGS_MEMORY_TTL);
         press(&mut app, KeyCode::Char('R'), KeyModifiers::SHIFT, &mut out);
-        assert!(matches!(app.overlay, Some(Overlay::Confirm(_))));
+        assert!(matches!(app.modals.overlay, Some(Overlay::Confirm(_))));
         press(&mut app, KeyCode::Esc, KeyModifiers::NONE, &mut out);
         assert_eq!(settings_view(&app).tab, 1, "back on the same tab");
         assert!(!settings_view(&app).on_tabs, "…still in the list");
@@ -12418,7 +13078,7 @@ fn clicking_outside_settings_stamps_the_close() {
     let mut app = App::new();
     let mut out = Vec::new();
     press(&mut app, KeyCode::Char('s'), KeyModifiers::NONE, &mut out);
-    if let Some(Overlay::Settings(view)) = &mut app.overlay {
+    if let Some(Overlay::Settings(view)) = &mut app.modals.overlay {
         view.area = ratatui::layout::Rect::new(10, 5, 40, 20);
     }
     handle_mouse(
@@ -12431,8 +13091,11 @@ fn clicking_outside_settings_stamps_the_close() {
         },
         &mut out,
     );
-    assert!(app.overlay.is_none(), "click outside closes");
-    assert!(app.settings_closed_at.is_some(), "…and stamps the close");
+    assert!(app.modals.overlay.is_none(), "click outside closes");
+    assert!(
+        app.modals.settings_closed_at.is_some(),
+        "…and stamps the close"
+    );
 }
 
 #[test]
@@ -12453,7 +13116,7 @@ fn settings_enter_persists_toggle_to_config_file() {
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(saved["palette_enter_attaches"], false);
         assert!(
-            matches!(app.overlay, Some(Overlay::Settings(_))),
+            matches!(app.modals.overlay, Some(Overlay::Settings(_))),
             "toggle keeps the overlay open"
         );
     });
@@ -12518,8 +13181,8 @@ fn settings_worktree_base_branch_is_typed_through_a_prompt() {
 
         // Enter: a prompt in the overlay's place, empty like the value.
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE, &mut out);
-        let Some(Overlay::Prompt(prompt)) = &app.overlay else {
-            panic!("expected the branch prompt, got {:?}", app.overlay);
+        let Some(Overlay::Prompt(prompt)) = &app.modals.overlay else {
+            panic!("expected the branch prompt, got {:?}", app.modals.overlay);
         };
         assert_eq!(prompt.title, "Worktree base branch");
         assert_eq!(prompt.input.as_str(), "");
@@ -12544,8 +13207,8 @@ fn settings_worktree_base_branch_is_typed_through_a_prompt() {
 
         // Reopened, the prompt carries the stored value; Esc keeps it.
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE, &mut out);
-        let Some(Overlay::Prompt(prompt)) = &app.overlay else {
-            panic!("expected the branch prompt, got {:?}", app.overlay);
+        let Some(Overlay::Prompt(prompt)) = &app.modals.overlay else {
+            panic!("expected the branch prompt, got {:?}", app.modals.overlay);
         };
         assert_eq!(prompt.input.as_str(), "master");
         type_text(&mut app, "-typo", &mut out);
@@ -12608,7 +13271,7 @@ fn settings_overlay_renders_labels() {
         text.contains("Enter in / search opens the session"),
         "selected setting's hint shown in the footer:\n{text}"
     );
-    let Some(Overlay::Settings(view)) = &app.overlay else {
+    let Some(Overlay::Settings(view)) = &app.modals.overlay else {
         panic!("settings closed");
     };
     assert!(view.area.width > 0, "draw writes hit-test area");
@@ -12694,10 +13357,188 @@ fn open_settings_on(app: &mut App, tab: usize, out: &mut Vec<ClientRequest>) {
 }
 
 fn settings_view(app: &App) -> &crate::app::SettingsView {
-    match &app.overlay {
+    match &app.modals.overlay {
         Some(Overlay::Settings(view)) => view,
         _ => panic!("settings closed"),
     }
+}
+
+/// Type `text` into whatever has the keys, one character at a time.
+fn type_keys(app: &mut App, text: &str, out: &mut Vec<ClientRequest>) {
+    for c in text.chars() {
+        press(app, KeyCode::Char(c), KeyModifiers::NONE, out);
+    }
+}
+
+/// `/` searches every tab at once: the cursor lands on the first match,
+/// wherever it lives, and the row keys act on it there. Esc drops the
+/// search and leaves the cursor on that row, in its own tab; a second Esc
+/// closes the overlay as usual.
+#[test]
+fn slash_searches_every_settings_tab() {
+    use crate::config::{setting_at, SettingKind, SETTINGS_TABS};
+    let mut app = App::new();
+    let mut out = Vec::new();
+    // From the tab strip, the way a fresh open lands.
+    press(&mut app, KeyCode::Char('s'), KeyModifiers::NONE, &mut out);
+    press(&mut app, KeyCode::Char('/'), KeyModifiers::NONE, &mut out);
+    assert!(settings_view(&app).typing, "/ opens the field");
+    assert!(!settings_view(&app).on_tabs);
+    // Letters type now, so `s` and `q` don't close the overlay.
+    type_keys(&mut app, "color theme", &mut out);
+    let view = settings_view(&app);
+    assert!(view.searching());
+    assert_eq!(SETTINGS_TABS[view.tab].title, "Appearance");
+    assert_eq!(
+        setting_at(view.tab, view.selected).map(|s| s.kind),
+        Some(SettingKind::Theme)
+    );
+    let mut terminal = Terminal::new(TestBackend::new(100, 40)).unwrap();
+    terminal.draw(|f| ui::draw(f, &mut app)).unwrap();
+    let text = buffer_text(&terminal);
+    assert!(
+        text.contains("/ color theme"),
+        "query in place of the rule:\n{text}"
+    );
+    assert!(text.contains("1 match"), "match count:\n{text}");
+    assert!(
+        text.contains(" Appearance\n") || text.contains(" Appearance "),
+        "{text}"
+    );
+    assert!(
+        !text.contains("Search Enter attaches"),
+        "rows that don't match are gone:\n{text}"
+    );
+
+    // Enter hands the keys back to the rows, matches still listed.
+    press(&mut app, KeyCode::Enter, KeyModifiers::NONE, &mut out);
+    assert!(!settings_view(&app).typing);
+    assert!(settings_view(&app).searching());
+    // Esc drops the search, cursor still on the theme row.
+    press(&mut app, KeyCode::Esc, KeyModifiers::NONE, &mut out);
+    let view = settings_view(&app);
+    assert!(view.search.is_none());
+    assert_eq!(
+        setting_at(view.tab, view.selected).map(|s| s.kind),
+        Some(SettingKind::Theme)
+    );
+    press(&mut app, KeyCode::Esc, KeyModifiers::NONE, &mut out);
+    assert!(app.modals.overlay.is_none(), "then Esc closes as before");
+}
+
+/// The issue's case: find a hotkey and rebind it without walking the
+/// forty-row Hotkeys tab.
+#[test]
+fn settings_search_reaches_a_hotkey_and_enter_rebinds_it() {
+    let mut app = App::new();
+    let mut out = Vec::new();
+    open_settings_on(&mut app, 0, &mut out);
+    press(&mut app, KeyCode::Char('/'), KeyModifiers::NONE, &mut out);
+    type_keys(&mut app, "duplicate", &mut out);
+    let duplicate = crate::keymap::ACTIONS
+        .iter()
+        .position(|a| a.label == "Duplicate session")
+        .unwrap();
+    let view = settings_view(&app);
+    assert!(view.is_hotkeys());
+    assert_eq!(view.selected, duplicate);
+    press(&mut app, KeyCode::Enter, KeyModifiers::NONE, &mut out);
+    press(&mut app, KeyCode::Enter, KeyModifiers::NONE, &mut out);
+    let view = settings_view(&app);
+    assert!(view.capturing(), "Enter on the match starts the rebind");
+    assert_eq!(view.capture.as_ref().unwrap().action, duplicate);
+}
+
+/// A row found by its chord stays listed after that chord changes: the
+/// matches hold until the query does, so unbinding the very key you
+/// searched for doesn't pull the row out from under the cursor.
+#[test]
+fn settings_search_keeps_a_row_whose_chord_just_changed() {
+    let dir = tempfile::tempdir().unwrap();
+    crate::config::with_config_path(dir.path().join("config.json"), || {
+        let mut app = App::new();
+        let mut out = Vec::new();
+        let fullscreen = crate::keymap::ACTIONS
+            .iter()
+            .position(|a| a.label == "Full-screen session")
+            .unwrap();
+        let chord = app.chrome.keymap.display_at(fullscreen);
+        open_settings_on(&mut app, 0, &mut out);
+        press(&mut app, KeyCode::Char('/'), KeyModifiers::NONE, &mut out);
+        type_keys(&mut app, &chord, &mut out);
+        press(&mut app, KeyCode::Enter, KeyModifiers::NONE, &mut out);
+        assert_eq!(settings_view(&app).selected, fullscreen);
+        press(&mut app, KeyCode::Char('x'), KeyModifiers::NONE, &mut out);
+        assert_ne!(app.chrome.keymap.display_at(fullscreen), chord, "unbound");
+        let view = settings_view(&app);
+        assert!(view.searching());
+        assert!(
+            view.body_rows()
+                .iter()
+                .any(|(t, r)| *t == view.tab && r.index() == Some(fullscreen)),
+            "the row is still listed under the cursor"
+        );
+    });
+}
+
+/// A key that would leave nothing listed is refused, as a picker's
+/// type-ahead refuses it, and ⌫ on an empty field closes the search.
+#[test]
+fn settings_search_refuses_a_key_that_matches_nothing() {
+    let mut app = App::new();
+    let mut out = Vec::new();
+    open_settings_on(&mut app, 0, &mut out);
+    press(&mut app, KeyCode::Char('/'), KeyModifiers::NONE, &mut out);
+    type_keys(&mut app, "themeqqq", &mut out);
+    let view = settings_view(&app);
+    assert_eq!(view.search.as_deref(), Some("theme"));
+    assert!(matches!(
+        view.notice,
+        Some((_, crate::app::NoticeLevel::Warn))
+    ));
+    for _ in 0.."theme".len() {
+        press(&mut app, KeyCode::Backspace, KeyModifiers::NONE, &mut out);
+    }
+    assert!(
+        settings_view(&app).search.is_some(),
+        "an empty field stays open"
+    );
+    press(&mut app, KeyCode::Backspace, KeyModifiers::NONE, &mut out);
+    assert!(settings_view(&app).search.is_none());
+}
+
+/// Over the matches j/k walk across tabs, ↑ off the first goes back into
+/// the field, and asking for a tab drops the search.
+#[test]
+fn settings_search_results_walk_across_tabs() {
+    let mut app = App::new();
+    let mut out = Vec::new();
+    open_settings_on(&mut app, 0, &mut out);
+    press(&mut app, KeyCode::Char('/'), KeyModifiers::NONE, &mut out);
+    // "session" is on almost every tab.
+    type_keys(&mut app, "session", &mut out);
+    press(&mut app, KeyCode::Enter, KeyModifiers::NONE, &mut out);
+    let first = (settings_view(&app).tab, settings_view(&app).selected);
+    let mut tabs = std::collections::BTreeSet::new();
+    for _ in 0..200 {
+        tabs.insert(settings_view(&app).tab);
+        press(&mut app, KeyCode::Char('j'), KeyModifiers::NONE, &mut out);
+    }
+    assert!(tabs.len() > 2, "j crossed tabs: {tabs:?}");
+    while (settings_view(&app).tab, settings_view(&app).selected) != first {
+        press(&mut app, KeyCode::Char('k'), KeyModifiers::NONE, &mut out);
+    }
+    press(&mut app, KeyCode::Char('k'), KeyModifiers::NONE, &mut out);
+    assert!(
+        settings_view(&app).typing,
+        "↑ off the first match is the field"
+    );
+    press(&mut app, KeyCode::Enter, KeyModifiers::NONE, &mut out);
+    press(&mut app, KeyCode::Tab, KeyModifiers::NONE, &mut out);
+    assert!(
+        settings_view(&app).search.is_none(),
+        "Tab is a tab's own rows"
+    );
 }
 
 #[test]
@@ -12829,7 +13670,7 @@ fn rebinding_an_action_takes_effect_and_persists() {
             !settings_view(&app).capturing(),
             "the press was the binding"
         );
-        assert_eq!(app.keymap.label(crate::keymap::Action::Help), "F6");
+        assert_eq!(app.chrome.keymap.label(crate::keymap::Action::Help), "F6");
 
         let saved: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
@@ -12837,14 +13678,14 @@ fn rebinding_an_action_takes_effect_and_persists() {
 
         // And the new key actually opens help from the panels.
         press(&mut app, KeyCode::Esc, KeyModifiers::NONE, &mut out);
-        assert!(app.overlay.is_none());
+        assert!(app.modals.overlay.is_none());
         press(&mut app, KeyCode::F(6), KeyModifiers::NONE, &mut out);
-        assert!(matches!(app.overlay, Some(Overlay::Help(_))));
+        assert!(matches!(app.modals.overlay, Some(Overlay::Help(_))));
         // …and the old one no longer does.
         let mut fresh = App::new();
-        fresh.keymap = crate::config::Config::load().keymap();
+        fresh.chrome.keymap = crate::config::Config::load().keymap();
         press(&mut fresh, KeyCode::Char('?'), KeyModifiers::NONE, &mut out);
-        assert!(fresh.overlay.is_none(), "? is unbound now");
+        assert!(fresh.modals.overlay.is_none(), "? is unbound now");
     });
 }
 
@@ -12869,15 +13710,15 @@ fn a_duplicate_chord_warns_before_it_is_taken() {
         assert!(text.contains("Git diff"), "names the current owner: {text}");
         assert!(!view.capturing(), "the capture is paused on the warning");
         assert_eq!(
-            app.keymap.label(crate::keymap::Action::Help),
+            app.chrome.keymap.label(crate::keymap::Action::Help),
             "?",
             "nothing changed yet"
         );
 
         // Esc leaves it where it was.
         press(&mut app, KeyCode::Esc, KeyModifiers::NONE, &mut out);
-        assert_eq!(app.keymap.label(crate::keymap::Action::GitDiff), "g");
-        assert_eq!(app.keymap.label(crate::keymap::Action::Help), "?");
+        assert_eq!(app.chrome.keymap.label(crate::keymap::Action::GitDiff), "g");
+        assert_eq!(app.chrome.keymap.label(crate::keymap::Action::Help), "?");
     });
 }
 
@@ -12895,18 +13736,18 @@ fn confirming_a_duplicate_moves_the_chord_off_its_old_action() {
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE, &mut out);
         press(&mut app, KeyCode::Char('g'), KeyModifiers::NONE, &mut out);
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE, &mut out);
-        assert_eq!(app.keymap.label(crate::keymap::Action::Help), "g");
+        assert_eq!(app.chrome.keymap.label(crate::keymap::Action::Help), "g");
         assert_eq!(
-            app.keymap.label(crate::keymap::Action::GitDiff),
+            app.chrome.keymap.label(crate::keymap::Action::GitDiff),
             "—",
             "one keystroke can only mean one thing"
         );
         // The panels agree with the map.
         press(&mut app, KeyCode::Esc, KeyModifiers::NONE, &mut out);
         seed_tree(&mut app);
-        app.focus = Focus::Worktrees;
+        app.nav.focus = Focus::Worktrees;
         press(&mut app, KeyCode::Char('g'), KeyModifiers::NONE, &mut out);
-        assert!(matches!(app.overlay, Some(Overlay::Help(_))));
+        assert!(matches!(app.modals.overlay, Some(Overlay::Help(_))));
     });
 }
 
@@ -12926,7 +13767,7 @@ fn binding_a_chord_the_host_terminal_eats_says_so() {
         assert_eq!(level, crate::app::NoticeLevel::Warn);
         assert!(text.contains('⌘'), "{text}");
         assert_eq!(
-            app.keymap.label(crate::keymap::Action::FocusNext),
+            app.chrome.keymap.label(crate::keymap::Action::FocusNext),
             "⌘]",
             "warned, not refused"
         );
@@ -12943,11 +13784,20 @@ fn a_hotkey_row_resets_to_its_default_and_can_be_unbound() {
         // Row 0 is Next panel (Tab).
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE, &mut out);
         press(&mut app, KeyCode::F(8), KeyModifiers::NONE, &mut out);
-        assert_eq!(app.keymap.label(crate::keymap::Action::FocusNext), "F8");
+        assert_eq!(
+            app.chrome.keymap.label(crate::keymap::Action::FocusNext),
+            "F8"
+        );
         press(&mut app, KeyCode::Char('x'), KeyModifiers::NONE, &mut out);
-        assert_eq!(app.keymap.label(crate::keymap::Action::FocusNext), "—");
+        assert_eq!(
+            app.chrome.keymap.label(crate::keymap::Action::FocusNext),
+            "—"
+        );
         press(&mut app, KeyCode::Backspace, KeyModifiers::NONE, &mut out);
-        assert_eq!(app.keymap.label(crate::keymap::Action::FocusNext), "Tab");
+        assert_eq!(
+            app.chrome.keymap.label(crate::keymap::Action::FocusNext),
+            "Tab"
+        );
         assert!(
             crate::config::Config::load().keybindings.is_empty(),
             "back to the default = nothing left to write down"
@@ -12964,7 +13814,10 @@ fn adding_an_alternate_keeps_the_original() {
         open_settings_on(&mut app, crate::config::hotkeys_tab(), &mut out);
         press(&mut app, KeyCode::Char('a'), KeyModifiers::NONE, &mut out);
         press(&mut app, KeyCode::F(7), KeyModifiers::NONE, &mut out);
-        assert_eq!(app.keymap.label(crate::keymap::Action::FocusNext), "Tab F7");
+        assert_eq!(
+            app.chrome.keymap.label(crate::keymap::Action::FocusNext),
+            "Tab F7"
+        );
     });
 }
 
@@ -12977,10 +13830,13 @@ fn esc_backs_out_of_a_capture_without_binding_it() {
     press(&mut app, KeyCode::Esc, KeyModifiers::NONE, &mut out);
     assert!(!settings_view(&app).capturing());
     assert!(
-        matches!(app.overlay, Some(Overlay::Settings(_))),
+        matches!(app.modals.overlay, Some(Overlay::Settings(_))),
         "Esc left the capture, not the overlay"
     );
-    assert_eq!(app.keymap.label(crate::keymap::Action::FocusNext), "Tab");
+    assert_eq!(
+        app.chrome.keymap.label(crate::keymap::Action::FocusNext),
+        "Tab"
+    );
 }
 
 /// A capture swallows the overlay's own keys — otherwise half the
@@ -13000,7 +13856,7 @@ fn a_capture_takes_keys_the_overlay_would_normally_use() {
         // 'q' would close the overlay; here it is just a key.
         press(&mut app, KeyCode::Char('q'), KeyModifiers::NONE, &mut out);
         assert!(
-            matches!(app.overlay, Some(Overlay::Settings(_))),
+            matches!(app.modals.overlay, Some(Overlay::Settings(_))),
             "the overlay stayed open"
         );
         // It belongs to Quit, so this is the duplicate warning path.
@@ -13017,29 +13873,29 @@ fn ctrl_q_still_unlocks_a_terminal_after_the_hatch_is_rebound() {
         seed_tree(&mut app);
         let mut out = Vec::new();
         // Rebind the unlock action to something else entirely.
-        let mut keymap = app.keymap.clone();
+        let mut keymap = app.chrome.keymap.clone();
         let idx = crate::keymap::index_of(crate::keymap::Action::UnlockTerminal).unwrap();
         keymap.bind(idx, crate::keymap::KeyChord::parse("f4").unwrap(), false);
-        app.keymap = keymap;
+        app.chrome.keymap = keymap;
 
-        app.focus = Focus::Sessions;
+        app.nav.focus = Focus::Sessions;
         attach_selected(&mut app, &mut out);
-        app.term_locked = true;
-        assert!(app.term.is_some(), "a live pane to be locked into");
+        app.pane.term_locked = true;
+        assert!(app.pane.term.is_some(), "a live pane to be locked into");
         press(
             &mut app,
             KeyCode::Char('q'),
             KeyModifiers::CONTROL,
             &mut out,
         );
-        assert!(!app.term_locked, "^q is wired in, not merely bound");
-        assert_eq!(app.focus, Focus::Sessions);
+        assert!(!app.pane.term_locked, "^q is wired in, not merely bound");
+        assert_eq!(app.nav.focus, Focus::Sessions);
 
         // And the rebound key works too.
-        app.term_locked = true;
-        app.focus = Focus::Terminal;
+        app.pane.term_locked = true;
+        app.nav.focus = Focus::Terminal;
         press(&mut app, KeyCode::F(4), KeyModifiers::NONE, &mut out);
-        assert!(!app.term_locked);
+        assert!(!app.pane.term_locked);
     });
 }
 
@@ -13053,8 +13909,8 @@ fn shift_r_in_settings_asks_first_and_n_goes_back_to_the_overlay() {
         press(&mut app, KeyCode::Char('s'), KeyModifiers::NONE, &mut out);
         press(&mut app, KeyCode::Tab, KeyModifiers::NONE, &mut out);
         press(&mut app, KeyCode::Char('R'), KeyModifiers::SHIFT, &mut out);
-        let Some(Overlay::Confirm(c)) = &app.overlay else {
-            panic!("expected a confirmation, got {:?}", app.overlay);
+        let Some(Overlay::Confirm(c)) = &app.modals.overlay else {
+            panic!("expected a confirmation, got {:?}", app.modals.overlay);
         };
         assert_eq!(c.title, "Reset settings");
         assert!(matches!(c.action, PendingAction::ResetSettings));
@@ -13062,9 +13918,9 @@ fn shift_r_in_settings_asks_first_and_n_goes_back_to_the_overlay() {
 
         press(&mut app, KeyCode::Char('n'), KeyModifiers::NONE, &mut out);
         assert!(
-            matches!(app.overlay, Some(Overlay::Settings(_))),
+            matches!(app.modals.overlay, Some(Overlay::Settings(_))),
             "n returns to the overlay, not the panels: {:?}",
-            app.overlay
+            app.modals.overlay
         );
         assert_eq!(settings_view(&app).tab, 1, "on the tab it was opened from");
         assert!(out.is_empty(), "nothing goes to the daemon");
@@ -13076,10 +13932,10 @@ fn a_rebound_key_shows_up_in_help_and_the_footer() {
     let dir = tempfile::tempdir().unwrap();
     crate::config::with_config_path(dir.path().join("config.json"), || {
         let mut app = App::new();
-        let mut keymap = app.keymap.clone();
+        let mut keymap = app.chrome.keymap.clone();
         let idx = crate::keymap::index_of(crate::keymap::Action::Hosts).unwrap();
         keymap.bind(idx, crate::keymap::KeyChord::parse("f9").unwrap(), false);
-        app.keymap = keymap;
+        app.chrome.keymap = keymap;
 
         let mut out = Vec::new();
         press(&mut app, KeyCode::Char('?'), KeyModifiers::NONE, &mut out);
@@ -13112,7 +13968,7 @@ fn a_hand_edited_duplicate_is_called_out_on_the_row() {
     std::fs::write(&path, r#"{"keybindings": {"help": "g"}}"#).unwrap();
     crate::config::with_config_path(path, || {
         let mut app = App::new();
-        app.keymap = crate::config::Config::load().keymap();
+        app.chrome.keymap = crate::config::Config::load().keymap();
         let mut out = Vec::new();
         open_settings_on(&mut app, crate::config::hotkeys_tab(), &mut out);
         let row = crate::keymap::index_of(crate::keymap::Action::GitDiff).unwrap();
@@ -13157,7 +14013,7 @@ fn metrics_modal_opens_requests_and_renders() {
     seed_tree(&mut app);
     let mut out = Vec::new();
     press(&mut app, KeyCode::Char('M'), KeyModifiers::SHIFT, &mut out);
-    assert!(matches!(app.overlay, Some(Overlay::Metrics(_))));
+    assert!(matches!(app.modals.overlay, Some(Overlay::Metrics(_))));
 
     // The keypress itself fires the initial reading's request.
     let req_id = match out.last() {
@@ -13183,10 +14039,10 @@ fn metrics_modal_opens_requests_and_renders() {
         },
     );
     assert!(
-        app.pending.is_empty(),
+        app.requests.pending.is_empty(),
         "the Metrics reply must clear its pending slot"
     );
-    let Some(Overlay::Metrics(view)) = &app.overlay else {
+    let Some(Overlay::Metrics(view)) = &app.modals.overlay else {
         panic!("metrics closed");
     };
     assert!(view.snapshot.is_some());
@@ -13212,13 +14068,13 @@ fn metrics_modal_opens_requests_and_renders() {
         text.contains("% of 32 GB installed"),
         "system share rendered:\n{text}"
     );
-    let Some(Overlay::Metrics(view)) = &app.overlay else {
+    let Some(Overlay::Metrics(view)) = &app.modals.overlay else {
         panic!("metrics closed");
     };
     assert!(view.area.width > 0, "draw writes the hit-test area back");
 
     press(&mut app, KeyCode::Esc, KeyModifiers::NONE, &mut out);
-    assert!(app.overlay.is_none());
+    assert!(app.modals.overlay.is_none());
 }
 
 /// Prewarm-pool spares have no agent row; without the home the daemon
@@ -13313,14 +14169,14 @@ fn metrics_groups_prewarm_spares_under_their_own_header() {
 
     // Enter on a spare opens nothing: there's no agent row to attach
     // until a CreateAgent adopts it.
-    let Some(Overlay::Metrics(view)) = &mut app.overlay else {
+    let Some(Overlay::Metrics(view)) = &mut app.modals.overlay else {
         panic!("metrics closed");
     };
     view.selected = 2;
     out.clear();
     press(&mut app, KeyCode::Enter, KeyModifiers::NONE, &mut out);
     assert!(
-        matches!(app.overlay, Some(Overlay::Metrics(_))) && out.is_empty(),
+        matches!(app.modals.overlay, Some(Overlay::Metrics(_))) && out.is_empty(),
         "a spare row is inert: {out:?}"
     );
 }
@@ -13359,7 +14215,7 @@ fn metrics_enter_opens_selected_session() {
     // A draw writes the row order back into the view; Enter reads it.
     let mut terminal = Terminal::new(TestBackend::new(100, 40)).unwrap();
     terminal.draw(|f| ui::draw(f, &mut app)).unwrap();
-    let Some(Overlay::Metrics(view)) = &app.overlay else {
+    let Some(Overlay::Metrics(view)) = &app.modals.overlay else {
         panic!("metrics closed");
     };
     assert_eq!(view.rows.len(), 3, "session + daemon + ui rows");
@@ -13367,9 +14223,12 @@ fn metrics_enter_opens_selected_session() {
 
     out.clear();
     press(&mut app, KeyCode::Enter, KeyModifiers::NONE, &mut out);
-    assert!(app.overlay.is_none(), "Enter closes the modal");
-    assert_eq!(app.focus, Focus::Terminal);
-    assert!(app.term_locked, "opened session locks input like an attach");
+    assert!(app.modals.overlay.is_none(), "Enter closes the modal");
+    assert_eq!(app.nav.focus, Focus::Terminal);
+    assert!(
+        app.pane.term_locked,
+        "opened session locks input like an attach"
+    );
     let sref = SessionRef::Agent(AgentId("a1".into()));
     assert!(
         out.iter()
@@ -13378,7 +14237,7 @@ fn metrics_enter_opens_selected_session() {
     );
     assert_eq!(
         app.visible_session_rows()
-            .get(app.sel_session)
+            .get(app.nav.sel_session)
             .and_then(|r| r.sref()),
         Some(sref),
         "the panel selection landed on the opened session"
@@ -13402,18 +14261,18 @@ fn metrics_enter_opens_selected_session() {
     terminal.draw(|f| ui::draw(f, &mut app)).unwrap();
     press(&mut app, KeyCode::Char('j'), KeyModifiers::NONE, &mut out);
     press(&mut app, KeyCode::Char('j'), KeyModifiers::NONE, &mut out);
-    let Some(Overlay::Metrics(view)) = &app.overlay else {
+    let Some(Overlay::Metrics(view)) = &app.modals.overlay else {
         panic!("metrics closed");
     };
     assert_eq!(view.selected, 2, "j walks down to the ui row");
     press(&mut app, KeyCode::Char('j'), KeyModifiers::NONE, &mut out);
-    let Some(Overlay::Metrics(view)) = &app.overlay else {
+    let Some(Overlay::Metrics(view)) = &app.modals.overlay else {
         panic!("metrics closed");
     };
     assert_eq!(view.selected, 2, "selection does not run past the last row");
     press(&mut app, KeyCode::Enter, KeyModifiers::NONE, &mut out);
     assert!(
-        matches!(app.overlay, Some(Overlay::Metrics(_))),
+        matches!(app.modals.overlay, Some(Overlay::Metrics(_))),
         "Enter on a nebula row keeps the modal open"
     );
 }
@@ -13428,7 +14287,7 @@ fn metrics_reply_after_close_is_dropped() {
         other => panic!("expected GetMetrics, got {other:?}"),
     };
     press(&mut app, KeyCode::Char('q'), KeyModifiers::NONE, &mut out);
-    assert!(app.overlay.is_none(), "q closes the modal");
+    assert!(app.modals.overlay.is_none(), "q closes the modal");
     hse(
         &mut app,
         ServerEvent::Metrics {
@@ -13442,16 +14301,19 @@ fn metrics_reply_after_close_is_dropped() {
         },
     );
     assert!(
-        app.overlay.is_none(),
+        app.modals.overlay.is_none(),
         "late reply must not reopen the modal"
     );
-    assert!(app.pending.is_empty(), "late reply still clears its slot");
+    assert!(
+        app.requests.pending.is_empty(),
+        "late reply still clears its slot"
+    );
 }
 
 // ---- `f` fuzzy file finder ----
 
 fn finder(app: &App) -> &crate::app::FileFinder {
-    match &app.overlay {
+    match &app.modals.overlay {
         Some(Overlay::Files(f)) => f,
         other => panic!("expected file finder overlay, got {other:?}"),
     }
@@ -13469,35 +14331,43 @@ fn f_opens_file_finder_listing_tracked_and_untracked() {
         let mut app = App::new();
         seed_repo_tree(&mut app, &repo);
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        app.vim_tx = Some(tx);
+        app.pane.vim_tx = Some(tx);
         let mut out = Vec::new();
 
         press(&mut app, KeyCode::Char('f'), KeyModifiers::NONE, &mut out);
-        let files = &finder(&app).files;
+        let files = &finder(&app).list.items;
         assert!(files.contains(&"a.txt".to_string()), "{files:?}");
         assert!(files.contains(&"fresh.txt".to_string()), "{files:?}");
         // The empty query shows everything.
-        assert_eq!(finder(&app).matches.len(), files.len());
+        assert_eq!(finder(&app).list.matches.len(), files.len());
         assert!(out.is_empty(), "opening the finder sends nothing");
 
         // Typing narrows to the fuzzy matches.
         for c in ['f', 'r'] {
             press(&mut app, KeyCode::Char(c), KeyModifiers::NONE, &mut out);
         }
-        assert_eq!(finder(&app).matches.len(), 1, "fr matches only fresh.txt");
+        assert_eq!(
+            finder(&app).list.matches.len(),
+            1,
+            "fr matches only fresh.txt"
+        );
         assert_eq!(finder(&app).selected_path(), Some("fresh.txt"));
 
         // Enter opens the selection in the editor modal; the finder stays
         // open underneath. A shell stands in for vim (`sh +1 fresh.txt`
         // still spawns fine).
-        if let Some(Overlay::Files(f)) = &mut app.overlay {
+        if let Some(Overlay::Files(f)) = &mut app.modals.overlay {
             f.editor = "/bin/sh".into();
         }
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE, &mut out);
-        let vim = app.vim.as_ref().expect("enter spawns the editor modal");
+        let vim = app
+            .pane
+            .vim
+            .as_ref()
+            .expect("enter spawns the editor modal");
         assert_eq!(vim.title, "fresh.txt:1");
         assert!(
-            matches!(&app.overlay, Some(Overlay::Files(_))),
+            matches!(&app.modals.overlay, Some(Overlay::Files(_))),
             "the finder stays open under the editor"
         );
 
@@ -13509,15 +14379,15 @@ fn f_opens_file_finder_listing_tracked_and_untracked() {
             KeyModifiers::CONTROL,
             &mut out,
         );
-        assert!(app.vim.is_none(), "Ctrl+Q force-closes the editor");
+        assert!(app.pane.vim.is_none(), "Ctrl+Q force-closes the editor");
         press(
             &mut app,
             KeyCode::Char('y'),
             KeyModifiers::CONTROL,
             &mut out,
         );
-        assert!(app.overlay.is_none(), "ctrl+y closes the finder");
-        assert_eq!(app.flash.as_deref(), Some("copied fresh.txt"));
+        assert!(app.modals.overlay.is_none(), "ctrl+y closes the finder");
+        assert_eq!(app.chrome.flash.as_deref(), Some("copied fresh.txt"));
     });
 }
 
@@ -13532,7 +14402,7 @@ fn a_markdown_file_from_the_finder_or_a_clicked_path_is_read_first() {
     let mut app = App::new();
     seed_repo_tree(&mut app, &repo);
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-    app.vim_tx = Some(tx);
+    app.pane.vim_tx = Some(tx);
     let mut out = Vec::new();
 
     press(&mut app, KeyCode::Char('f'), KeyModifiers::NONE, &mut out);
@@ -13541,9 +14411,9 @@ fn a_markdown_file_from_the_finder_or_a_clicked_path_is_read_first() {
     }
     assert_eq!(finder(&app).selected_path(), Some("notes.md"));
     press(&mut app, KeyCode::Enter, KeyModifiers::NONE, &mut out);
-    assert!(app.vim.is_none(), "no editor yet");
-    let Some(Overlay::FileTabs(tabs)) = &app.overlay else {
-        panic!("expected the file tabs, got {:?}", app.overlay);
+    assert!(app.pane.vim.is_none(), "no editor yet");
+    let Some(Overlay::FileTabs(tabs)) = &app.modals.overlay else {
+        panic!("expected the file tabs, got {:?}", app.modals.overlay);
     };
     assert_eq!(tabs.tabs.len(), 1);
     assert_eq!(tabs.tabs[0].label, "notes.md");
@@ -13552,35 +14422,35 @@ fn a_markdown_file_from_the_finder_or_a_clicked_path_is_read_first() {
 
     // Enter in the tabs is the editor, embedded under the strip. A
     // shell stands in for vim.
-    if let Some(Overlay::FileTabs(t)) = &mut app.overlay {
+    if let Some(Overlay::FileTabs(t)) = &mut app.modals.overlay {
         t.editor = "/bin/sh".into();
     }
     press(&mut app, KeyCode::Enter, KeyModifiers::NONE, &mut out);
-    let vim = app.vim.as_ref().expect("enter edits");
+    let vim = app.pane.vim.as_ref().expect("enter edits");
     assert!(vim.embedded, "the editor takes the preview pane");
     assert!(
-        matches!(&app.overlay, Some(Overlay::FileTabs(_))),
+        matches!(&app.modals.overlay, Some(Overlay::FileTabs(_))),
         "the tabs stay underneath"
     );
 
     // A clicked path takes the same route; a code file still goes
     // straight to the editor.
-    app.vim = None;
-    app.overlay = None;
+    app.pane.vim = None;
+    app.modals.overlay = None;
     open_file_link(&mut app, "notes.md", Some(3));
-    let Some(Overlay::FileTabs(tabs)) = &app.overlay else {
-        panic!("expected the file tabs, got {:?}", app.overlay);
+    let Some(Overlay::FileTabs(tabs)) = &app.modals.overlay else {
+        panic!("expected the file tabs, got {:?}", app.modals.overlay);
     };
     assert_eq!(tabs.tabs[0].label, "notes.md");
     assert!(tabs.renders_markdown());
-    assert!(app.vim.is_none());
-    app.overlay = None;
+    assert!(app.pane.vim.is_none());
+    app.modals.overlay = None;
     with_config_json(r#"{"editor": "/bin/sh"}"#, || {
         open_file_link(&mut app, "a.txt", Some(1));
     });
-    assert!(app.overlay.is_none(), "no tabs for a text file");
+    assert!(app.modals.overlay.is_none(), "no tabs for a text file");
     assert_eq!(
-        app.vim.as_ref().map(|v| v.title.as_str()),
+        app.pane.vim.as_ref().map(|v| v.title.as_str()),
         Some("a.txt:1"),
         "the editor, at the line"
     );
@@ -13596,18 +14466,18 @@ fn close_finder_on_open_leaves_only_the_editor_modal() {
         let mut app = App::new();
         seed_repo_tree(&mut app, &repo);
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        app.vim_tx = Some(tx);
+        app.pane.vim_tx = Some(tx);
         let mut out = Vec::new();
 
         press(&mut app, KeyCode::Char('f'), KeyModifiers::NONE, &mut out);
         // A shell stands in for vim (`sh +1 a.txt` still spawns fine).
-        if let Some(Overlay::Files(f)) = &mut app.overlay {
+        if let Some(Overlay::Files(f)) = &mut app.modals.overlay {
             f.editor = "/bin/sh".into();
         }
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE, &mut out);
-        assert!(app.vim.is_some(), "enter spawns the editor modal");
+        assert!(app.pane.vim.is_some(), "enter spawns the editor modal");
         assert!(
-            app.overlay.is_none(),
+            app.modals.overlay.is_none(),
             "the finder closes as the editor opens"
         );
 
@@ -13617,8 +14487,8 @@ fn close_finder_on_open_leaves_only_the_editor_modal() {
             KeyModifiers::CONTROL,
             &mut out,
         );
-        assert!(app.vim.is_none(), "Ctrl+Q force-closes the editor");
-        assert!(app.overlay.is_none(), "no finder left to dismiss");
+        assert!(app.pane.vim.is_none(), "Ctrl+Q force-closes the editor");
+        assert!(app.modals.overlay.is_none(), "no finder left to dismiss");
     });
 }
 
@@ -13630,18 +14500,18 @@ fn a_failed_editor_spawn_keeps_the_finder_open() {
         let mut app = App::new();
         seed_repo_tree(&mut app, &repo);
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        app.vim_tx = Some(tx);
+        app.pane.vim_tx = Some(tx);
         let mut out = Vec::new();
 
         press(&mut app, KeyCode::Char('f'), KeyModifiers::NONE, &mut out);
-        if let Some(Overlay::Files(f)) = &mut app.overlay {
+        if let Some(Overlay::Files(f)) = &mut app.modals.overlay {
             f.editor = "/nonexistent/nebula-not-an-editor".into();
         }
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE, &mut out);
-        assert!(app.vim.is_none(), "the spawn failed");
-        assert!(app.flash.is_some(), "the failure flashes");
+        assert!(app.pane.vim.is_none(), "the spawn failed");
+        assert!(app.chrome.flash.is_some(), "the failure flashes");
         assert!(
-            matches!(&app.overlay, Some(Overlay::Files(_))),
+            matches!(&app.modals.overlay, Some(Overlay::Files(_))),
             "a finder dismissed for an editor that never opened would \
                  leave the user staring at the panels"
         );
@@ -13651,7 +14521,7 @@ fn a_failed_editor_spawn_keeps_the_finder_open() {
 #[test]
 fn file_finder_escape_clears_query_then_closes() {
     let mut app = App::new();
-    app.overlay = Some(Overlay::Files(FileFinder::new(
+    app.modals.overlay = Some(Overlay::Files(FileFinder::new(
         "/nonexistent-nebula-finder-test".into(),
         "main".into(),
         "vim".into(),
@@ -13659,12 +14529,16 @@ fn file_finder_escape_clears_query_then_closes() {
     )));
     let mut out = Vec::new();
     press(&mut app, KeyCode::Char('b'), KeyModifiers::NONE, &mut out);
-    assert_eq!(finder(&app).matches.len(), 1, "b matches only beta.rs");
+    assert_eq!(finder(&app).list.matches.len(), 1, "b matches only beta.rs");
     press(&mut app, KeyCode::Esc, KeyModifiers::NONE, &mut out);
-    assert_eq!(finder(&app).query, "", "first Esc clears the query");
-    assert_eq!(finder(&app).matches.len(), 2, "cleared query shows all");
+    assert_eq!(finder(&app).list.query, "", "first Esc clears the query");
+    assert_eq!(
+        finder(&app).list.matches.len(),
+        2,
+        "cleared query shows all"
+    );
     press(&mut app, KeyCode::Esc, KeyModifiers::NONE, &mut out);
-    assert!(app.overlay.is_none(), "second Esc closes the finder");
+    assert!(app.modals.overlay.is_none(), "second Esc closes the finder");
 }
 
 #[test]
@@ -13685,12 +14559,12 @@ fn file_overlays_launch_the_configured_editor() {
         let mut out = Vec::new();
         press(&mut app, KeyCode::Char('f'), KeyModifiers::NONE, &mut out);
         assert_eq!(finder(&app).editor, expect);
-        app.overlay = None;
+        app.modals.overlay = None;
         press(&mut app, KeyCode::Char('b'), KeyModifiers::NONE, &mut out);
         assert_eq!(tree_view(&app).editor, expect);
-        app.overlay = None;
+        app.modals.overlay = None;
         press(&mut app, KeyCode::Char('F'), KeyModifiers::SHIFT, &mut out);
-        let Some(Overlay::Grep(view)) = &app.overlay else {
+        let Some(Overlay::Grep(view)) = &app.modals.overlay else {
             panic!("F opens the grep overlay");
         };
         assert_eq!(view.editor, expect);
@@ -13702,14 +14576,14 @@ fn f_without_worktree_flashes() {
     let mut app = App::new();
     let mut out = Vec::new();
     press(&mut app, KeyCode::Char('f'), KeyModifiers::NONE, &mut out);
-    assert!(app.overlay.is_none());
-    assert_eq!(app.flash.as_deref(), Some("no worktree selected"));
+    assert!(app.modals.overlay.is_none());
+    assert_eq!(app.chrome.flash.as_deref(), Some("no worktree selected"));
 }
 
 #[test]
 fn file_finder_renders_query_row_and_matches() {
     let mut app = App::new();
-    app.overlay = Some(Overlay::Files(FileFinder::new(
+    app.modals.overlay = Some(Overlay::Files(FileFinder::new(
         "/nonexistent-nebula-finder-test".into(),
         "main".into(),
         "vim".into(),
@@ -13723,13 +14597,13 @@ fn file_finder_renders_query_row_and_matches() {
     assert!(text.contains("src/alpha.rs"), "rows rendered:\n{text}");
     let fin = finder(&app);
     assert!(fin.area.width > 0, "draw writes hit-test area");
-    assert!(fin.list_area.height > 0, "draw writes list area");
+    assert!(fin.list.list_area.height > 0, "draw writes list area");
 }
 
 // ---- `b` tree browser ----
 
 fn tree_view(app: &App) -> &crate::tree_browser::TreeBrowser {
-    match &app.overlay {
+    match &app.modals.overlay {
         Some(Overlay::Tree(v)) => v,
         other => panic!("expected tree overlay, got {other:?}"),
     }
@@ -13737,7 +14611,8 @@ fn tree_view(app: &App) -> &crate::tree_browser::TreeBrowser {
 
 fn tree_rows(app: &App) -> Vec<String> {
     let v = tree_view(app);
-    v.rows
+    v.list
+        .items
         .iter()
         .map(|r| v.nodes[r.node].path.clone())
         .collect()
@@ -13755,7 +14630,7 @@ fn ctrl_r_flips_a_markdown_preview_between_the_page_and_its_source() {
     let mut app = App::new();
     seed_repo_tree(&mut app, &repo);
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-    app.vim_tx = Some(tx);
+    app.pane.vim_tx = Some(tx);
     let mut out = Vec::new();
     let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
 
@@ -13804,7 +14679,7 @@ fn ctrl_r_flips_a_markdown_preview_between_the_page_and_its_source() {
         KeyModifiers::CONTROL,
         &mut out,
     );
-    assert_eq!(tree_view(&app).filter.as_str(), "a.t", "not typed");
+    assert_eq!(tree_view(&app).list.query.as_str(), "a.t", "not typed");
     press(&mut app, KeyCode::Esc, KeyModifiers::NONE, &mut out);
     for c in ['n', 'o', 't'] {
         press(&mut app, KeyCode::Char(c), KeyModifiers::NONE, &mut out);
@@ -13825,7 +14700,7 @@ fn t_opens_tree_browser_folds_dirs_and_filters_hierarchies() {
     let mut app = App::new();
     seed_repo_tree(&mut app, &repo);
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-    app.vim_tx = Some(tx);
+    app.pane.vim_tx = Some(tx);
     let mut out = Vec::new();
 
     press(&mut app, KeyCode::Char('b'), KeyModifiers::NONE, &mut out);
@@ -13860,15 +14735,15 @@ fn t_opens_tree_browser_folds_dirs_and_filters_hierarchies() {
 
     // Enter opens the selected file in an editor embedded in the
     // preview pane; the browser stays open. A shell stands in for vim.
-    if let Some(Overlay::Tree(v)) = &mut app.overlay {
+    if let Some(Overlay::Tree(v)) = &mut app.modals.overlay {
         v.editor = "/bin/sh".into();
     }
     press(&mut app, KeyCode::Enter, KeyModifiers::NONE, &mut out);
-    let vim = app.vim.as_ref().expect("enter spawns the editor");
+    let vim = app.pane.vim.as_ref().expect("enter spawns the editor");
     assert_eq!(vim.title, "src/sub/deep.rs:1");
     assert!(vim.embedded, "tree editor renders in the preview pane");
     assert!(
-        matches!(&app.overlay, Some(Overlay::Tree(_))),
+        matches!(&app.modals.overlay, Some(Overlay::Tree(_))),
         "the browser stays open around the editor"
     );
 
@@ -13881,16 +14756,23 @@ fn t_opens_tree_browser_folds_dirs_and_filters_hierarchies() {
         KeyModifiers::CONTROL,
         &mut out,
     );
-    assert!(app.vim.is_none(), "Ctrl+Q force-closes the editor");
+    assert!(app.pane.vim.is_none(), "Ctrl+Q force-closes the editor");
     assert_eq!(tree_view(&app).preview, "deeper");
 
     // Two-stage escape: clear the filter (restoring the folded tree),
     // then close.
     press(&mut app, KeyCode::Esc, KeyModifiers::NONE, &mut out);
-    assert_eq!(tree_view(&app).filter, "", "first Esc clears the filter");
+    assert_eq!(
+        tree_view(&app).list.query,
+        "",
+        "first Esc clears the filter"
+    );
     assert_eq!(tree_rows(&app), vec!["src", "a.txt"]);
     press(&mut app, KeyCode::Esc, KeyModifiers::NONE, &mut out);
-    assert!(app.overlay.is_none(), "second Esc closes the browser");
+    assert!(
+        app.modals.overlay.is_none(),
+        "second Esc closes the browser"
+    );
 }
 
 #[test]
@@ -13915,7 +14797,7 @@ fn tree_browser_ctrl_u_clears_filter() {
         KeyModifiers::CONTROL,
         &mut out,
     );
-    assert_eq!(tree_view(&app).filter, "", "Ctrl+u clears the filter");
+    assert_eq!(tree_view(&app).list.query, "", "Ctrl+u clears the filter");
     assert_eq!(
         tree_rows(&app),
         vec!["src", "a.txt"],
@@ -13930,9 +14812,9 @@ fn tree_browser_ctrl_u_clears_filter() {
         KeyModifiers::CONTROL,
         &mut out,
     );
-    assert_eq!(tree_view(&app).filter, "");
+    assert_eq!(tree_view(&app).list.query, "");
     assert!(
-        matches!(app.overlay, Some(Overlay::Tree(_))),
+        matches!(app.modals.overlay, Some(Overlay::Tree(_))),
         "the browser stays open"
     );
 }
@@ -13942,8 +14824,8 @@ fn b_without_worktree_flashes() {
     let mut app = App::new();
     let mut out = Vec::new();
     press(&mut app, KeyCode::Char('b'), KeyModifiers::NONE, &mut out);
-    assert!(app.overlay.is_none());
-    assert_eq!(app.flash.as_deref(), Some("no worktree selected"));
+    assert!(app.modals.overlay.is_none());
+    assert_eq!(app.chrome.flash.as_deref(), Some("no worktree selected"));
 }
 
 #[test]
@@ -13964,7 +14846,7 @@ fn tree_browser_renders_tree_and_preview_panes() {
     assert!(text.contains("orig"), "preview rendered:\n{text}");
     let v = tree_view(&app);
     assert!(v.area.width > 0, "draw writes hit-test area");
-    assert!(v.list_area.height > 0, "draw writes list area");
+    assert!(v.list.list_area.height > 0, "draw writes list area");
     assert!(v.view_height > 0, "draw writes preview page size");
 }
 
@@ -14012,7 +14894,7 @@ fn embedded_editor_takes_over_the_preview_pane() {
     let mut app = App::new();
     seed_repo_tree(&mut app, &repo);
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-    app.vim_tx = Some(tx);
+    app.pane.vim_tx = Some(tx);
     let mut out = Vec::new();
     press(&mut app, KeyCode::Char('b'), KeyModifiers::NONE, &mut out);
 
@@ -14020,12 +14902,12 @@ fn embedded_editor_takes_over_the_preview_pane() {
     // spawn at the pane's size. Row 0 is a.txt (the only file).
     let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
     terminal.draw(|f| ui::draw(f, &mut app)).unwrap();
-    if let Some(Overlay::Tree(v)) = &mut app.overlay {
+    if let Some(Overlay::Tree(v)) = &mut app.modals.overlay {
         v.editor = "/bin/sh".into();
     }
     press(&mut app, KeyCode::Enter, KeyModifiers::NONE, &mut out);
     let pane = tree_view(&app).preview_area;
-    let vim = app.vim.as_ref().expect("enter spawns the editor");
+    let vim = app.pane.vim.as_ref().expect("enter spawns the editor");
     assert!(vim.embedded);
     assert_eq!(
         (vim.cols, vim.rows),
@@ -14040,7 +14922,7 @@ fn embedded_editor_takes_over_the_preview_pane() {
         "title shows edit state:\n{text}"
     );
     assert_eq!(
-        app.vim.as_ref().unwrap().area,
+        app.pane.vim.as_ref().unwrap().area,
         tree_view(&app).preview_area,
         "editor renders into the preview pane, not the modal"
     );
@@ -14049,7 +14931,7 @@ fn embedded_editor_takes_over_the_preview_pane() {
 // ---- `F` find in files + editor modal ----
 
 fn grep_view(app: &App) -> &crate::app::GrepView {
-    match &app.overlay {
+    match &app.modals.overlay {
         Some(Overlay::Grep(v)) => v,
         other => panic!("expected grep overlay, got {other:?}"),
     }
@@ -14061,8 +14943,8 @@ fn fake_grep_view(hits: Vec<crate::grep_search::GrepHit>) -> GrepView {
         "main".into(),
         "vim".into(),
     );
-    view.query = "zz".into();
-    view.hits = hits;
+    view.list.query = "zz".into();
+    view.set_hits(hits);
     view
 }
 
@@ -14076,27 +14958,33 @@ fn shift_f_opens_grep_and_typing_searches() {
     let mut out = Vec::new();
 
     press(&mut app, KeyCode::Char('F'), KeyModifiers::SHIFT, &mut out);
-    assert!(grep_view(&app).hits.is_empty(), "opens with no results");
+    assert!(
+        grep_view(&app).list.items.is_empty(),
+        "opens with no results"
+    );
     assert!(out.is_empty(), "opening the overlay sends nothing");
 
     for c in "needle".chars() {
         press(&mut app, KeyCode::Char(c), KeyModifiers::NONE, &mut out);
     }
     let view = grep_view(&app);
-    assert_eq!(view.hits.len(), 1, "{:?}", view.hits);
-    assert_eq!(view.hits[0].path, "hay.txt");
-    assert_eq!(view.hits[0].line, 2);
-    assert_eq!(view.hits[0].text, "needle here");
+    assert_eq!(view.list.items.len(), 1, "{:?}", view.list.items);
+    assert_eq!(view.list.items[0].path, "hay.txt");
+    assert_eq!(view.list.items[0].line, 2);
+    assert_eq!(view.list.items[0].text, "needle here");
 
     // Two-stage escape: clear the query, then close.
     press(&mut app, KeyCode::Esc, KeyModifiers::NONE, &mut out);
-    assert_eq!(grep_view(&app).query, "", "first Esc clears the query");
+    assert_eq!(grep_view(&app).list.query, "", "first Esc clears the query");
     assert!(
-        grep_view(&app).hits.is_empty(),
+        grep_view(&app).list.items.is_empty(),
         "cleared query shows no hits"
     );
     press(&mut app, KeyCode::Esc, KeyModifiers::NONE, &mut out);
-    assert!(app.overlay.is_none(), "second Esc closes the overlay");
+    assert!(
+        app.modals.overlay.is_none(),
+        "second Esc closes the overlay"
+    );
 }
 
 #[test]
@@ -14104,8 +14992,8 @@ fn shift_f_without_worktree_flashes() {
     let mut app = App::new();
     let mut out = Vec::new();
     press(&mut app, KeyCode::Char('F'), KeyModifiers::SHIFT, &mut out);
-    assert!(app.overlay.is_none());
-    assert_eq!(app.flash.as_deref(), Some("no worktree selected"));
+    assert!(app.modals.overlay.is_none());
+    assert_eq!(app.chrome.flash.as_deref(), Some("no worktree selected"));
 }
 
 #[test]
@@ -14119,7 +15007,7 @@ fn grep_enter_spawns_editor_and_ctrl_q_closes_it() {
         let mut app = App::new();
         seed_repo_tree(&mut app, &repo);
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        app.vim_tx = Some(tx);
+        app.pane.vim_tx = Some(tx);
         let mut out = Vec::new();
 
         press(&mut app, KeyCode::Char('F'), KeyModifiers::SHIFT, &mut out);
@@ -14128,23 +15016,27 @@ fn grep_enter_spawns_editor_and_ctrl_q_closes_it() {
         }
         assert_eq!(grep_view(&app).selected_hit().unwrap().path, "a.txt");
         // A shell stands in for vim (`sh +1 a.txt` still spawns fine).
-        if let Some(Overlay::Grep(v)) = &mut app.overlay {
+        if let Some(Overlay::Grep(v)) = &mut app.modals.overlay {
             v.editor = "/bin/sh".into();
         }
 
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE, &mut out);
-        let vim = app.vim.as_ref().expect("enter spawns the editor modal");
+        let vim = app
+            .pane
+            .vim
+            .as_ref()
+            .expect("enter spawns the editor modal");
         assert_eq!(vim.title, "a.txt:1");
         assert_eq!(vim.generation, 1);
         assert!(
-            matches!(&app.overlay, Some(Overlay::Grep(_))),
+            matches!(&app.modals.overlay, Some(Overlay::Grep(_))),
             "the grep overlay stays open under the editor"
         );
 
         // With the modal open, keys forward to the editor — q must not quit.
         press(&mut app, KeyCode::Char('q'), KeyModifiers::NONE, &mut out);
-        assert!(!app.should_quit, "q goes to the editor, not the app");
-        assert!(app.vim.is_some());
+        assert!(!app.chrome.should_quit, "q goes to the editor, not the app");
+        assert!(app.pane.vim.is_some());
 
         // Ctrl+Q is the hatch.
         press(
@@ -14153,9 +15045,9 @@ fn grep_enter_spawns_editor_and_ctrl_q_closes_it() {
             KeyModifiers::CONTROL,
             &mut out,
         );
-        assert!(app.vim.is_none(), "Ctrl+Q force-closes the editor");
+        assert!(app.pane.vim.is_none(), "Ctrl+Q force-closes the editor");
         assert!(
-            matches!(&app.overlay, Some(Overlay::Grep(_))),
+            matches!(&app.modals.overlay, Some(Overlay::Grep(_))),
             "closing the editor lands back on the results"
         );
     });
@@ -14169,7 +15061,7 @@ fn close_finder_on_open_also_closes_the_grep_overlay() {
         let mut app = App::new();
         seed_repo_tree(&mut app, &repo);
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        app.vim_tx = Some(tx);
+        app.pane.vim_tx = Some(tx);
         let mut out = Vec::new();
 
         press(&mut app, KeyCode::Char('F'), KeyModifiers::SHIFT, &mut out);
@@ -14177,13 +15069,13 @@ fn close_finder_on_open_also_closes_the_grep_overlay() {
             press(&mut app, KeyCode::Char(c), KeyModifiers::NONE, &mut out);
         }
         // A shell stands in for vim (`sh +1 a.txt` still spawns fine).
-        if let Some(Overlay::Grep(v)) = &mut app.overlay {
+        if let Some(Overlay::Grep(v)) = &mut app.modals.overlay {
             v.editor = "/bin/sh".into();
         }
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE, &mut out);
-        assert!(app.vim.is_some(), "enter spawns the editor modal");
+        assert!(app.pane.vim.is_some(), "enter spawns the editor modal");
         assert!(
-            app.overlay.is_none(),
+            app.modals.overlay.is_none(),
             "find-in-files closes as the editor opens"
         );
     });
@@ -14206,7 +15098,7 @@ fn stale_generation_editor_events_are_dropped() {
     )
     .unwrap();
     vim.kill();
-    app.vim = Some(vim);
+    app.pane.vim = Some(vim);
 
     // Output and exit stamped with a previous spawn's generation: ignored.
     handle_vim_event(
@@ -14217,9 +15109,13 @@ fn stale_generation_editor_events_are_dropped() {
         },
     );
     handle_vim_event(&mut app, VimEvent::Exited { generation: 1 });
-    assert!(app.vim.is_some(), "stale exit must not close a new editor");
     assert!(
-        !app.vim
+        app.pane.vim.is_some(),
+        "stale exit must not close a new editor"
+    );
+    assert!(
+        !app.pane
+            .vim
             .as_ref()
             .unwrap()
             .parser
@@ -14231,13 +15127,13 @@ fn stale_generation_editor_events_are_dropped() {
 
     // The current generation's exit closes the modal.
     handle_vim_event(&mut app, VimEvent::Exited { generation: 2 });
-    assert!(app.vim.is_none());
+    assert!(app.pane.vim.is_none());
 }
 
 #[test]
 fn grep_overlay_renders_hits_and_editor_modal_renders_on_top() {
     let mut app = App::new();
-    app.overlay = Some(Overlay::Grep(fake_grep_view(vec![
+    app.modals.overlay = Some(Overlay::Grep(fake_grep_view(vec![
         crate::grep_search::GrepHit {
             path: "src/alpha.rs".into(),
             line: 3,
@@ -14260,7 +15156,7 @@ fn grep_overlay_renders_hits_and_editor_modal_renders_on_top() {
     assert!(text.contains("let zz = 1;"), "hit text:\n{text}");
     let view = grep_view(&app);
     assert!(view.area.width > 0, "draw writes hit-test area");
-    assert!(view.list_area.height > 0, "draw writes list area");
+    assert!(view.list.list_area.height > 0, "draw writes list area");
 
     // Spawn an editor modal: it draws on top and gets its rect written
     // back for the PTY resize sync.
@@ -14278,15 +15174,15 @@ fn grep_overlay_renders_hits_and_editor_modal_renders_on_top() {
     )
     .unwrap();
     vim.kill();
-    app.vim = Some(vim);
+    app.pane.vim = Some(vim);
     terminal.draw(|f| ui::draw(f, &mut app)).unwrap();
     let text = buffer_text(&terminal);
     assert!(text.contains("src/alpha.rs:3"), "modal title:\n{text}");
     assert!(text.contains("Ctrl+Q: force close"), "hatch hint:\n{text}");
-    let vim = app.vim.as_ref().unwrap();
+    let vim = app.pane.vim.as_ref().unwrap();
     assert!(vim.area.width > 0, "draw writes the editor rect");
     sync_vim_size(&mut app);
-    let vim = app.vim.as_ref().unwrap();
+    let vim = app.pane.vim.as_ref().unwrap();
     assert_eq!(
         (vim.cols, vim.rows),
         (vim.area.width, vim.area.height),
@@ -14320,11 +15216,11 @@ fn shift_d_bulk_deletes_worktrees_behind_an_itemized_confirm() {
             },
         );
     }
-    app.focus = Focus::Worktrees;
+    app.nav.focus = Focus::Worktrees;
 
     press(&mut app, KeyCode::Char('D'), KeyModifiers::SHIFT, &mut out);
-    let Some(Overlay::Confirm(c)) = &app.overlay else {
-        panic!("Shift+D confirms first: {:?}", app.overlay);
+    let Some(Overlay::Confirm(c)) = &app.modals.overlay else {
+        panic!("Shift+D confirms first: {:?}", app.modals.overlay);
     };
     assert!(
         c.message.contains("• feat") && c.message.contains("• fix"),
@@ -14358,7 +15254,7 @@ fn shift_d_bulk_deletes_worktrees_behind_an_itemized_confirm() {
         })
         .collect();
     assert_eq!(deleted, ["w2", "w3"], "one request per worktree: {out:?}");
-    assert!(app.overlay.is_none());
+    assert!(app.modals.overlay.is_none());
     let left: Vec<&str> = app.tree.worktrees.iter().map(|w| w.id.0.as_str()).collect();
     assert_eq!(left, ["w1"], "only the main checkout survives");
 }
@@ -14370,10 +15266,10 @@ fn shift_d_with_only_the_main_checkout_flashes() {
     let mut app = App::new();
     seed_tree(&mut app); // p1/w1(main) + agent-1
     let mut out = Vec::new();
-    app.focus = Focus::Worktrees;
+    app.nav.focus = Focus::Worktrees;
     press(&mut app, KeyCode::Char('D'), KeyModifiers::SHIFT, &mut out);
-    assert!(app.overlay.is_none(), "nothing to confirm");
-    assert!(app.flash.is_some(), "the refusal explains itself");
+    assert!(app.modals.overlay.is_none(), "nothing to confirm");
+    assert!(app.chrome.flash.is_some(), "the refusal explains itself");
     assert!(out.is_empty(), "nothing is requested");
 }
 
@@ -14407,19 +15303,20 @@ fn shift_d_bulk_deletes_the_visible_sessions() {
                     status_changed_at: 0,
                     alive: true,
                     issue_url: None,
+                    role: nebula_core::AgentRole::Worker,
                     recent_prompts: Vec::new(),
                 }),
             },
         );
     }
-    app.focus = Focus::Sessions;
+    app.nav.focus = Focus::Sessions;
     let sref = SessionRef::Agent(AgentId("a1".into()));
-    app.term = Some(AttachedTerm::new(sref.clone(), 40, 10));
+    app.pane.term = Some(AttachedTerm::new(sref.clone(), 40, 10));
     let mut out = Vec::new();
 
     press(&mut app, KeyCode::Char('D'), KeyModifiers::SHIFT, &mut out);
-    let Some(Overlay::Confirm(c)) = &app.overlay else {
-        panic!("Shift+D confirms first: {:?}", app.overlay);
+    let Some(Overlay::Confirm(c)) = &app.modals.overlay else {
+        panic!("Shift+D confirms first: {:?}", app.modals.overlay);
     };
     assert!(
         c.message.contains("• agent-1") && c.message.contains("• agent-2"),
@@ -14437,7 +15334,7 @@ fn shift_d_bulk_deletes_the_visible_sessions() {
         matches!(out.first(), Some(ClientRequest::Detach { session }) if *session == sref),
         "attached doomed session detaches first: {out:?}"
     );
-    assert!(app.term.is_none(), "the pane blanks with the detach");
+    assert!(app.pane.term.is_none(), "the pane blanks with the detach");
     let deleted: Vec<&str> = out
         .iter()
         .filter_map(|r| match r {
@@ -14480,6 +15377,7 @@ fn agent_entity(id: &str, wt: &str, name: &str, archived: bool) -> nebula_core::
         status_changed_at: 0,
         alive: true,
         issue_url: None,
+        role: nebula_core::AgentRole::Worker,
         recent_prompts: Vec::new(),
     })
 }
@@ -14499,19 +15397,19 @@ fn archiving_selected_agent_previews_the_next_row() {
             entity: agent_entity("a2", "w1", "agent-2", false),
         },
     );
-    app.focus = Focus::Sessions;
-    app.sel_session = 0; // a1
+    app.nav.focus = Focus::Sessions;
+    app.nav.sel_session = 0; // a1
     let a1 = SessionRef::Agent(AgentId("a1".into()));
-    app.term = Some(AttachedTerm::new(a1.clone(), 40, 10));
+    app.pane.term = Some(AttachedTerm::new(a1.clone(), 40, 10));
 
     let mut out = Vec::new();
     // `a` asks first; Enter on the confirm is the archive.
     press(&mut app, KeyCode::Char('a'), KeyModifiers::NONE, &mut out);
     press(&mut app, KeyCode::Enter, KeyModifiers::NONE, &mut out);
     assert!(
-        app.overlay.is_none(),
+        app.modals.overlay.is_none(),
         "Enter answered the confirm: {:?}",
-        app.overlay
+        app.modals.overlay
     );
     assert!(
         out.iter()
@@ -14533,7 +15431,7 @@ fn archiving_selected_agent_previews_the_next_row() {
         "the next row's session attaches: {out:?}"
     );
     assert_eq!(
-        app.term.as_ref().map(|t| t.sref.clone()),
+        app.pane.term.as_ref().map(|t| t.sref.clone()),
         Some(a2.clone()),
         "the pane shows the newly highlighted session"
     );
@@ -14548,7 +15446,7 @@ fn archiving_selected_agent_previews_the_next_row() {
         &mut out,
     );
     assert!(out.is_empty(), "nothing left to do: {out:?}");
-    assert_eq!(app.term.as_ref().map(|t| t.sref.clone()), Some(a2));
+    assert_eq!(app.pane.term.as_ref().map(|t| t.sref.clone()), Some(a2));
 }
 
 /// `a` asks first: nothing is sent until the dialog is answered, Esc
@@ -14561,21 +15459,21 @@ fn a_asks_before_archiving_by_default() {
     with_config_json(r#"{"confirm_on_archive": false}"#, || {
         let mut app = App::new();
         seed_tree(&mut app); // p1 / w1(main) / a1
-        app.focus = Focus::Sessions;
-        app.sel_session = 0;
+        app.nav.focus = Focus::Sessions;
+        app.nav.sel_session = 0;
         let a1 = SessionRef::Agent(AgentId("a1".into()));
-        app.term = Some(AttachedTerm::new(a1.clone(), 40, 10));
+        app.pane.term = Some(AttachedTerm::new(a1.clone(), 40, 10));
         let mut out = Vec::new();
 
         press(&mut app, KeyCode::Char('a'), KeyModifiers::NONE, &mut out);
         assert!(
             matches!(
-                &app.overlay,
+                &app.modals.overlay,
                 Some(Overlay::Confirm(c))
                     if c.action == PendingAction::ArchiveAgent(AgentId("a1".into()))
             ),
             "a opens the archive confirm: {:?}",
-            app.overlay
+            app.modals.overlay
         );
         assert!(
             !out.iter()
@@ -14583,24 +15481,24 @@ fn a_asks_before_archiving_by_default() {
             "nothing is archived before the answer: {out:?}"
         );
         assert!(
-            app.term.is_some(),
+            app.pane.term.is_some(),
             "the pane stays attached while the dialog is up"
         );
 
         // Esc backs out: the session stays, nothing was sent.
         press(&mut app, KeyCode::Esc, KeyModifiers::NONE, &mut out);
-        assert!(app.overlay.is_none(), "Esc closes the confirm");
+        assert!(app.modals.overlay.is_none(), "Esc closes the confirm");
         assert!(
             !out.iter()
                 .any(|r| matches!(r, ClientRequest::ArchiveAgent { .. })),
             "backing out archives nothing: {out:?}"
         );
-        assert!(app.term.is_some(), "backing out keeps the pane");
+        assert!(app.pane.term.is_some(), "backing out keeps the pane");
 
         // Enter goes through, exactly as the bare key would have.
         press(&mut app, KeyCode::Char('a'), KeyModifiers::NONE, &mut out);
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE, &mut out);
-        assert!(app.overlay.is_none(), "Enter closes the confirm");
+        assert!(app.modals.overlay.is_none(), "Enter closes the confirm");
         assert!(
             out.iter().any(|r| matches!(
                 r,
@@ -14608,7 +15506,7 @@ fn a_asks_before_archiving_by_default() {
             )),
             "Enter archives the agent: {out:?}"
         );
-        assert!(app.term.is_none(), "the archive releases the pane");
+        assert!(app.pane.term.is_none(), "the archive releases the pane");
     })
 }
 
@@ -14626,11 +15524,11 @@ fn the_row_menus_archive_asks_too() {
         );
         assert!(
             matches!(
-                &app.overlay,
+                &app.modals.overlay,
                 Some(Overlay::Confirm(c)) if matches!(c.action, PendingAction::ArchiveAgent(_))
             ),
             "the menu's Archive asks too: {:?}",
-            app.overlay
+            app.modals.overlay
         );
         assert!(out.is_empty(), "nothing sent before the answer: {out:?}");
     })
@@ -14644,14 +15542,18 @@ fn a_archives_at_once_with_the_confirm_off() {
     with_config_json(r#"{"ask_before_archive": false}"#, || {
         let mut app = App::new();
         seed_tree(&mut app); // p1 / w1(main) / a1
-        app.focus = Focus::Sessions;
-        app.sel_session = 0;
+        app.nav.focus = Focus::Sessions;
+        app.nav.sel_session = 0;
         let a1 = SessionRef::Agent(AgentId("a1".into()));
-        app.term = Some(AttachedTerm::new(a1, 40, 10));
+        app.pane.term = Some(AttachedTerm::new(a1, 40, 10));
         let mut out = Vec::new();
 
         press(&mut app, KeyCode::Char('a'), KeyModifiers::NONE, &mut out);
-        assert!(app.overlay.is_none(), "no confirm: {:?}", app.overlay);
+        assert!(
+            app.modals.overlay.is_none(),
+            "no confirm: {:?}",
+            app.modals.overlay
+        );
         assert!(
             out.iter().any(|r| matches!(
                 r,
@@ -14659,8 +15561,8 @@ fn a_archives_at_once_with_the_confirm_off() {
             )),
             "a archives the agent: {out:?}"
         );
-        assert!(app.term.is_none(), "the archive releases the pane");
-        assert!(app.release_watch.is_some(), "and the key is watched");
+        assert!(app.pane.term.is_none(), "the archive releases the pane");
+        assert!(app.chrome.release_watch.is_some(), "and the key is watched");
     })
 }
 
@@ -14676,13 +15578,20 @@ fn the_row_menus_archive_skips_the_confirm_when_it_is_off() {
             MenuAction::ArchiveAgent(AgentId("a1".into())),
             &mut out,
         );
-        assert!(app.overlay.is_none(), "no confirm: {:?}", app.overlay);
+        assert!(
+            app.modals.overlay.is_none(),
+            "no confirm: {:?}",
+            app.modals.overlay
+        );
         assert!(
             out.iter()
                 .any(|r| matches!(r, ClientRequest::ArchiveAgent { .. })),
             "the menu's Archive archives at once: {out:?}"
         );
-        assert!(app.release_watch.is_none(), "a click has no key to watch");
+        assert!(
+            app.chrome.release_watch.is_none(),
+            "a click has no key to watch"
+        );
     })
 }
 
@@ -14698,10 +15607,10 @@ fn archiving_a_row_above_keeps_the_cursor_on_its_session() {
             entity: agent_entity("a2", "w1", "agent-2", false),
         },
     );
-    app.focus = Focus::Sessions;
-    app.sel_session = 1; // a2
+    app.nav.focus = Focus::Sessions;
+    app.nav.sel_session = 1; // a2
     let a2 = SessionRef::Agent(AgentId("a2".into()));
-    app.term = Some(AttachedTerm::new(a2.clone(), 40, 10));
+    app.pane.term = Some(AttachedTerm::new(a2.clone(), 40, 10));
 
     let mut out = Vec::new();
     handle_server_event(
@@ -14717,7 +15626,7 @@ fn archiving_a_row_above_keeps_the_cursor_on_its_session() {
         "cursor followed its session up the list"
     );
     assert_eq!(
-        app.term.as_ref().map(|t| t.sref.clone()),
+        app.pane.term.as_ref().map(|t| t.sref.clone()),
         Some(a2),
         "the attached pane is untouched"
     );
@@ -14744,17 +15653,17 @@ fn archiving_the_last_live_agent_lands_on_the_one_above() {
         );
     }
     seed_terminal(&mut app, "t1", "shell");
-    app.focus = Focus::Sessions;
-    app.sel_session = row_of(&app, "a3");
+    app.nav.focus = Focus::Sessions;
+    app.nav.sel_session = row_of(&app, "a3");
     assert!(
         matches!(
-            app.visible_session_rows().get(app.sel_session + 1),
+            app.visible_session_rows().get(app.nav.sel_session + 1),
             Some(SessionRow::Terminal(_))
         ),
         "agent-3 is the last live agent, the terminal right under it"
     );
     let a3 = SessionRef::Agent(AgentId("a3".into()));
-    app.term = Some(AttachedTerm::new(a3, 40, 10));
+    app.pane.term = Some(AttachedTerm::new(a3, 40, 10));
 
     let mut out = Vec::new();
     handle_server_event(
@@ -14775,12 +15684,15 @@ fn archiving_the_last_live_agent_lands_on_the_one_above() {
             .any(|r| matches!(r, ClientRequest::Attach { session, .. } if *session == a2)),
         "the agent above attaches: {out:?}"
     );
-    assert_eq!(app.term.as_ref().map(|t| t.sref.clone()), Some(a2.clone()));
+    assert_eq!(
+        app.pane.term.as_ref().map(|t| t.sref.clone()),
+        Some(a2.clone())
+    );
 
     // From the top of the list the cursor moves down, as before.
-    app.sel_session = row_of(&app, "a1");
+    app.nav.sel_session = row_of(&app, "a1");
     let a1 = SessionRef::Agent(AgentId("a1".into()));
-    app.term = Some(AttachedTerm::new(a1, 40, 10));
+    app.pane.term = Some(AttachedTerm::new(a1, 40, 10));
     out.clear();
     handle_server_event(
         &mut app,
@@ -14794,7 +15706,7 @@ fn archiving_the_last_live_agent_lands_on_the_one_above() {
         Some("agent-2".into()),
         "the cursor moved down onto the agent below"
     );
-    assert_eq!(app.term.as_ref().map(|t| t.sref.clone()), Some(a2));
+    assert_eq!(app.pane.term.as_ref().map(|t| t.sref.clone()), Some(a2));
 }
 
 /// Deleting the selected session lands the cursor on the next row and
@@ -14810,10 +15722,10 @@ fn deleting_selected_agent_previews_the_next_row() {
             entity: agent_entity("a2", "w1", "agent-2", false),
         },
     );
-    app.focus = Focus::Sessions;
-    app.sel_session = 0; // a1
+    app.nav.focus = Focus::Sessions;
+    app.nav.sel_session = 0; // a1
     let a1 = SessionRef::Agent(AgentId("a1".into()));
-    app.term = Some(AttachedTerm::new(a1.clone(), 40, 10));
+    app.pane.term = Some(AttachedTerm::new(a1.clone(), 40, 10));
 
     let mut out = Vec::new();
     handle_server_event(
@@ -14834,7 +15746,7 @@ fn deleting_selected_agent_previews_the_next_row() {
             .any(|r| matches!(r, ClientRequest::Attach { session, .. } if *session == a2)),
         "the next row's session attaches: {out:?}"
     );
-    assert_eq!(app.term.as_ref().map(|t| t.sref.clone()), Some(a2));
+    assert_eq!(app.pane.term.as_ref().map(|t| t.sref.clone()), Some(a2));
 }
 
 /// Removing the only session leaves nothing to preview: the pane blanks
@@ -14845,9 +15757,9 @@ fn deleting_the_last_session_blanks_the_pane() {
     let mut app = App::new();
     seed_tree(&mut app); // p1 / w1(main) / a1
     let a1 = SessionRef::Agent(AgentId("a1".into()));
-    app.term = Some(AttachedTerm::new(a1.clone(), 40, 10));
-    app.focus = Focus::Terminal;
-    app.term_locked = true;
+    app.pane.term = Some(AttachedTerm::new(a1.clone(), 40, 10));
+    app.nav.focus = Focus::Terminal;
+    app.pane.term_locked = true;
 
     let mut out = Vec::new();
     handle_server_event(
@@ -14857,8 +15769,12 @@ fn deleting_the_last_session_blanks_the_pane() {
         },
         &mut out,
     );
-    assert!(app.term.is_none(), "the pane blanks");
-    assert_eq!(app.focus, Focus::Sessions, "focus hands back to the list");
+    assert!(app.pane.term.is_none(), "the pane blanks");
+    assert_eq!(
+        app.nav.focus,
+        Focus::Sessions,
+        "focus hands back to the list"
+    );
     assert!(
         out.iter()
             .any(|r| matches!(r, ClientRequest::Detach { session } if *session == a1)),
@@ -14889,13 +15805,14 @@ fn deleting_selected_worktree_shows_the_neighbor_worktrees_session() {
         .iter()
         .position(|w| w.id.0 == "w2")
         .unwrap();
-    app.sel_worktree = w2_index;
-    app.sel_session = 0; // a2
-    app.focus = Focus::Worktrees;
+    app.nav.sel_worktree = w2_index;
+    app.nav.sel_session = 0; // a2
+    app.nav.focus = Focus::Worktrees;
     let a1 = SessionRef::Agent(AgentId("a1".into()));
     let a2 = SessionRef::Agent(AgentId("a2".into()));
-    app.term = Some(AttachedTerm::new(a2.clone(), 40, 10));
-    app.last_session_for_worktree
+    app.pane.term = Some(AttachedTerm::new(a2.clone(), 40, 10));
+    app.nav
+        .last_session_for_worktree
         .insert(WorktreeId("w1".into()), a1.clone());
 
     let mut out = Vec::new();
@@ -14915,7 +15832,7 @@ fn deleting_selected_worktree_shows_the_neighbor_worktrees_session() {
         "the survivor's remembered session attaches: {out:?}"
     );
     assert_eq!(
-        app.term.as_ref().map(|t| t.sref.clone()),
+        app.pane.term.as_ref().map(|t| t.sref.clone()),
         Some(a1),
         "the pane shows the survivor's session, not the deleted one"
     );
@@ -14946,16 +15863,18 @@ fn removing_selected_project_restores_the_neighbor_projects_context() {
             entity: agent_entity("a2", "w2", "agent-2", false),
         },
     );
-    app.sel_project = 1; // p2
-    app.sel_worktree = 0; // w2
-    app.sel_session = 0; // a2
-    app.focus = Focus::Projects;
+    app.nav.sel_project = 1; // p2
+    app.nav.sel_worktree = 0; // w2
+    app.nav.sel_session = 0; // a2
+    app.nav.focus = Focus::Projects;
     let a1 = SessionRef::Agent(AgentId("a1".into()));
     let a2 = SessionRef::Agent(AgentId("a2".into()));
-    app.term = Some(AttachedTerm::new(a2.clone(), 40, 10));
-    app.last_worktree_for_project
+    app.pane.term = Some(AttachedTerm::new(a2.clone(), 40, 10));
+    app.nav
+        .last_worktree_for_project
         .insert(nebula_core::ProjectId("p1".into()), WorktreeId("w1".into()));
-    app.last_session_for_worktree
+    app.nav
+        .last_session_for_worktree
         .insert(WorktreeId("w1".into()), a1.clone());
 
     let mut out = Vec::new();
@@ -14977,7 +15896,7 @@ fn removing_selected_project_restores_the_neighbor_projects_context() {
         "its remembered worktree is selected"
     );
     assert_eq!(
-        app.term.as_ref().map(|t| t.sref.clone()),
+        app.pane.term.as_ref().map(|t| t.sref.clone()),
         Some(a1),
         "the pane shows the survivor's remembered session"
     );
@@ -15024,8 +15943,8 @@ fn every_project_has_a_row_and_a_palette_path() {
     seed_other_project(&mut app);
     assert_eq!(app.project_rows().len(), 2, "demo and secret");
 
-    let palette = Palette::new(&app.tree, false, &app.open_prs, false);
-    let texts: Vec<&str> = palette.items.iter().map(|i| i.text.as_str()).collect();
+    let palette = Palette::new(&app.tree, false, &app.github.open_prs, false);
+    let texts: Vec<&str> = palette.list.items.iter().map(|i| i.text.as_str()).collect();
     assert_eq!(
         texts,
         [
@@ -15062,8 +15981,8 @@ fn jumping_to_another_projects_worktree_selects_it() {
         app.selected_worktree().map(|w| w.branch.clone()),
         Some("main".into())
     );
-    assert_eq!(app.focus, Focus::Sessions);
-    assert!(app.flash.is_none(), "flash: {:?}", app.flash);
+    assert_eq!(app.nav.focus, Focus::Sessions);
+    assert!(app.chrome.flash.is_none(), "flash: {:?}", app.chrome.flash);
 }
 
 /// A pull request in another project is a jump there too: its project
@@ -15076,7 +15995,7 @@ fn jumping_to_another_projects_pr_selects_it() {
     seed_tree(&mut app);
     seed_other_project(&mut app);
     let now = std::time::Instant::now();
-    app.open_prs.insert(
+    app.github.open_prs.insert(
         nebula_core::ProjectId("p9".into()),
         crate::app::OpenPrs {
             list: vec![crate::pull_request::OpenPr {
@@ -15085,6 +16004,7 @@ fn jumping_to_another_projects_pr_selects_it() {
                 url: "https://github.com/o/secret/pull/3".into(),
                 is_draft: false,
                 health: Default::default(),
+                base: "main".into(),
                 head: "hush".into(),
             }],
             at: now,
@@ -15101,7 +16021,7 @@ fn jumping_to_another_projects_pr_selects_it() {
     {
         let p = palette(&app);
         assert_eq!(
-            p.items[p.matches[p.selected].item].text, "secret/#3 Hush the logs",
+            p.list.items[p.list.matches[p.list.cursor].item].text, "secret/#3 Hush the logs",
             "pathed under its project like every other row"
         );
     }
@@ -15115,8 +16035,8 @@ fn jumping_to_another_projects_pr_selects_it() {
         app.previewed_pr().map(|pr| pr.url),
         Some("https://github.com/o/secret/pull/3".into())
     );
-    assert_eq!(app.focus, Focus::Worktrees);
-    assert!(app.flash.is_none(), "flash: {:?}", app.flash);
+    assert_eq!(app.nav.focus, Focus::Worktrees);
+    assert!(app.chrome.flash.is_none(), "flash: {:?}", app.chrome.flash);
 }
 
 /// Crossing projects attaches exactly once. The jump deliberately skips
@@ -15153,6 +16073,7 @@ fn a_cross_project_session_jump_attaches_only_the_session_picked() {
                 status_changed_at: 0,
                 alive: true,
                 issue_url: None,
+                role: nebula_core::AgentRole::Worker,
                 recent_prompts: Vec::new(),
             }),
         },
@@ -15160,7 +16081,7 @@ fn a_cross_project_session_jump_attaches_only_the_session_picked() {
     // Park the pane on a session in the project we're leaving.
     let mut out = Vec::new();
     attach(&mut app, SessionRef::Agent(AgentId("a1".into())), &mut out);
-    app.last_session_for_worktree.insert(
+    app.nav.last_session_for_worktree.insert(
         WorktreeId("w9".into()),
         SessionRef::Agent(AgentId("a8".into())),
     );
@@ -15189,7 +16110,7 @@ fn a_cross_project_session_jump_attaches_only_the_session_picked() {
         "{:?}",
         attaches[0]
     );
-    assert_eq!(app.focus, Focus::Terminal);
+    assert_eq!(app.nav.focus, Focus::Terminal);
     assert_eq!(
         app.selected_project().map(|p| p.name.clone()),
         Some("secret".into())
@@ -15220,6 +16141,7 @@ fn seed_background_run(app: &mut App) {
                 status_changed_at: 0,
                 alive: true,
                 issue_url: None,
+                role: nebula_core::AgentRole::Worker,
                 recent_prompts: Vec::new(),
             }),
         },
@@ -15268,12 +16190,12 @@ pub(super) fn with_seeded_presets(f: impl FnOnce()) {
 /// A seeded app with FOCUS on the SESSIONS PANEL and the list open.
 fn open_presets(app: &mut App, out: &mut Vec<ClientRequest>) {
     seed_tree(app);
-    app.focus = Focus::Sessions;
+    app.nav.focus = Focus::Sessions;
     press(app, KeyCode::Char('e'), KeyModifiers::NONE, out);
     assert!(
-        matches!(&app.overlay, Some(Overlay::AgentPresets(_))),
+        matches!(&app.modals.overlay, Some(Overlay::AgentPresets(_))),
         "e in Sessions should open the presets list, got {:?}",
-        app.overlay
+        app.modals.overlay
     );
 }
 
@@ -15328,7 +16250,7 @@ fn a_skip_preset_on_a_forks_main_cuts_the_prs_own_checkout_not_the_root() {
         .expect("parsed");
         let project = app.selected_project().expect("a project").id.clone();
         let now = std::time::Instant::now();
-        app.open_prs.insert(
+        app.github.open_prs.insert(
             project,
             crate::app::OpenPrs {
                 list,
@@ -15338,9 +16260,9 @@ fn a_skip_preset_on_a_forks_main_cuts_the_prs_own_checkout_not_the_root() {
             },
         );
         let url = "https://github.com/o/r/pull/129";
-        app.focus = Focus::Worktrees;
-        app.sel_worktree = app.open_pr_row_of(url).expect("#129 is a row");
-        let pr_row = app.sel_worktree;
+        app.nav.focus = Focus::Worktrees;
+        app.nav.sel_worktree = app.open_pr_row_of(url).expect("#129 is a row");
+        let pr_row = app.nav.sel_worktree;
         let agents_under_root = |app: &App| {
             app.tree
                 .agents
@@ -15357,9 +16279,9 @@ fn a_skip_preset_on_a_forks_main_cuts_the_prs_own_checkout_not_the_root() {
         }
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE, &mut out);
         assert!(
-            app.overlay.is_none(),
+            app.modals.overlay.is_none(),
             "no box for a skip preset: {:?}",
-            app.overlay
+            app.modals.overlay
         );
 
         let creates: Vec<&ClientRequest> = out
@@ -15401,7 +16323,7 @@ fn a_skip_preset_on_a_forks_main_cuts_the_prs_own_checkout_not_the_root() {
             Some(pr_row + 1),
             "nested under the pull request's row"
         );
-        assert_eq!(app.sel_worktree, pr_row + 1, "the cursor is on it");
+        assert_eq!(app.nav.sel_worktree, pr_row + 1, "the cursor is on it");
         assert_eq!(
             agents_under_root(&app),
             before,
@@ -15431,15 +16353,15 @@ fn e_reaches_the_pr_preset_picker_from_any_panel() {
             let mut app = App::new();
             seed_tree(&mut app);
             seed_open_prs(&mut app, &[(7, "Attach links")]);
-            app.sel_worktree = 1;
-            app.focus = focus;
+            app.nav.sel_worktree = 1;
+            app.nav.focus = focus;
             assert_eq!(app.selected_worktree_pr().map(|p| p.number), Some(7));
             let mut out = Vec::new();
             press(&mut app, KeyCode::Char('e'), KeyModifiers::NONE, &mut out);
-            let Some(Overlay::AgentPresets(view)) = &app.overlay else {
+            let Some(Overlay::AgentPresets(view)) = &app.modals.overlay else {
                 panic!(
                     "e from {focus:?} opens the PR preset picker, got {:?} ({:?})",
-                    app.overlay, app.flash
+                    app.modals.overlay, app.chrome.flash
                 );
             };
             let back = view.quick.as_ref().expect("a picker, not the manager");
@@ -15461,14 +16383,14 @@ fn the_pr_preset_picker_adds_edits_and_deletes_presets() {
         let mut app = App::new();
         seed_tree(&mut app);
         seed_open_prs(&mut app, &[(7, "Attach links")]);
-        app.focus = Focus::Worktrees;
-        app.sel_worktree = 1;
+        app.nav.focus = Focus::Worktrees;
+        app.nav.sel_worktree = 1;
         let mut out = Vec::new();
         press(&mut app, KeyCode::Char('e'), KeyModifiers::NONE, &mut out);
         // The row names, and the cursor, of the PR picker on screen.
         fn pr_picker(app: &App) -> (Vec<String>, usize) {
-            let Some(Overlay::AgentPresets(view)) = &app.overlay else {
-                panic!("back in the PR picker, got {:?}", app.overlay);
+            let Some(Overlay::AgentPresets(view)) = &app.modals.overlay else {
+                panic!("back in the PR picker, got {:?}", app.modals.overlay);
             };
             let back = view.quick.as_ref().expect("the picker, not the manager");
             assert_eq!(back.launch.pr.as_ref().map(|pr| pr.number), Some(7));
@@ -15486,9 +16408,9 @@ fn the_pr_preset_picker_adds_edits_and_deletes_presets() {
             &mut out,
         );
         assert!(
-            matches!(&app.overlay, Some(Overlay::AgentPresetEditor(_))),
+            matches!(&app.modals.overlay, Some(Overlay::AgentPresetEditor(_))),
             "a opens the editor: {:?}",
-            app.overlay
+            app.modals.overlay
         );
         type_text(&mut app, "triage", &mut out);
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE, &mut out);
@@ -15504,9 +16426,9 @@ fn the_pr_preset_picker_adds_edits_and_deletes_presets() {
             &mut out,
         );
         assert!(
-            matches!(&app.overlay, Some(Overlay::AgentPresetEditor(e)) if e.editing == Some(2)),
+            matches!(&app.modals.overlay, Some(Overlay::AgentPresetEditor(e)) if e.editing == Some(2)),
             "e edits the row under the cursor: {:?}",
-            app.overlay
+            app.modals.overlay
         );
         type_text(&mut app, " pr", &mut out);
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE, &mut out);
@@ -15533,9 +16455,9 @@ fn the_pr_preset_picker_adds_edits_and_deletes_presets() {
             &mut out,
         );
         assert!(
-            matches!(&app.overlay, Some(Overlay::Confirm(_))),
+            matches!(&app.modals.overlay, Some(Overlay::Confirm(_))),
             "d asks first: {:?}",
-            app.overlay
+            app.modals.overlay
         );
         press(&mut app, KeyCode::Char('n'), KeyModifiers::NONE, &mut out);
         assert_eq!(pr_picker(&app).0.len(), 3);
@@ -15552,8 +16474,8 @@ fn the_pr_preset_picker_adds_edits_and_deletes_presets() {
         // And a pick from it is still for the pull request.
         press(&mut app, KeyCode::Up, KeyModifiers::NONE, &mut out);
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE, &mut out);
-        let Some(Overlay::Prompt(prompt)) = &app.overlay else {
-            panic!("the pick hands the box back, got {:?}", app.overlay);
+        let Some(Overlay::Prompt(prompt)) = &app.modals.overlay else {
+            panic!("the pick hands the box back, got {:?}", app.modals.overlay);
         };
         assert_eq!(
             prompt.title,
@@ -15578,16 +16500,16 @@ fn e_on_an_open_pr_row_picks_a_preset_and_launches_a_pr_session_on_it() {
         let mut app = App::new();
         seed_tree(&mut app);
         seed_open_prs(&mut app, &[(7, "Attach links")]);
-        app.focus = Focus::Worktrees;
-        app.sel_worktree = 1;
+        app.nav.focus = Focus::Worktrees;
+        app.nav.sel_worktree = 1;
         assert_eq!(app.selected_worktree_pr().map(|p| p.number), Some(7));
         let mut out = Vec::new();
 
         press(&mut app, KeyCode::Char('e'), KeyModifiers::NONE, &mut out);
-        let Some(Overlay::AgentPresets(view)) = &app.overlay else {
+        let Some(Overlay::AgentPresets(view)) = &app.modals.overlay else {
             panic!(
                 "e on a PR row opens the preset picker, got {:?}",
-                app.overlay
+                app.modals.overlay
             );
         };
         assert!(view.is_picker(), "a picker for the PR, not the manager");
@@ -15602,8 +16524,8 @@ fn e_on_an_open_pr_row_picks_a_preset_and_launches_a_pr_session_on_it() {
 
         // Enter on "reviewer": the box, for the PR and the preset.
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE, &mut out);
-        let Some(Overlay::Prompt(prompt)) = &app.overlay else {
-            panic!("the pick hands the box back, got {:?}", app.overlay);
+        let Some(Overlay::Prompt(prompt)) = &app.modals.overlay else {
+            panic!("the pick hands the box back, got {:?}", app.modals.overlay);
         };
         assert_eq!(
             prompt.title,
@@ -15618,22 +16540,22 @@ fn e_on_an_open_pr_row_picks_a_preset_and_launches_a_pr_session_on_it() {
             &mut out,
         );
         assert_eq!(
-            app.flash.as_deref(),
+            app.chrome.flash.as_deref(),
             Some("quick prompt: a PR session runs in the pull request's own checkout")
         );
         assert!(
             matches!(
-                &app.overlay,
+                &app.modals.overlay,
                 Some(Overlay::Prompt(prompt))
                     if matches!(&prompt.kind, PromptKind::QuickPrompt(launch) if launch.pr.is_some())
             ),
             "the box stays up, for the PR: {:?}",
-            app.overlay
+            app.modals.overlay
         );
 
         type_text(&mut app, "Fix auth", &mut out);
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE, &mut out);
-        assert!(app.overlay.is_none(), "{:?}", app.overlay);
+        assert!(app.modals.overlay.is_none(), "{:?}", app.modals.overlay);
         let creates: Vec<&ClientRequest> = out
             .iter()
             .filter(|r| {
@@ -15700,10 +16622,10 @@ fn e_on_an_open_pr_row_picks_a_preset_and_launches_a_pr_session_on_it() {
             },
         );
         seed_open_prs(&mut app, &[(7, "Attach links")]);
-        app.focus = Focus::Worktrees;
+        app.nav.focus = Focus::Worktrees;
         // The checkout on the head branch lists under the pull
         // request, so the pull request's row is looked up, not counted.
-        app.sel_worktree = app.open_pr_row_of(&pr_url(7)).expect("#7 is a row");
+        app.nav.sel_worktree = app.open_pr_row_of(&pr_url(7)).expect("#7 is a row");
         assert_eq!(app.selected_worktree_pr().map(|p| p.number), Some(7));
         let rows = app.tree.worktrees.len();
         press(&mut app, KeyCode::Char('e'), KeyModifiers::NONE, &mut out);
@@ -15744,9 +16666,9 @@ fn e_on_an_open_pr_row_picks_a_preset_and_launches_a_pr_session_on_it() {
         press(&mut app, KeyCode::Down, KeyModifiers::NONE, &mut out);
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE, &mut out);
         assert!(
-            app.overlay.is_none(),
+            app.modals.overlay.is_none(),
             "no box for a skip preset: {:?}",
-            app.overlay
+            app.modals.overlay
         );
         assert!(
             out.iter().any(|r| matches!(
@@ -15768,7 +16690,7 @@ fn the_issue_comment_box_comes_back_to_the_modal_on_its_row() {
     let mut app = App::new();
     let mut out = Vec::new();
     let project = nebula_core::ProjectId("p1".into());
-    app.overlay = Some(Overlay::Issues(crate::issues::IssuesView::new(
+    app.modals.overlay = Some(Overlay::Issues(crate::issues::IssuesView::new(
         project.clone(),
         "demo".into(),
         "/nonexistent/nebula-issue-comment-box".into(),
@@ -15791,7 +16713,8 @@ fn the_issue_comment_box_comes_back_to_the_modal_on_its_row() {
         },
     );
     press(&mut app, KeyCode::Down, KeyModifiers::NONE, &mut out);
-    let on_row = |app: &App| matches!(&app.overlay, Some(Overlay::Issues(v)) if v.selected == 1);
+    let on_row =
+        |app: &App| matches!(&app.modals.overlay, Some(Overlay::Issues(v)) if v.selected == 1);
     assert!(on_row(&app));
 
     // Esc: back, nothing posted.
@@ -15801,10 +16724,14 @@ fn the_issue_comment_box_comes_back_to_the_modal_on_its_row() {
         KeyModifiers::CONTROL,
         &mut out,
     );
-    assert!(matches!(&app.overlay, Some(Overlay::Prompt(p)) if p.title.contains("#14")));
+    assert!(matches!(&app.modals.overlay, Some(Overlay::Prompt(p)) if p.title.contains("#14")));
     type_text(&mut app, "never mind", &mut out);
     press(&mut app, KeyCode::Esc, KeyModifiers::NONE, &mut out);
-    assert!(on_row(&app), "Esc puts the modal back: {:?}", app.overlay);
+    assert!(
+        on_row(&app),
+        "Esc puts the modal back: {:?}",
+        app.modals.overlay
+    );
 
     // An empty Enter: the same.
     press(
@@ -15814,8 +16741,12 @@ fn the_issue_comment_box_comes_back_to_the_modal_on_its_row() {
         &mut out,
     );
     press(&mut app, KeyCode::Enter, KeyModifiers::NONE, &mut out);
-    assert!(on_row(&app), "an empty box is a cancel: {:?}", app.overlay);
-    assert_eq!(app.flash.as_deref(), Some("cancelled: empty input"));
+    assert!(
+        on_row(&app),
+        "an empty box is a cancel: {:?}",
+        app.modals.overlay
+    );
+    assert_eq!(app.chrome.flash.as_deref(), Some("cancelled: empty input"));
 
     // Enter with text: posted — or, off a checkout that isn't on disk,
     // the box comes back with the text, newline and all.
@@ -15829,17 +16760,21 @@ fn the_issue_comment_box_comes_back_to_the_modal_on_its_row() {
     press(&mut app, KeyCode::Enter, KeyModifiers::SHIFT, &mut out);
     type_text(&mut app, "today", &mut out);
     press(&mut app, KeyCode::Enter, KeyModifiers::NONE, &mut out);
-    let Some(Overlay::Prompt(prompt)) = &app.overlay else {
+    let Some(Overlay::Prompt(prompt)) = &app.modals.overlay else {
         panic!(
             "the box should come back with the text, got {:?}",
-            app.overlay
+            app.modals.overlay
         );
     };
     assert_eq!(prompt.input.as_str(), "on it\ntoday");
     assert!(
-        app.flash.as_deref().unwrap().contains("isn't on disk"),
+        app.chrome
+            .flash
+            .as_deref()
+            .unwrap()
+            .contains("isn't on disk"),
         "{:?}",
-        app.flash
+        app.chrome.flash
     );
     assert!(out.is_empty(), "nothing goes to the daemon: {out:?}");
 }
@@ -15856,14 +16791,14 @@ fn the_issue_quick_prompt_starts_on_the_root_branch_or_a_fresh_worktree() {
             let mut app = App::new();
             seed_tree(&mut app);
             seed_feat_worktree(&mut app, "w2", "feat");
-            app.sel_worktree = 1;
+            app.nav.sel_worktree = 1;
             assert_eq!(
                 app.selected_worktree().map(|w| w.branch.as_str()),
                 Some("feat")
             );
             let mut out = Vec::new();
             let project = nebula_core::ProjectId("p1".into());
-            app.overlay = Some(Overlay::Issues(crate::issues::IssuesView::new(
+            app.modals.overlay = Some(Overlay::Issues(crate::issues::IssuesView::new(
                 project.clone(),
                 "demo".into(),
                 "/tmp/demo".into(),
@@ -15885,7 +16820,7 @@ fn the_issue_quick_prompt_starts_on_the_root_branch_or_a_fresh_worktree() {
                 },
             );
             press(&mut app, KeyCode::Enter, KeyModifiers::NONE, &mut out);
-            match &app.overlay {
+            match &app.modals.overlay {
                 Some(Overlay::Prompt(prompt)) => match &prompt.kind {
                     PromptKind::QuickPrompt(launch) => launch.target.clone(),
                     other => panic!("{other:?}"),
@@ -15917,10 +16852,10 @@ fn the_issue_quick_prompt_stands_on_the_modal() {
     with_config_json(r#"{"follow_new_session": true}"#, || {
         let mut app = App::new();
         seed_tree(&mut app);
-        let focus = app.focus;
+        let focus = app.nav.focus;
         let mut out = Vec::new();
         let project = nebula_core::ProjectId("p1".into());
-        app.overlay = Some(Overlay::Issues(crate::issues::IssuesView::new(
+        app.modals.overlay = Some(Overlay::Issues(crate::issues::IssuesView::new(
             project.clone(),
             "demo".into(),
             "/tmp/demo".into(),
@@ -15944,12 +16879,12 @@ fn the_issue_quick_prompt_stands_on_the_modal() {
         );
         press(&mut app, KeyCode::Down, KeyModifiers::NONE, &mut out);
         let on_row =
-            |app: &App| matches!(&app.overlay, Some(Overlay::Issues(v)) if v.selected == 1);
+            |app: &App| matches!(&app.modals.overlay, Some(Overlay::Issues(v)) if v.selected == 1);
         let mut terminal = Terminal::new(TestBackend::new(140, 40)).unwrap();
 
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE, &mut out);
-        let Some(Overlay::Prompt(prompt)) = &app.overlay else {
-            panic!("Enter: expected the box, got {:?}", app.overlay);
+        let Some(Overlay::Prompt(prompt)) = &app.modals.overlay else {
+            panic!("Enter: expected the box, got {:?}", app.modals.overlay);
         };
         let PromptKind::QuickPrompt(launch) = &prompt.kind else {
             panic!("{:?}", prompt.kind);
@@ -15970,12 +16905,16 @@ fn the_issue_quick_prompt_stands_on_the_modal() {
 
         // Esc: the box goes, the modal stays.
         press(&mut app, KeyCode::Esc, KeyModifiers::NONE, &mut out);
-        assert!(on_row(&app), "Esc leaves the modal: {:?}", app.overlay);
+        assert!(
+            on_row(&app),
+            "Esc leaves the modal: {:?}",
+            app.modals.overlay
+        );
 
         // A click outside the box: the same.
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE, &mut out);
         crate::overlay_close::click_outside(&mut app, &mut out);
-        assert!(on_row(&app), "a click outside: {:?}", app.overlay);
+        assert!(on_row(&app), "a click outside: {:?}", app.modals.overlay);
 
         // The launch, through the loop's own entry point (so a follow
         // it may not take is caught): the create goes out, and the
@@ -15995,9 +16934,9 @@ fn the_issue_quick_prompt_stands_on_the_modal() {
             other => panic!("one create, for the issue: {other:?}"),
         };
         assert!(
-            app.overlay.is_none(),
+            app.modals.overlay.is_none(),
             "the launch closes the modal: {:?}",
-            app.overlay
+            app.modals.overlay
         );
 
         // The DAEMON's side: the row, then the Ack — and the cursor is
@@ -16024,6 +16963,7 @@ fn the_issue_quick_prompt_stands_on_the_modal() {
                     status_changed_at: crate::app::now_ms(),
                     alive: true,
                     issue_url: None,
+                    role: nebula_core::AgentRole::Worker,
                     recent_prompts: Vec::new(),
                 }),
             },
@@ -16036,14 +16976,14 @@ fn the_issue_quick_prompt_stands_on_the_modal() {
             },
             &mut out,
         );
-        assert!(app.overlay.is_none(), "nothing comes back up");
+        assert!(app.modals.overlay.is_none(), "nothing comes back up");
         assert_eq!(
             app.selected_session().map(|a| a.id),
             Some(fresh),
             "the cursor is on the new card"
         );
-        assert_eq!(app.focus, focus, "the keys stay on the grid");
-        assert!(!app.term_locked);
+        assert_eq!(app.nav.focus, focus, "the keys stay on the grid");
+        assert!(!app.pane.term_locked);
     });
 }
 
@@ -16058,7 +16998,7 @@ fn the_issue_preset_picker_stands_on_the_modal() {
         seed_tree(&mut app);
         let mut out = Vec::new();
         let project = nebula_core::ProjectId("p1".into());
-        app.overlay = Some(Overlay::Issues(crate::issues::IssuesView::new(
+        app.modals.overlay = Some(Overlay::Issues(crate::issues::IssuesView::new(
             project.clone(),
             "demo".into(),
             "/tmp/demo".into(),
@@ -16082,14 +17022,14 @@ fn the_issue_preset_picker_stands_on_the_modal() {
         );
         press(&mut app, KeyCode::Down, KeyModifiers::NONE, &mut out);
         let on_row =
-            |app: &App| matches!(&app.overlay, Some(Overlay::Issues(v)) if v.selected == 1);
+            |app: &App| matches!(&app.modals.overlay, Some(Overlay::Issues(v)) if v.selected == 1);
         let mut terminal = Terminal::new(TestBackend::new(140, 40)).unwrap();
 
         press(&mut app, KeyCode::BackTab, KeyModifiers::SHIFT, &mut out);
-        let Some(Overlay::AgentPresets(view)) = &app.overlay else {
+        let Some(Overlay::AgentPresets(view)) = &app.modals.overlay else {
             panic!(
                 "Shift+Tab: expected the preset picker, got {:?}",
-                app.overlay
+                app.modals.overlay
             );
         };
         let back = view.quick.as_ref().expect("a picker for a launch");
@@ -16108,19 +17048,23 @@ fn the_issue_preset_picker_stands_on_the_modal() {
 
         // Esc: the picker goes, the modal stays on its row.
         press(&mut app, KeyCode::Esc, KeyModifiers::NONE, &mut out);
-        assert!(on_row(&app), "Esc leaves the modal: {:?}", app.overlay);
+        assert!(
+            on_row(&app),
+            "Esc leaves the modal: {:?}",
+            app.modals.overlay
+        );
 
         // A click outside the picker: the same.
         press(&mut app, KeyCode::BackTab, KeyModifiers::SHIFT, &mut out);
         terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
         crate::overlay_close::click_outside(&mut app, &mut out);
-        assert!(on_row(&app), "a click outside: {:?}", app.overlay);
+        assert!(on_row(&app), "a click outside: {:?}", app.modals.overlay);
 
         // A pick: the box, preset applied, still standing on the modal.
         press(&mut app, KeyCode::BackTab, KeyModifiers::SHIFT, &mut out);
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE, &mut out);
-        let Some(Overlay::Prompt(prompt)) = &app.overlay else {
-            panic!("the pick: expected the box, got {:?}", app.overlay);
+        let Some(Overlay::Prompt(prompt)) = &app.modals.overlay else {
+            panic!("the pick: expected the box, got {:?}", app.modals.overlay);
         };
         let PromptKind::QuickPrompt(launch) = &prompt.kind else {
             panic!("{:?}", prompt.kind);
@@ -16141,7 +17085,7 @@ fn the_issue_preset_picker_stands_on_the_modal() {
             "the modal under:\n{screen}"
         );
         press(&mut app, KeyCode::Esc, KeyModifiers::NONE, &mut out);
-        assert!(on_row(&app), "the box's Esc: {:?}", app.overlay);
+        assert!(on_row(&app), "the box's Esc: {:?}", app.modals.overlay);
     });
 }
 
@@ -16156,7 +17100,7 @@ fn the_preset_list_tab_flips_a_new_worktree() {
         let mut app = App::new();
         let mut out = Vec::new();
         open_presets(&mut app, &mut out);
-        let fresh = |app: &App| match &app.overlay {
+        let fresh = |app: &App| match &app.modals.overlay {
             Some(Overlay::AgentPresets(v)) => v.is_new_worktree(),
             other => panic!("expected the presets list, got {other:?}"),
         };
@@ -16177,13 +17121,13 @@ fn the_preset_list_tab_flips_a_new_worktree() {
         assert!(!fresh(&app), "and off again");
 
         // The click: the same flip.
-        let Some(Overlay::AgentPresets(view)) = &app.overlay else {
+        let Some(Overlay::AgentPresets(view)) = &app.modals.overlay else {
             unreachable!()
         };
         let row = view.toggle_area;
         click(&mut app, row.x + row.width - 4, row.y, &mut out);
         assert!(fresh(&app), "a click on the row flips it on");
-        let Some(Overlay::AgentPresets(view)) = &app.overlay else {
+        let Some(Overlay::AgentPresets(view)) = &app.modals.overlay else {
             unreachable!()
         };
         let Some(crate::quick_prompt::QuickTarget::NewWorktree { branch, .. }) = view.aim.clone()
@@ -16193,8 +17137,8 @@ fn the_preset_list_tab_flips_a_new_worktree() {
 
         // Enter on "reviewer": the box, preset on, aimed at the branch.
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE, &mut out);
-        let Some(Overlay::Prompt(prompt)) = &app.overlay else {
-            panic!("expected the quick prompt, got {:?}", app.overlay);
+        let Some(Overlay::Prompt(prompt)) = &app.modals.overlay else {
+            panic!("expected the quick prompt, got {:?}", app.modals.overlay);
         };
         let PromptKind::QuickPrompt(launch) = &prompt.kind else {
             panic!("{:?}", prompt.kind);
@@ -16230,7 +17174,7 @@ fn the_issue_preset_picker_tab_flips_a_new_worktree() {
         seed_tree(&mut app);
         let mut out = Vec::new();
         let project = nebula_core::ProjectId("p1".into());
-        app.overlay = Some(Overlay::Issues(crate::issues::IssuesView::new(
+        app.modals.overlay = Some(Overlay::Issues(crate::issues::IssuesView::new(
             project.clone(),
             "demo".into(),
             "/tmp/demo".into(),
@@ -16251,7 +17195,7 @@ fn the_issue_preset_picker_tab_flips_a_new_worktree() {
                 }]),
             },
         );
-        let fresh = |app: &App| match &app.overlay {
+        let fresh = |app: &App| match &app.modals.overlay {
             Some(Overlay::AgentPresets(v)) => v.is_new_worktree(),
             other => panic!("expected the preset picker, got {other:?}"),
         };
@@ -16261,14 +17205,14 @@ fn the_issue_preset_picker_tab_flips_a_new_worktree() {
         press(&mut app, KeyCode::Tab, KeyModifiers::NONE, &mut out);
         assert!(fresh(&app));
         press(&mut app, KeyCode::Esc, KeyModifiers::NONE, &mut out);
-        assert!(matches!(&app.overlay, Some(Overlay::Issues(_))));
+        assert!(matches!(&app.modals.overlay, Some(Overlay::Issues(_))));
         press(&mut app, KeyCode::BackTab, KeyModifiers::SHIFT, &mut out);
         assert!(!fresh(&app), "Esc dropped the flip");
 
         press(&mut app, KeyCode::Tab, KeyModifiers::NONE, &mut out);
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE, &mut out);
-        let Some(Overlay::Prompt(prompt)) = &app.overlay else {
-            panic!("the pick: expected the box, got {:?}", app.overlay);
+        let Some(Overlay::Prompt(prompt)) = &app.modals.overlay else {
+            panic!("the pick: expected the box, got {:?}", app.modals.overlay);
         };
         let PromptKind::QuickPrompt(launch) = &prompt.kind else {
             panic!("{:?}", prompt.kind);
@@ -16299,8 +17243,8 @@ fn presets_a_fills_the_editor_and_enter_persists() {
             KeyModifiers::CONTROL,
             &mut out,
         );
-        let Some(Overlay::AgentPresetEditor(editor)) = &app.overlay else {
-            panic!("a should open the editor, got {:?}", app.overlay);
+        let Some(Overlay::AgentPresetEditor(editor)) = &app.modals.overlay else {
+            panic!("a should open the editor, got {:?}", app.modals.overlay);
         };
         assert_eq!(editor.editing, None);
         assert_eq!(editor.field, PresetField::Name);
@@ -16317,8 +17261,8 @@ fn presets_a_fills_the_editor_and_enter_persists() {
         // Effort, then the Text row: a new preset starts on `prefix`
         // alone — one box, and no Postfix row for Tab to land on.
         press(&mut app, KeyCode::Tab, KeyModifiers::NONE, &mut out);
-        let Some(Overlay::AgentPresetEditor(editor)) = &app.overlay else {
-            panic!("editor should stay open, got {:?}", app.overlay);
+        let Some(Overlay::AgentPresetEditor(editor)) = &app.modals.overlay else {
+            panic!("editor should stay open, got {:?}", app.modals.overlay);
         };
         assert_eq!(editor.field, PresetField::Text);
         assert_eq!(editor.text, crate::agent_presets::PresetText::Prefix);
@@ -16351,8 +17295,8 @@ fn presets_a_fills_the_editor_and_enter_persists() {
         assert!(paste_into_overlay(&mut app, "Line four"));
         // ↑ walks the box's lines rather than leaving the field …
         press(&mut app, KeyCode::Up, KeyModifiers::NONE, &mut out);
-        let Some(Overlay::AgentPresetEditor(editor)) = &app.overlay else {
-            panic!("editor should stay open, got {:?}", app.overlay);
+        let Some(Overlay::AgentPresetEditor(editor)) = &app.modals.overlay else {
+            panic!("editor should stay open, got {:?}", app.modals.overlay);
         };
         assert_eq!(editor.field, PresetField::Prefix);
         assert_eq!(
@@ -16364,8 +17308,8 @@ fn presets_a_fills_the_editor_and_enter_persists() {
         press(&mut app, KeyCode::Down, KeyModifiers::NONE, &mut out);
         press(&mut app, KeyCode::Down, KeyModifiers::NONE, &mut out);
         type_text(&mut app, "END", &mut out);
-        let Some(Overlay::AgentPresetEditor(editor)) = &app.overlay else {
-            panic!("editor should stay open, got {:?}", app.overlay);
+        let Some(Overlay::AgentPresetEditor(editor)) = &app.modals.overlay else {
+            panic!("editor should stay open, got {:?}", app.modals.overlay);
         };
         assert_eq!(editor.name.as_str(), "tested");
         assert_eq!(editor.kind, AgentKind::Codex);
@@ -16386,8 +17330,11 @@ fn presets_a_fills_the_editor_and_enter_persists() {
         );
 
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE, &mut out);
-        let Some(Overlay::AgentPresets(view)) = &app.overlay else {
-            panic!("save should land back in the list, got {:?}", app.overlay);
+        let Some(Overlay::AgentPresets(view)) = &app.modals.overlay else {
+            panic!(
+                "save should land back in the list, got {:?}",
+                app.modals.overlay
+            );
         };
         assert_eq!(view.presets.len(), 3);
         assert_eq!(view.selected, 2, "cursor on the saved row");
@@ -16428,13 +17375,16 @@ fn presets_editor_refuses_blank_and_duplicate_names() {
         );
         // Enter from the far end of the form.
         press(&mut app, KeyCode::BackTab, KeyModifiers::NONE, &mut out);
-        let Some(Overlay::AgentPresetEditor(editor)) = &app.overlay else {
-            panic!("a should open the editor, got {:?}", app.overlay);
+        let Some(Overlay::AgentPresetEditor(editor)) = &app.modals.overlay else {
+            panic!("a should open the editor, got {:?}", app.modals.overlay);
         };
         assert_eq!(editor.field, PresetField::Task);
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE, &mut out);
-        let Some(Overlay::AgentPresetEditor(editor)) = &app.overlay else {
-            panic!("a refused save keeps the form, got {:?}", app.overlay);
+        let Some(Overlay::AgentPresetEditor(editor)) = &app.modals.overlay else {
+            panic!(
+                "a refused save keeps the form, got {:?}",
+                app.modals.overlay
+            );
         };
         assert_eq!(
             editor.error,
@@ -16448,9 +17398,12 @@ fn presets_editor_refuses_blank_and_duplicate_names() {
             PresetField::Name,
             "the caret comes back to the field to fix"
         );
-        assert_eq!(app.flash, None, "the reason is in the form, not the footer");
+        assert_eq!(
+            app.chrome.flash, None,
+            "the reason is in the form, not the footer"
+        );
 
-        let th = app.theme;
+        let th = app.chrome.theme;
         let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
         terminal.draw(|f| ui::draw(f, &mut app)).unwrap();
         let text = buffer_text(&terminal);
@@ -16481,8 +17434,8 @@ fn presets_editor_refuses_blank_and_duplicate_names() {
         // goes, the label is back in the focus color, the form keeps
         // its place.
         type_text(&mut app, "R", &mut out);
-        let Some(Overlay::AgentPresetEditor(editor)) = &app.overlay else {
-            panic!("typing keeps the form, got {:?}", app.overlay);
+        let Some(Overlay::AgentPresetEditor(editor)) = &app.modals.overlay else {
+            panic!("typing keeps the form, got {:?}", app.modals.overlay);
         };
         assert_eq!(editor.error, None);
         assert_eq!(editor.name.as_str(), "R");
@@ -16501,8 +17454,8 @@ fn presets_editor_refuses_blank_and_duplicate_names() {
 
         type_text(&mut app, "eviewer", &mut out);
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE, &mut out);
-        let Some(Overlay::AgentPresetEditor(editor)) = &app.overlay else {
-            panic!("a duplicate keeps the form, got {:?}", app.overlay);
+        let Some(Overlay::AgentPresetEditor(editor)) = &app.modals.overlay else {
+            panic!("a duplicate keeps the form, got {:?}", app.modals.overlay);
         };
         let error = editor.error.clone().expect("case-insensitive duplicate");
         assert_eq!(error.field, PresetField::Name);
@@ -16517,22 +17470,22 @@ fn presets_editor_refuses_blank_and_duplicate_names() {
         // Tabbing away leaves the banner up — the name is still the
         // problem; the first change to it takes the banner down.
         press(&mut app, KeyCode::Tab, KeyModifiers::NONE, &mut out);
-        let Some(Overlay::AgentPresetEditor(editor)) = &app.overlay else {
-            panic!("Tab keeps the form, got {:?}", app.overlay);
+        let Some(Overlay::AgentPresetEditor(editor)) = &app.modals.overlay else {
+            panic!("Tab keeps the form, got {:?}", app.modals.overlay);
         };
         assert_eq!(editor.field, PresetField::Kind);
         assert_eq!(editor.error.as_ref(), Some(&error));
         press(&mut app, KeyCode::BackTab, KeyModifiers::NONE, &mut out);
         press(&mut app, KeyCode::Backspace, KeyModifiers::NONE, &mut out);
-        let Some(Overlay::AgentPresetEditor(editor)) = &app.overlay else {
-            panic!("Backspace keeps the form, got {:?}", app.overlay);
+        let Some(Overlay::AgentPresetEditor(editor)) = &app.modals.overlay else {
+            panic!("Backspace keeps the form, got {:?}", app.modals.overlay);
         };
         assert_eq!(editor.error, None);
         assert_eq!(editor.name.as_str(), "Reviewe");
 
         press(&mut app, KeyCode::Esc, KeyModifiers::NONE, &mut out);
-        let Some(Overlay::AgentPresets(view)) = &app.overlay else {
-            panic!("Esc goes back to the list, got {:?}", app.overlay);
+        let Some(Overlay::AgentPresets(view)) = &app.modals.overlay else {
+            panic!("Esc goes back to the list, got {:?}", app.modals.overlay);
         };
         assert_eq!(view.presets.len(), 2, "nothing saved");
         assert_eq!(crate::agent_presets::load().len(), 2);
@@ -16554,7 +17507,7 @@ fn presets_list_types_ahead_to_find_a_preset_by_name() {
         let mut out = Vec::new();
         open_presets(&mut app, &mut out);
         fn list(app: &App) -> crate::preset_overlays::AgentPresetsView {
-            match &app.overlay {
+            match &app.modals.overlay {
                 Some(Overlay::AgentPresets(view)) => view.clone(),
                 other => panic!("expected the presets list, got {other:?}"),
             }
@@ -16575,7 +17528,7 @@ fn presets_list_types_ahead_to_find_a_preset_by_name() {
         // `q` matches nothing: refused, the list still up.
         type_text(&mut app, "q", &mut out);
         assert_eq!(list(&app).filter, "e", "a dead letter is refused");
-        assert_eq!(app.flash.as_deref(), Some("no preset matches 'eq'"));
+        assert_eq!(app.chrome.flash.as_deref(), Some("no preset matches 'eq'"));
 
         // Backspace widens; "scr" finds the second row and the cursor
         // follows it.
@@ -16602,7 +17555,7 @@ fn presets_list_types_ahead_to_find_a_preset_by_name() {
         assert_eq!(list(&app).selected, 1, "still on the preset found");
         // … the second closes.
         press(&mut app, KeyCode::Esc, KeyModifiers::NONE, &mut out);
-        assert!(app.overlay.is_none());
+        assert!(app.modals.overlay.is_none());
 
         // Ctrl+e edits the row the filter left, not the stored first.
         open_presets(&mut app, &mut out);
@@ -16614,9 +17567,9 @@ fn presets_list_types_ahead_to_find_a_preset_by_name() {
             &mut out,
         );
         assert!(
-            matches!(&app.overlay, Some(Overlay::AgentPresetEditor(e)) if e.editing == Some(1)),
+            matches!(&app.modals.overlay, Some(Overlay::AgentPresetEditor(e)) if e.editing == Some(1)),
             "{:?}",
-            app.overlay
+            app.modals.overlay
         );
         press(&mut app, KeyCode::Esc, KeyModifiers::NONE, &mut out);
 
@@ -16625,16 +17578,16 @@ fn presets_list_types_ahead_to_find_a_preset_by_name() {
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE, &mut out);
         assert!(
             matches!(
-                &app.overlay,
+                &app.modals.overlay,
                 Some(Overlay::Prompt(p))
                     if matches!(&p.kind, PromptKind::AgentPresetTask { preset, .. } if preset.name == "scratch")
             ),
             "{:?}",
-            app.overlay
+            app.modals.overlay
         );
 
         // A click on the filtered list's first row is that same row.
-        app.overlay = None;
+        app.modals.overlay = None;
         open_presets(&mut app, &mut out);
         type_text(&mut app, "scr", &mut out);
         terminal.draw(|f| ui::draw(f, &mut app)).unwrap();
@@ -16642,12 +17595,12 @@ fn presets_list_types_ahead_to_find_a_preset_by_name() {
         click(&mut app, area.x + 1, area.y, &mut out);
         assert!(
             matches!(
-                &app.overlay,
+                &app.modals.overlay,
                 Some(Overlay::Prompt(p))
                     if matches!(&p.kind, PromptKind::AgentPresetTask { preset, .. } if preset.name == "scratch")
             ),
             "{:?}",
-            app.overlay
+            app.modals.overlay
         );
     });
 }
@@ -16665,8 +17618,11 @@ fn presets_e_edits_in_place() {
             KeyModifiers::CONTROL,
             &mut out,
         );
-        let Some(Overlay::AgentPresetEditor(editor)) = &app.overlay else {
-            panic!("e should open the editor on the row, got {:?}", app.overlay);
+        let Some(Overlay::AgentPresetEditor(editor)) = &app.modals.overlay else {
+            panic!(
+                "e should open the editor on the row, got {:?}",
+                app.modals.overlay
+            );
         };
         assert_eq!(editor.editing, Some(1));
         assert_eq!(editor.name.as_str(), "scratch");
@@ -16685,8 +17641,11 @@ fn presets_e_edits_in_place() {
         assert!(text.contains("◂ default ▸"), "focused choice:\n{text}");
 
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE, &mut out);
-        let Some(Overlay::AgentPresets(view)) = &app.overlay else {
-            panic!("save should land back in the list, got {:?}", app.overlay);
+        let Some(Overlay::AgentPresets(view)) = &app.modals.overlay else {
+            panic!(
+                "save should land back in the list, got {:?}",
+                app.modals.overlay
+            );
         };
         assert_eq!(view.presets.len(), 2, "edited in place, not appended");
         assert_eq!(view.selected, 1);
@@ -16709,7 +17668,7 @@ fn presets_d_confirms_deletes_and_reopens_and_cancel_keeps() {
             KeyModifiers::CONTROL,
             &mut out,
         );
-        match &app.overlay {
+        match &app.modals.overlay {
             Some(Overlay::Confirm(c)) => {
                 assert!(c.message.contains("'reviewer'"), "{}", c.message);
                 assert!(matches!(
@@ -16721,7 +17680,7 @@ fn presets_d_confirms_deletes_and_reopens_and_cancel_keeps() {
         }
         // Backing out puts the list back, untouched.
         press(&mut app, KeyCode::Esc, KeyModifiers::NONE, &mut out);
-        match &app.overlay {
+        match &app.modals.overlay {
             Some(Overlay::AgentPresets(view)) => assert_eq!(view.presets.len(), 2),
             other => panic!("cancel should reopen the list, got {other:?}"),
         }
@@ -16732,7 +17691,7 @@ fn presets_d_confirms_deletes_and_reopens_and_cancel_keeps() {
             &mut out,
         );
         press(&mut app, KeyCode::Char('y'), KeyModifiers::NONE, &mut out);
-        match &app.overlay {
+        match &app.modals.overlay {
             Some(Overlay::AgentPresets(view)) => {
                 assert_eq!(view.presets.len(), 1, "row dropped");
                 assert_eq!(view.presets[0].name, "scratch");
@@ -16740,7 +17699,10 @@ fn presets_d_confirms_deletes_and_reopens_and_cancel_keeps() {
             }
             other => panic!("delete should reopen the list, got {other:?}"),
         }
-        assert_eq!(app.flash.as_deref(), Some("deleted preset 'reviewer'"));
+        assert_eq!(
+            app.chrome.flash.as_deref(),
+            Some("deleted preset 'reviewer'")
+        );
         let left = crate::agent_presets::load();
         assert_eq!(left.len(), 1, "removal reached the store");
         assert_eq!(left[0].name, "scratch");
@@ -16756,8 +17718,11 @@ fn preset_enter_asks_for_a_task_and_launches_with_the_composed_prompt() {
         open_presets(&mut app, &mut out);
         let worktree = app.selected_worktree().unwrap().id.clone();
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE, &mut out);
-        let Some(Overlay::Prompt(prompt)) = &app.overlay else {
-            panic!("Enter should ask for the task, got {:?}", app.overlay);
+        let Some(Overlay::Prompt(prompt)) = &app.modals.overlay else {
+            panic!(
+                "Enter should ask for the task, got {:?}",
+                app.modals.overlay
+            );
         };
         assert_eq!(prompt.title, "Task for reviewer");
         assert!(
@@ -16777,7 +17742,7 @@ fn preset_enter_asks_for_a_task_and_launches_with_the_composed_prompt() {
         press(&mut app, KeyCode::Enter, KeyModifiers::SHIFT, &mut out);
         assert!(paste_into_overlay(&mut app, "Ship it"));
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE, &mut out);
-        assert!(app.overlay.is_none(), "launch closes the prompt");
+        assert!(app.modals.overlay.is_none(), "launch closes the prompt");
         assert!(
             matches!(
                 out.as_slice(),
@@ -16812,9 +17777,9 @@ fn preset_enter_asks_for_a_task_and_launches_with_the_composed_prompt() {
             },
             &mut out,
         );
-        assert_eq!(app.flash.as_deref(), Some("claude is not installed"));
+        assert_eq!(app.chrome.flash.as_deref(), Some("claude is not installed"));
         assert!(matches!(
-            &app.overlay,
+            &app.modals.overlay,
             Some(Overlay::Prompt(prompt))
                 if matches!(&prompt.kind, PromptKind::AgentPresetTask { preset, .. } if preset.name == "reviewer")
                     && prompt.input.as_str() == "Fix auth\nShip it"
@@ -16834,8 +17799,11 @@ fn preset_task_is_optional_and_esc_returns_to_the_list() {
         let worktree = app.selected_worktree().unwrap().id.clone();
         press(&mut app, KeyCode::Down, KeyModifiers::NONE, &mut out);
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE, &mut out);
-        let Some(Overlay::Prompt(prompt)) = &app.overlay else {
-            panic!("Enter should ask for the task, got {:?}", app.overlay);
+        let Some(Overlay::Prompt(prompt)) = &app.modals.overlay else {
+            panic!(
+                "Enter should ask for the task, got {:?}",
+                app.modals.overlay
+            );
         };
         assert_eq!(prompt.title, "Task for scratch");
         assert!(
@@ -16847,7 +17815,7 @@ fn preset_task_is_optional_and_esc_returns_to_the_list() {
         );
 
         press(&mut app, KeyCode::Esc, KeyModifiers::NONE, &mut out);
-        match &app.overlay {
+        match &app.modals.overlay {
             Some(Overlay::AgentPresets(view)) => assert_eq!(view.selected, 1, "same row"),
             other => panic!("Esc goes back to the list, got {other:?}"),
         }
@@ -16857,9 +17825,9 @@ fn preset_task_is_optional_and_esc_returns_to_the_list() {
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE, &mut out);
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE, &mut out);
         assert!(
-            app.overlay.is_none(),
+            app.modals.overlay.is_none(),
             "an empty task launches: {:?}",
-            app.overlay
+            app.modals.overlay
         );
         assert!(
             matches!(
@@ -16916,8 +17884,8 @@ fn a_skip_task_preset_launches_from_the_list_without_asking() {
             &mut out,
         );
         press(&mut app, KeyCode::BackTab, KeyModifiers::SHIFT, &mut out);
-        let Some(Overlay::AgentPresetEditor(editor)) = &app.overlay else {
-            panic!("e should open the editor, got {:?}", app.overlay);
+        let Some(Overlay::AgentPresetEditor(editor)) = &app.modals.overlay else {
+            panic!("e should open the editor, got {:?}", app.modals.overlay);
         };
         assert_eq!(editor.field, PresetField::Task);
         assert!(!editor.skip_task, "presets ask by default");
@@ -16943,7 +17911,11 @@ fn a_skip_task_preset_launches_from_the_list_without_asking() {
         assert!(out.is_empty(), "editing sends nothing: {out:?}");
 
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE, &mut out);
-        assert!(app.overlay.is_none(), "no task box: {:?}", app.overlay);
+        assert!(
+            app.modals.overlay.is_none(),
+            "no task box: {:?}",
+            app.modals.overlay
+        );
         assert!(
             matches!(
                 out.as_slice(),
@@ -16975,9 +17947,9 @@ fn a_skip_task_preset_launches_from_the_list_without_asking() {
             },
             &mut out,
         );
-        assert_eq!(app.flash.as_deref(), Some("claude is not installed"));
+        assert_eq!(app.chrome.flash.as_deref(), Some("claude is not installed"));
         assert!(matches!(
-            &app.overlay,
+            &app.modals.overlay,
             Some(Overlay::Prompt(prompt))
                 if matches!(&prompt.kind, PromptKind::AgentPresetTask { preset, .. } if preset.skip_task)
         ));
@@ -16997,12 +17969,15 @@ fn p_opens_the_quick_prompt_and_launches_on_what_was_typed() {
             seed_tree(&mut app);
             // Deliberately not the Sessions panel: unlike the presets
             // list, the quick prompt answers from wherever you are.
-            app.focus = Focus::Projects;
+            app.nav.focus = Focus::Projects;
             let worktree = app.selected_worktree().unwrap().id.clone();
 
             press(&mut app, KeyCode::Char('p'), KeyModifiers::NONE, &mut out);
-            let Some(Overlay::Prompt(prompt)) = &app.overlay else {
-                panic!("p should open the quick prompt, got {:?}", app.overlay);
+            let Some(Overlay::Prompt(prompt)) = &app.modals.overlay else {
+                panic!(
+                    "p should open the quick prompt, got {:?}",
+                    app.modals.overlay
+                );
             };
             assert_eq!(prompt.title, "Quick prompt (codex · gpt-5.5 · high)");
             assert!(prompt.is_multiline(), "a task box, not a one-line name");
@@ -17013,12 +17988,12 @@ fn p_opens_the_quick_prompt_and_launches_on_what_was_typed() {
             press(&mut app, KeyCode::Enter, KeyModifiers::SHIFT, &mut out);
             assert!(paste_into_overlay(&mut app, "then ship it"));
             assert!(
-                matches!(&app.overlay, Some(Overlay::Prompt(_))),
+                matches!(&app.modals.overlay, Some(Overlay::Prompt(_))),
                 "Shift+Enter stays in the box"
             );
 
             press(&mut app, KeyCode::Enter, KeyModifiers::NONE, &mut out);
-            assert!(app.overlay.is_none(), "launching closes the box");
+            assert!(app.modals.overlay.is_none(), "launching closes the box");
             assert!(
                 matches!(
                     out.as_slice(),
@@ -17053,9 +18028,9 @@ fn p_opens_the_quick_prompt_and_launches_on_what_was_typed() {
                 },
                 &mut out,
             );
-            assert_eq!(app.flash.as_deref(), Some("codex is not installed"));
+            assert_eq!(app.chrome.flash.as_deref(), Some("codex is not installed"));
             assert!(matches!(
-                &app.overlay,
+                &app.modals.overlay,
                 Some(Overlay::Prompt(prompt))
                     if matches!(prompt.kind, PromptKind::QuickPrompt { .. })
                         && prompt.input.as_str() == "Fix auth\nthen ship it"
@@ -17126,7 +18101,7 @@ fn the_project_tab_run_command_is_typed_into_the_selected_projects_entry() {
                 }),
             },
         );
-        app.sel_project = 0;
+        app.nav.sel_project = 0;
         let tab = crate::config::project_tab();
         let (_, row) = crate::config::locate(RunCommand).unwrap();
         let open_on_row = |app: &mut App, out: &mut Vec<ClientRequest>| {
@@ -17166,8 +18141,11 @@ fn the_project_tab_run_command_is_typed_into_the_selected_projects_entry() {
 
         // Enter: a prompt in the overlay's place, named for the project.
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE, &mut out);
-        let Some(Overlay::Prompt(prompt)) = &app.overlay else {
-            panic!("expected the run command prompt, got {:?}", app.overlay);
+        let Some(Overlay::Prompt(prompt)) = &app.modals.overlay else {
+            panic!(
+                "expected the run command prompt, got {:?}",
+                app.modals.overlay
+            );
         };
         assert_eq!(prompt.title, "Run command · demo");
         assert_eq!(prompt.input.as_str(), "");
@@ -17197,8 +18175,11 @@ fn the_project_tab_run_command_is_typed_into_the_selected_projects_entry() {
 
         // Reopened, the prompt carries the stored value; Esc keeps it.
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE, &mut out);
-        let Some(Overlay::Prompt(prompt)) = &app.overlay else {
-            panic!("expected the run command prompt, got {:?}", app.overlay);
+        let Some(Overlay::Prompt(prompt)) = &app.modals.overlay else {
+            panic!(
+                "expected the run command prompt, got {:?}",
+                app.modals.overlay
+            );
         };
         assert_eq!(prompt.input.as_str(), "npm run dev");
         type_text(&mut app, " --typo", &mut out);
@@ -17214,7 +18195,7 @@ fn the_project_tab_run_command_is_typed_into_the_selected_projects_entry() {
         press(&mut app, KeyCode::Esc, KeyModifiers::NONE, &mut out);
 
         // The other project reads its own (unset) value.
-        app.sel_project = 1;
+        app.nav.sel_project = 1;
         open_on_row(&mut app, &mut out);
         let screen = draw_to_string(&mut app, 100, 40);
         assert!(screen.contains("/tmp/other"), "{screen}");
@@ -17222,7 +18203,7 @@ fn the_project_tab_run_command_is_typed_into_the_selected_projects_entry() {
         press(&mut app, KeyCode::Esc, KeyModifiers::NONE, &mut out);
 
         // An empty Enter is the way back to the file — the entry goes.
-        app.sel_project = 0;
+        app.nav.sel_project = 0;
         open_on_row(&mut app, &mut out);
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE, &mut out);
         for _ in 0.."npm run dev".len() {
@@ -17271,8 +18252,8 @@ fn p_on_the_worktrees_panel_cuts_a_fresh_worktree_first() {
         let mut out = Vec::new();
         seed_tree(&mut app);
         seed_feat_worktree(&mut app, "w2", "feat");
-        app.focus = Focus::Worktrees;
-        app.sel_worktree = 0;
+        app.nav.focus = Focus::Worktrees;
+        app.nav.sel_worktree = 0;
         assert_eq!(
             app.selected_worktree().map(|w| w.branch.as_str()),
             Some("main"),
@@ -17280,7 +18261,7 @@ fn p_on_the_worktrees_panel_cuts_a_fresh_worktree_first() {
         );
 
         press(&mut app, KeyCode::Char('p'), KeyModifiers::NONE, &mut out);
-        let branch = match &app.overlay {
+        let branch = match &app.modals.overlay {
             Some(Overlay::Prompt(prompt)) => match &prompt.kind {
                 PromptKind::QuickPrompt(launch) => match &launch.target {
                     QuickTarget::NewWorktree { project, branch } => {
@@ -17308,14 +18289,14 @@ fn p_on_the_worktrees_panel_cuts_a_fresh_worktree_first() {
         // the launch must not be rebuilt from that.
         press(&mut app, KeyCode::Tab, KeyModifiers::NONE, &mut out);
         assert!(
-            matches!(&app.overlay, Some(Overlay::Menu(menu))
+            matches!(&app.modals.overlay, Some(Overlay::Menu(menu))
                     if menu.title.as_deref() == Some("Quick prompt agent")),
             "{:?}",
-            app.overlay
+            app.modals.overlay
         );
         press(&mut app, KeyCode::Down, KeyModifiers::NONE, &mut out);
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE, &mut out);
-        match &app.overlay {
+        match &app.modals.overlay {
             Some(Overlay::Prompt(prompt)) => {
                 assert_eq!(
                     prompt.title,
@@ -17332,7 +18313,7 @@ fn p_on_the_worktrees_panel_cuts_a_fresh_worktree_first() {
 
         assert!(paste_into_overlay(&mut app, "Fix auth"));
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE, &mut out);
-        assert!(app.overlay.is_none(), "launching closes the box");
+        assert!(app.modals.overlay.is_none(), "launching closes the box");
         let req_id = match out.as_slice() {
             [ClientRequest::CreateWorktree {
                 req_id,
@@ -17360,7 +18341,7 @@ fn p_on_the_worktrees_panel_cuts_a_fresh_worktree_first() {
             "the cursor is on the new row"
         );
         assert_eq!(
-            app.focus,
+            app.nav.focus,
             Focus::Worktrees,
             "focus stays where p was pressed"
         );
@@ -17398,9 +18379,9 @@ fn p_on_the_worktrees_panel_cuts_a_fresh_worktree_first() {
             },
             &mut out,
         );
-        assert_eq!(app.flash.as_deref(), Some("branch exists"));
+        assert_eq!(app.chrome.flash.as_deref(), Some("branch exists"));
         assert!(matches!(
-            &app.overlay,
+            &app.modals.overlay,
             Some(Overlay::Prompt(prompt))
                 if matches!(
                     &prompt.kind,
@@ -17422,7 +18403,7 @@ fn a_quick_prompt_lands_the_row_without_taking_the_pane() {
     fn launch(app: &mut App) {
         let mut out = Vec::new();
         seed_tree(app);
-        app.focus = Focus::Sessions;
+        app.nav.focus = Focus::Sessions;
         press(app, KeyCode::Char('p'), KeyModifiers::NONE, &mut out);
         assert!(paste_into_overlay(app, "Fix auth"));
         press(app, KeyCode::Enter, KeyModifiers::NONE, &mut out);
@@ -17452,6 +18433,7 @@ fn a_quick_prompt_lands_the_row_without_taking_the_pane() {
                     status_changed_at: 0,
                     alive: true,
                     issue_url: None,
+                    role: nebula_core::AgentRole::Worker,
                     recent_prompts: Vec::new(),
                 }),
             },
@@ -17471,7 +18453,7 @@ fn a_quick_prompt_lands_the_row_without_taking_the_pane() {
             let mut app = App::new();
             launch(&mut app);
             assert_eq!(
-                app.term.as_ref().map(|t| t.sref.clone()),
+                app.pane.term.as_ref().map(|t| t.sref.clone()),
                 Some(SessionRef::Agent(AgentId("a2".into()))),
                 "the pane still previews what was just launched"
             );
@@ -17480,8 +18462,8 @@ fn a_quick_prompt_lands_the_row_without_taking_the_pane() {
                 Some(AgentId("a2".into())),
                 "and the cursor lands on its row"
             );
-            assert_eq!(app.focus, Focus::Sessions, "but focus stays put");
-            assert!(!app.term_locked, "and the pane is not locked");
+            assert_eq!(app.nav.focus, Focus::Sessions, "but focus stays put");
+            assert!(!app.pane.term_locked, "and the pane is not locked");
         },
     );
 
@@ -17491,11 +18473,11 @@ fn a_quick_prompt_lands_the_row_without_taking_the_pane() {
             let mut app = App::new();
             launch(&mut app);
             assert_eq!(
-                app.focus,
+                app.nav.focus,
                 Focus::Terminal,
                 "opted in: straight into the pane"
             );
-            assert!(app.term_locked, "typing goes to the new agent");
+            assert!(app.pane.term_locked, "typing goes to the new agent");
         },
     );
 }
@@ -17510,21 +18492,21 @@ fn the_harness_picker_is_no_wider_than_its_rows_and_keeps_its_keys_in_the_footer
         let mut app = App::new();
         let mut out = Vec::new();
         seed_tree(&mut app);
-        app.focus = Focus::Sessions;
+        app.nav.focus = Focus::Sessions;
         press(&mut app, KeyCode::Char('p'), KeyModifiers::NONE, &mut out);
         press(&mut app, KeyCode::Tab, KeyModifiers::NONE, &mut out);
 
         let mut terminal = Terminal::new(TestBackend::new(100, 40)).unwrap();
         let mut drawn = |app: &mut App| -> (ratatui::layout::Rect, String) {
             terminal.draw(|f| ui::draw(f, app)).unwrap();
-            let area = match &app.overlay {
+            let area = match &app.modals.overlay {
                 Some(Overlay::Menu(m)) => m.area,
                 other => panic!("expected the harness picker, got {other:?}"),
             };
             (area, buffer_text(&terminal))
         };
         let (on_claude, text) = drawn(&mut app);
-        let (title_w, rows_w) = match &app.overlay {
+        let (title_w, rows_w) = match &app.modals.overlay {
             Some(Overlay::Menu(m)) => (
                 m.title.as_deref().unwrap().chars().count() + 4,
                 m.items
@@ -17572,14 +18554,17 @@ fn tab_in_the_quick_prompt_picks_the_harness_and_keeps_the_text() {
         let mut app = App::new();
         let mut out = Vec::new();
         seed_tree(&mut app);
-        app.focus = Focus::Sessions;
+        app.nav.focus = Focus::Sessions;
         let worktree = app.selected_worktree().unwrap().id.clone();
 
         press(&mut app, KeyCode::Char('p'), KeyModifiers::NONE, &mut out);
         assert!(paste_into_overlay(&mut app, "Fix auth"));
         press(&mut app, KeyCode::Tab, KeyModifiers::NONE, &mut out);
-        let Some(Overlay::Menu(menu)) = &app.overlay else {
-            panic!("Tab should open the harness picker, got {:?}", app.overlay);
+        let Some(Overlay::Menu(menu)) = &app.modals.overlay else {
+            panic!(
+                "Tab should open the harness picker, got {:?}",
+                app.modals.overlay
+            );
         };
         assert_eq!(menu.title.as_deref(), Some("Quick prompt agent"));
         assert_eq!(menu.hover, 0, "starts on the harness the box has");
@@ -17588,19 +18573,25 @@ fn tab_in_the_quick_prompt_picks_the_harness_and_keeps_the_text() {
         // Down to Codex, → into its model list, and take a model.
         press(&mut app, KeyCode::Down, KeyModifiers::NONE, &mut out);
         press(&mut app, KeyCode::Right, KeyModifiers::NONE, &mut out);
-        let Some(Overlay::Menu(menu)) = &app.overlay else {
-            panic!("→ should open the model submenu, got {:?}", app.overlay);
+        let Some(Overlay::Menu(menu)) = &app.modals.overlay else {
+            panic!(
+                "→ should open the model submenu, got {:?}",
+                app.modals.overlay
+            );
         };
         assert_eq!(menu.title.as_deref(), Some("Codex model"));
         press(&mut app, KeyCode::Down, KeyModifiers::NONE, &mut out);
-        let model = match &app.overlay {
+        let model = match &app.modals.overlay {
             Some(Overlay::Menu(menu)) => menu.items[menu.hover].label.clone(),
             other => panic!("{other:?}"),
         };
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE, &mut out);
 
-        let Some(Overlay::Prompt(prompt)) = &app.overlay else {
-            panic!("the pick should hand the box back, got {:?}", app.overlay);
+        let Some(Overlay::Prompt(prompt)) = &app.modals.overlay else {
+            panic!(
+                "the pick should hand the box back, got {:?}",
+                app.modals.overlay
+            );
         };
         assert_eq!(prompt.input.as_str(), "Fix auth", "the text came back");
         assert_eq!(prompt.title, format!("Quick prompt (codex · {model})"));
@@ -17635,37 +18626,43 @@ fn tab_on_claude_in_the_quick_prompt_picker_launches_in_the_cloud() {
         let mut app = App::new();
         let mut out = Vec::new();
         seed_tree(&mut app);
-        app.focus = Focus::Sessions;
+        app.nav.focus = Focus::Sessions;
         let worktree = app.selected_worktree().unwrap().id.clone();
 
         press(&mut app, KeyCode::Char('p'), KeyModifiers::NONE, &mut out);
         assert!(paste_into_overlay(&mut app, "Fix auth"));
         press(&mut app, KeyCode::Tab, KeyModifiers::NONE, &mut out);
         press(&mut app, KeyCode::Tab, KeyModifiers::NONE, &mut out);
-        let Some(Overlay::Menu(menu)) = &app.overlay else {
-            panic!("Tab should toggle the row in place, got {:?}", app.overlay);
+        let Some(Overlay::Menu(menu)) = &app.modals.overlay else {
+            panic!(
+                "Tab should toggle the row in place, got {:?}",
+                app.modals.overlay
+            );
         };
         assert_eq!(menu.title.as_deref(), Some("Quick prompt agent"));
         assert_eq!(menu.items[menu.hover].label, "Claude · cloud");
         assert_eq!(menu.hovered_claude_cloud(), Some(true));
 
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE, &mut out);
-        let Some(Overlay::Prompt(prompt)) = &app.overlay else {
-            panic!("the pick should hand the box back, got {:?}", app.overlay);
+        let Some(Overlay::Prompt(prompt)) = &app.modals.overlay else {
+            panic!(
+                "the pick should hand the box back, got {:?}",
+                app.modals.overlay
+            );
         };
         assert_eq!(prompt.input.as_str(), "Fix auth", "the text came back");
         assert_eq!(prompt.title, "Quick prompt (claude · cloud)");
         assert!(out.is_empty(), "nothing sent yet: {out:?}");
 
         press(&mut app, KeyCode::Tab, KeyModifiers::NONE, &mut out);
-        let Some(Overlay::Menu(menu)) = &app.overlay else {
-            panic!("{:?}", app.overlay);
+        let Some(Overlay::Menu(menu)) = &app.modals.overlay else {
+            panic!("{:?}", app.modals.overlay);
         };
         assert_eq!(menu.hovered_claude_cloud(), Some(true), "opens as left");
         press(&mut app, KeyCode::Esc, KeyModifiers::NONE, &mut out);
 
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE, &mut out);
-        assert!(app.overlay.is_none(), "{:?}", app.overlay);
+        assert!(app.modals.overlay.is_none(), "{:?}", app.modals.overlay);
         assert!(
             matches!(
                 out.as_slice(),
@@ -17691,19 +18688,19 @@ fn esc_out_of_a_quick_prompt_picker_restores_the_box() {
         let mut app = App::new();
         let mut out = Vec::new();
         seed_tree(&mut app);
-        app.focus = Focus::Sessions;
+        app.nav.focus = Focus::Sessions;
         press(&mut app, KeyCode::Char('p'), KeyModifiers::NONE, &mut out);
         assert!(paste_into_overlay(&mut app, "Fix auth"));
 
         for open in [KeyCode::Tab, KeyCode::BackTab] {
             press(&mut app, open, KeyModifiers::NONE, &mut out);
             assert!(
-                !matches!(&app.overlay, Some(Overlay::Prompt(_))),
+                !matches!(&app.modals.overlay, Some(Overlay::Prompt(_))),
                 "{open:?} should open a picker"
             );
             press(&mut app, KeyCode::Esc, KeyModifiers::NONE, &mut out);
-            let Some(Overlay::Prompt(prompt)) = &app.overlay else {
-                panic!("Esc should hand the box back, got {:?}", app.overlay);
+            let Some(Overlay::Prompt(prompt)) = &app.modals.overlay else {
+                panic!("Esc should hand the box back, got {:?}", app.modals.overlay);
             };
             assert_eq!(prompt.input.as_str(), "Fix auth");
             assert_eq!(prompt.title, "Quick prompt (claude)", "spec unchanged");
@@ -17726,7 +18723,7 @@ fn a_closed_quick_prompt_is_parked_and_the_next_box_takes_it_back() {
         let mut out = Vec::new();
         seed_tree(&mut app);
         seed_feat_worktree(&mut app, "w2", "feat");
-        app.focus = Focus::Sessions;
+        app.nav.focus = Focus::Sessions;
         assert_eq!(
             app.selected_worktree().map(|w| w.branch.as_str()),
             Some("main")
@@ -17738,22 +18735,22 @@ fn a_closed_quick_prompt_is_parked_and_the_next_box_takes_it_back() {
         press(&mut app, KeyCode::Down, KeyModifiers::NONE, &mut out);
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE, &mut out);
         assert!(paste_into_overlay(&mut app, "Fix auth"));
-        assert!(matches!(&app.overlay, Some(Overlay::Prompt(p))
+        assert!(matches!(&app.modals.overlay, Some(Overlay::Prompt(p))
                 if p.title == "Quick prompt (codex)"));
 
         press(&mut app, KeyCode::Esc, KeyModifiers::NONE, &mut out);
-        assert!(app.overlay.is_none(), "Esc closes the box");
-        assert!(app.quick_draft.is_some(), "and parks what was typed");
+        assert!(app.modals.overlay.is_none(), "Esc closes the box");
+        assert!(app.modals.quick_draft.is_some(), "and parks what was typed");
 
         // The same place: the box comes back whole, and the slot is
         // empty again.
         press(&mut app, KeyCode::Char('p'), KeyModifiers::NONE, &mut out);
-        let Some(Overlay::Prompt(prompt)) = &app.overlay else {
-            panic!("p should open the box, got {:?}", app.overlay);
+        let Some(Overlay::Prompt(prompt)) = &app.modals.overlay else {
+            panic!("p should open the box, got {:?}", app.modals.overlay);
         };
         assert_eq!(prompt.input.as_str(), "Fix auth");
         assert_eq!(prompt.title, "Quick prompt (codex)", "the pick too");
-        assert!(app.quick_draft.is_none(), "taken back, not copied");
+        assert!(app.modals.quick_draft.is_none(), "taken back, not copied");
 
         // The HARDWIRED UNLOCK parks it the same way.
         press(
@@ -17762,21 +18759,21 @@ fn a_closed_quick_prompt_is_parked_and_the_next_box_takes_it_back() {
             KeyModifiers::CONTROL,
             &mut out,
         );
-        assert!(app.overlay.is_none(), "^q closes the box");
-        assert!(app.quick_draft.is_some(), "and parks it");
+        assert!(app.modals.overlay.is_none(), "^q closes the box");
+        assert!(app.modals.quick_draft.is_some(), "and parks it");
 
         // The cursor on a checkout with nothing running in it has no
         // band to be on, so it moves nothing: the box still lands on
         // the root branch, so it is the same box and comes back whole.
         let root = crate::quick_prompt::QuickTarget::Worktree(nebula_core::WorktreeId("w1".into()));
-        app.sel_worktree = 1;
+        app.nav.sel_worktree = 1;
         assert_eq!(
             app.selected_worktree().map(|w| w.branch.as_str()),
             Some("feat")
         );
         press(&mut app, KeyCode::Char('p'), KeyModifiers::NONE, &mut out);
-        let Some(Overlay::Prompt(prompt)) = &app.overlay else {
-            panic!("p should open the box, got {:?}", app.overlay);
+        let Some(Overlay::Prompt(prompt)) = &app.modals.overlay else {
+            panic!("p should open the box, got {:?}", app.modals.overlay);
         };
         assert_eq!(prompt.input.as_str(), "Fix auth");
         assert_eq!(prompt.title, "Quick prompt (codex)", "the pick too");
@@ -17794,10 +18791,13 @@ fn a_closed_quick_prompt_is_parked_and_the_next_box_takes_it_back() {
             &mut out,
         );
         press(&mut app, KeyCode::Esc, KeyModifiers::NONE, &mut out);
-        assert!(app.quick_draft.is_some(), "Esc parks the flipped box");
+        assert!(
+            app.modals.quick_draft.is_some(),
+            "Esc parks the flipped box"
+        );
         press(&mut app, KeyCode::Char('p'), KeyModifiers::NONE, &mut out);
-        let Some(Overlay::Prompt(prompt)) = &app.overlay else {
-            panic!("p should open the box, got {:?}", app.overlay);
+        let Some(Overlay::Prompt(prompt)) = &app.modals.overlay else {
+            panic!("p should open the box, got {:?}", app.modals.overlay);
         };
         assert_eq!(prompt.input.as_str(), "Fix auth");
         assert_eq!(
@@ -17811,16 +18811,16 @@ fn a_closed_quick_prompt_is_parked_and_the_next_box_takes_it_back() {
         // on that band aims the box there: a different checkout, so
         // the text comes back into feat's own box.
         press(&mut app, KeyCode::Esc, KeyModifiers::NONE, &mut out);
-        assert!(app.quick_draft.is_some(), "Esc parks the root box");
+        assert!(app.modals.quick_draft.is_some(), "Esc parks the root box");
         seed_agent_in(&mut app, "a2", &nebula_core::WorktreeId("w2".into()));
-        app.sel_worktree = 1;
+        app.nav.sel_worktree = 1;
         assert_eq!(
             app.selected_worktree().map(|w| w.branch.as_str()),
             Some("feat")
         );
         press(&mut app, KeyCode::Char('p'), KeyModifiers::NONE, &mut out);
-        let Some(Overlay::Prompt(prompt)) = &app.overlay else {
-            panic!("p should open the box, got {:?}", app.overlay);
+        let Some(Overlay::Prompt(prompt)) = &app.modals.overlay else {
+            panic!("p should open the box, got {:?}", app.modals.overlay);
         };
         assert_eq!(prompt.input.as_str(), "Fix auth");
         let feat = crate::quick_prompt::QuickTarget::Worktree(nebula_core::WorktreeId("w2".into()));
@@ -17832,13 +18832,16 @@ fn a_closed_quick_prompt_is_parked_and_the_next_box_takes_it_back() {
 
         // Cleared and closed: nothing is parked, and the next box is
         // the empty one it should be.
-        if let Some(Overlay::Prompt(prompt)) = &mut app.overlay {
+        if let Some(Overlay::Prompt(prompt)) = &mut app.modals.overlay {
             prompt.input.clear();
         }
         press(&mut app, KeyCode::Esc, KeyModifiers::NONE, &mut out);
-        assert!(app.quick_draft.is_none(), "an empty box parks nothing");
+        assert!(
+            app.modals.quick_draft.is_none(),
+            "an empty box parks nothing"
+        );
         press(&mut app, KeyCode::Char('p'), KeyModifiers::NONE, &mut out);
-        assert!(matches!(&app.overlay, Some(Overlay::Prompt(p)) if p.input.is_empty()));
+        assert!(matches!(&app.modals.overlay, Some(Overlay::Prompt(p)) if p.input.is_empty()));
         assert!(out.is_empty(), "none of this launches anything: {out:?}");
     });
 }
@@ -17851,13 +18854,13 @@ fn shift_tab_applies_a_preset_and_wraps_the_task() {
         let mut app = App::new();
         let mut out = Vec::new();
         seed_tree(&mut app);
-        app.focus = Focus::Sessions;
+        app.nav.focus = Focus::Sessions;
         press(&mut app, KeyCode::Char('p'), KeyModifiers::NONE, &mut out);
         assert!(paste_into_overlay(&mut app, "Fix auth"));
 
         press(&mut app, KeyCode::BackTab, KeyModifiers::NONE, &mut out);
-        let Some(Overlay::AgentPresets(view)) = &app.overlay else {
-            panic!("⇧Tab should open the presets, got {:?}", app.overlay);
+        let Some(Overlay::AgentPresets(view)) = &app.modals.overlay else {
+            panic!("⇧Tab should open the presets, got {:?}", app.modals.overlay);
         };
         assert!(view.is_picker(), "opened to pick, not to manage");
         assert_eq!(view.presets[0].name, "reviewer");
@@ -17872,13 +18875,13 @@ fn shift_tab_applies_a_preset_and_wraps_the_task() {
             &mut out,
         );
         assert!(
-            matches!(&app.overlay, Some(Overlay::AgentPresetEditor(e)) if e.quick.is_some()),
+            matches!(&app.modals.overlay, Some(Overlay::AgentPresetEditor(e)) if e.quick.is_some()),
             "a opens the editor from the picker: {:?}",
-            app.overlay
+            app.modals.overlay
         );
         press(&mut app, KeyCode::Esc, KeyModifiers::NONE, &mut out);
-        let Some(Overlay::AgentPresets(view)) = &app.overlay else {
-            panic!("Esc goes back to the picker, got {:?}", app.overlay);
+        let Some(Overlay::AgentPresets(view)) = &app.modals.overlay else {
+            panic!("Esc goes back to the picker, got {:?}", app.modals.overlay);
         };
         assert!(view.is_picker(), "still the picker, not the manager");
         assert_eq!(
@@ -17887,8 +18890,11 @@ fn shift_tab_applies_a_preset_and_wraps_the_task() {
         );
 
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE, &mut out);
-        let Some(Overlay::Prompt(prompt)) = &app.overlay else {
-            panic!("the pick should hand the box back, got {:?}", app.overlay);
+        let Some(Overlay::Prompt(prompt)) = &app.modals.overlay else {
+            panic!(
+                "the pick should hand the box back, got {:?}",
+                app.modals.overlay
+            );
         };
         assert_eq!(prompt.input.as_str(), "Fix auth");
         assert_eq!(
@@ -17930,7 +18936,7 @@ fn shift_tab_presets_make_the_quick_prompt_task_optional() {
         let mut app = App::new();
         let mut out = Vec::new();
         seed_tree(&mut app);
-        app.focus = Focus::Sessions;
+        app.nav.focus = Focus::Sessions;
         let wrapped = |out: &[ClientRequest]| {
             matches!(
                 out,
@@ -17948,13 +18954,13 @@ fn shift_tab_presets_make_the_quick_prompt_task_optional() {
         press(&mut app, KeyCode::BackTab, KeyModifiers::NONE, &mut out);
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE, &mut out);
         assert!(
-            matches!(&app.overlay, Some(Overlay::Prompt(_))),
+            matches!(&app.modals.overlay, Some(Overlay::Prompt(_))),
             "an asking preset hands the box back: {:?}",
-            app.overlay
+            app.modals.overlay
         );
         assert!(out.is_empty(), "{out:?}");
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE, &mut out);
-        assert!(app.overlay.is_none(), "{:?}", app.overlay);
+        assert!(app.modals.overlay.is_none(), "{:?}", app.modals.overlay);
         assert!(wrapped(&out), "the empty box sends the wrapping: {out:?}");
 
         // The same preset set to skip the task.
@@ -17968,18 +18974,22 @@ fn shift_tab_presets_make_the_quick_prompt_task_optional() {
         assert!(paste_into_overlay(&mut app, "Fix auth"));
         press(&mut app, KeyCode::BackTab, KeyModifiers::NONE, &mut out);
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE, &mut out);
-        let Some(Overlay::Prompt(prompt)) = &app.overlay else {
-            panic!("typed text keeps the box, got {:?}", app.overlay);
+        let Some(Overlay::Prompt(prompt)) = &app.modals.overlay else {
+            panic!("typed text keeps the box, got {:?}", app.modals.overlay);
         };
         assert_eq!(prompt.input.as_str(), "Fix auth");
         assert!(out.is_empty(), "{out:?}");
 
         // Over an empty box it launches the moment it is picked.
-        app.overlay = None;
+        app.modals.overlay = None;
         press(&mut app, KeyCode::Char('p'), KeyModifiers::NONE, &mut out);
         press(&mut app, KeyCode::BackTab, KeyModifiers::NONE, &mut out);
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE, &mut out);
-        assert!(app.overlay.is_none(), "launched: {:?}", app.overlay);
+        assert!(
+            app.modals.overlay.is_none(),
+            "launched: {:?}",
+            app.modals.overlay
+        );
         assert!(wrapped(&out), "{out:?}");
     });
 }
@@ -17996,12 +19006,12 @@ fn shift_tab_without_presets_opens_a_picker_that_adds_one() {
             let mut app = App::new();
             let mut out = Vec::new();
             seed_tree(&mut app);
-            app.focus = Focus::Sessions;
+            app.nav.focus = Focus::Sessions;
             press(&mut app, KeyCode::Char('p'), KeyModifiers::NONE, &mut out);
             assert!(paste_into_overlay(&mut app, "Fix auth"));
             press(&mut app, KeyCode::BackTab, KeyModifiers::NONE, &mut out);
-            let Some(Overlay::AgentPresets(view)) = &app.overlay else {
-                panic!("an empty picker, got {:?}", app.overlay);
+            let Some(Overlay::AgentPresets(view)) = &app.modals.overlay else {
+                panic!("an empty picker, got {:?}", app.modals.overlay);
             };
             assert!(view.is_picker() && view.presets.is_empty(), "{view:?}");
             let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
@@ -18020,16 +19030,19 @@ fn shift_tab_without_presets_opens_a_picker_that_adds_one() {
             );
             type_text(&mut app, "tidy", &mut out);
             press(&mut app, KeyCode::Enter, KeyModifiers::NONE, &mut out);
-            let Some(Overlay::AgentPresets(view)) = &app.overlay else {
-                panic!("the save lands back in the picker, got {:?}", app.overlay);
+            let Some(Overlay::AgentPresets(view)) = &app.modals.overlay else {
+                panic!(
+                    "the save lands back in the picker, got {:?}",
+                    app.modals.overlay
+                );
             };
             assert!(view.is_picker(), "still the picker, not the manager");
             assert_eq!(view.presets.len(), 1);
             assert_eq!(view.presets[view.selected].name, "tidy");
 
             press(&mut app, KeyCode::Enter, KeyModifiers::NONE, &mut out);
-            let Some(Overlay::Prompt(prompt)) = &app.overlay else {
-                panic!("the pick hands the box back, got {:?}", app.overlay);
+            let Some(Overlay::Prompt(prompt)) = &app.modals.overlay else {
+                panic!("the pick hands the box back, got {:?}", app.modals.overlay);
             };
             assert_eq!(prompt.input.as_str(), "Fix auth");
             assert!(prompt.title.contains("tidy"), "{}", prompt.title);
@@ -18048,8 +19061,11 @@ fn shift_tab_without_presets_opens_a_picker_that_adds_one() {
 #[test]
 fn the_quick_prompt_walks_a_long_wrapped_prompt() {
     fn input(app: &App) -> &TextInput {
-        let Some(Overlay::Prompt(prompt)) = &app.overlay else {
-            panic!("the quick prompt should be up, got {:?}", app.overlay);
+        let Some(Overlay::Prompt(prompt)) = &app.modals.overlay else {
+            panic!(
+                "the quick prompt should be up, got {:?}",
+                app.modals.overlay
+            );
         };
         &prompt.input
     }
@@ -18060,7 +19076,7 @@ fn the_quick_prompt_walks_a_long_wrapped_prompt() {
         let mut app = App::new();
         let mut out = Vec::new();
         seed_tree(&mut app);
-        app.focus = Focus::Sessions;
+        app.nav.focus = Focus::Sessions;
         press(&mut app, KeyCode::Char('p'), KeyModifiers::NONE, &mut out);
         let words: Vec<String> = (0..300).map(|i| format!("w{i:03}")).collect();
         let long = words.join(" ");
@@ -18116,7 +19132,7 @@ fn the_quick_prompt_walks_a_long_wrapped_prompt() {
         draw(&mut app);
 
         // The wheel scrolls the box, dragging the caret into sight.
-        let editor = match &app.overlay {
+        let editor = match &app.modals.overlay {
             Some(Overlay::Prompt(prompt)) => prompt.editor_area,
             _ => unreachable!(),
         };
@@ -18137,7 +19153,7 @@ fn the_quick_prompt_walks_a_long_wrapped_prompt() {
         let top = usize::from(input(&app).view().top);
         assert_eq!(input(&app).cursor_chars(), rows_now[top + 1].0 + 3);
         assert!(
-            matches!(&app.overlay, Some(Overlay::Prompt(p)) if p.input.as_str() == long),
+            matches!(&app.modals.overlay, Some(Overlay::Prompt(p)) if p.input.as_str() == long),
             "nothing typed, nothing lost"
         );
         assert!(out.is_empty(), "{out:?}");
@@ -18158,11 +19174,11 @@ fn ctrl_n_in_the_quick_prompt_flips_the_launch_into_a_fresh_worktree() {
         let mut out = Vec::new();
         seed_tree(&mut app);
         seed_feat_worktree(&mut app, "w2", "feat");
-        app.focus = Focus::Sessions;
+        app.nav.focus = Focus::Sessions;
         let selected = app.selected_worktree().unwrap().id.clone();
         // Where the box would launch, what it is titled, and the text
         // and caret in it.
-        let state = |app: &App| match &app.overlay {
+        let state = |app: &App| match &app.modals.overlay {
             Some(Overlay::Prompt(prompt)) => match &prompt.kind {
                 PromptKind::QuickPrompt(launch) => (
                     launch.target.clone(),
@@ -18233,7 +19249,7 @@ fn ctrl_n_in_the_quick_prompt_flips_the_launch_into_a_fresh_worktree() {
             other => panic!("{other:?}"),
         };
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE, &mut out);
-        assert!(app.overlay.is_none(), "launching closes the box");
+        assert!(app.modals.overlay.is_none(), "launching closes the box");
         // Both stand-in rows are up before git has run — and the
         // session's is up *working*, because the create it stands for
         // carries the typed prompt: the CLI submits it as it boots, so
@@ -18281,7 +19297,7 @@ fn ctrl_n_in_the_quick_prompt_flips_the_launch_into_a_fresh_worktree() {
             "the cursor is on the new row"
         );
         assert_eq!(
-            app.focus,
+            app.nav.focus,
             Focus::Sessions,
             "focus stays where p was pressed"
         );
@@ -18300,17 +19316,17 @@ fn an_empty_quick_prompt_starts_the_cli_with_no_first_prompt() {
         let mut app = App::new();
         let mut out = Vec::new();
         seed_tree(&mut app);
-        app.focus = Focus::Sessions;
+        app.nav.focus = Focus::Sessions;
         let worktree = app.selected_worktree().unwrap().id.clone();
 
         press(&mut app, KeyCode::Char('p'), KeyModifiers::NONE, &mut out);
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE, &mut out);
         assert!(
-            app.overlay.is_none(),
+            app.modals.overlay.is_none(),
             "empty Enter launches and closes the box: {:?}",
-            app.overlay
+            app.modals.overlay
         );
-        assert_ne!(app.flash.as_deref(), Some("cancelled: empty input"));
+        assert_ne!(app.chrome.flash.as_deref(), Some("cancelled: empty input"));
         // A bare create is one a warm CLI can stand in for, so the
         // slot is refilled behind it — the same trail `n` leaves.
         assert!(
@@ -18343,16 +19359,16 @@ fn an_empty_quick_prompt_starts_the_cli_with_no_first_prompt() {
         press(&mut app, KeyCode::Tab, KeyModifiers::NONE, &mut out);
         press(&mut app, KeyCode::Tab, KeyModifiers::NONE, &mut out);
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE, &mut out);
-        let Some(Overlay::Prompt(prompt)) = &app.overlay else {
+        let Some(Overlay::Prompt(prompt)) = &app.modals.overlay else {
             panic!(
                 "the pick should hand a cloud box back, got {:?}",
-                app.overlay
+                app.modals.overlay
             );
         };
         assert_eq!(prompt.title, "Quick prompt (claude · cloud)");
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE, &mut out);
-        assert!(app.overlay.is_none(), "{:?}", app.overlay);
-        assert_eq!(app.flash.as_deref(), Some("cancelled: empty input"));
+        assert!(app.modals.overlay.is_none(), "{:?}", app.modals.overlay);
+        assert_eq!(app.chrome.flash.as_deref(), Some("cancelled: empty input"));
         assert!(out.is_empty(), "a cloud box needs its task: {out:?}");
     });
 }
@@ -18369,18 +19385,18 @@ fn the_quick_prompt_needs_a_worktree() {
         let mut app = App::new();
         let mut out = Vec::new();
         press(&mut app, KeyCode::Char('p'), KeyModifiers::NONE, &mut out);
-        assert!(app.overlay.is_none(), "{:?}", app.overlay);
+        assert!(app.modals.overlay.is_none(), "{:?}", app.modals.overlay);
         assert_eq!(
-            app.flash.as_deref(),
+            app.chrome.flash.as_deref(),
             Some("quick prompt: select a worktree first")
         );
         assert!(out.is_empty(), "{out:?}");
 
-        app.focus = Focus::Worktrees;
+        app.nav.focus = Focus::Worktrees;
         press(&mut app, KeyCode::Char('p'), KeyModifiers::NONE, &mut out);
-        assert!(app.overlay.is_none(), "{:?}", app.overlay);
+        assert!(app.modals.overlay.is_none(), "{:?}", app.modals.overlay);
         assert_eq!(
-            app.flash.as_deref(),
+            app.chrome.flash.as_deref(),
             Some("quick prompt: select a project first")
         );
         assert!(out.is_empty(), "{out:?}");
@@ -18405,8 +19421,8 @@ fn cursor_preset_effort_follows_the_model_family() {
         press(&mut app, KeyCode::Right, KeyModifiers::NONE, &mut out);
         press(&mut app, KeyCode::Right, KeyModifiers::NONE, &mut out);
         press(&mut app, KeyCode::Tab, KeyModifiers::NONE, &mut out);
-        let Some(Overlay::AgentPresetEditor(editor)) = &app.overlay else {
-            panic!("editor should stay open, got {:?}", app.overlay);
+        let Some(Overlay::AgentPresetEditor(editor)) = &app.modals.overlay else {
+            panic!("editor should stay open, got {:?}", app.modals.overlay);
         };
         assert_eq!(editor.kind, AgentKind::Cursor);
         assert_eq!(editor.field, PresetField::Model, "cursor has a model row");
@@ -18417,7 +19433,7 @@ fn cursor_preset_effort_follows_the_model_family() {
         let text = buffer_text(&terminal);
         assert!(text.contains("Effort  n/a"), "no family yet:\n{text}");
         press(&mut app, KeyCode::Tab, KeyModifiers::NONE, &mut out);
-        let Some(Overlay::AgentPresetEditor(editor)) = &app.overlay else {
+        let Some(Overlay::AgentPresetEditor(editor)) = &app.modals.overlay else {
             unreachable!()
         };
         assert_eq!(editor.field, PresetField::Text, "Tab skips the n/a effort");
@@ -18427,7 +19443,7 @@ fn cursor_preset_effort_follows_the_model_family() {
         press(&mut app, KeyCode::Right, KeyModifiers::NONE, &mut out);
         press(&mut app, KeyCode::Right, KeyModifiers::NONE, &mut out);
         press(&mut app, KeyCode::Tab, KeyModifiers::NONE, &mut out);
-        let Some(Overlay::AgentPresetEditor(editor)) = &app.overlay else {
+        let Some(Overlay::AgentPresetEditor(editor)) = &app.modals.overlay else {
             unreachable!()
         };
         assert_eq!(editor.model, "claude-fable-5");
@@ -18441,7 +19457,7 @@ fn cursor_preset_effort_follows_the_model_family() {
         assert_eq!(editor.effort, "high");
         press(&mut app, KeyCode::Right, KeyModifiers::NONE, &mut out);
         press(&mut app, KeyCode::Right, KeyModifiers::NONE, &mut out);
-        let Some(Overlay::AgentPresetEditor(editor)) = &app.overlay else {
+        let Some(Overlay::AgentPresetEditor(editor)) = &app.modals.overlay else {
             unreachable!()
         };
         assert_eq!(editor.effort, "max");
@@ -18450,14 +19466,14 @@ fn cursor_preset_effort_follows_the_model_family() {
         press(&mut app, KeyCode::BackTab, KeyModifiers::SHIFT, &mut out);
         press(&mut app, KeyCode::Right, KeyModifiers::NONE, &mut out);
         press(&mut app, KeyCode::Right, KeyModifiers::NONE, &mut out);
-        let Some(Overlay::AgentPresetEditor(editor)) = &app.overlay else {
+        let Some(Overlay::AgentPresetEditor(editor)) = &app.modals.overlay else {
             unreachable!()
         };
         assert_eq!(editor.model, "claude-opus-5");
         assert_eq!(editor.effort, "high", "max dropped with the family");
         press(&mut app, KeyCode::Tab, KeyModifiers::NONE, &mut out);
         press(&mut app, KeyCode::Right, KeyModifiers::NONE, &mut out);
-        let Some(Overlay::AgentPresetEditor(editor)) = &app.overlay else {
+        let Some(Overlay::AgentPresetEditor(editor)) = &app.modals.overlay else {
             unreachable!()
         };
         assert_eq!(editor.effort, "high-fast", "-fast is the next effort row");
@@ -18482,14 +19498,17 @@ fn picker_model_submenu_types_to_filter() {
     with_default_config(|| {
         let mut app = App::new();
         seed_tree(&mut app);
-        app.focus = Focus::Sessions;
+        app.nav.focus = Focus::Sessions;
         let mut out = Vec::new();
         open_picker(&mut app);
         press(&mut app, KeyCode::Down, KeyModifiers::NONE, &mut out);
         press(&mut app, KeyCode::Down, KeyModifiers::NONE, &mut out);
         press(&mut app, KeyCode::Right, KeyModifiers::NONE, &mut out);
-        let Some(Overlay::Menu(menu)) = &app.overlay else {
-            panic!("expected cursor model submenu, got {:?}", app.overlay);
+        let Some(Overlay::Menu(menu)) = &app.modals.overlay else {
+            panic!(
+                "expected cursor model submenu, got {:?}",
+                app.modals.overlay
+            );
         };
         let all = menu.items.len();
         assert!(menu.filter.is_some(), "model submenus take type-ahead");
@@ -18510,7 +19529,7 @@ fn picker_model_submenu_types_to_filter() {
         // "opus" narrows to the two Opus families, best first, hover
         // on the first; the letters did not move the hover as j/k.
         type_text(&mut app, "opus", &mut out);
-        let Some(Overlay::Menu(menu)) = &app.overlay else {
+        let Some(Overlay::Menu(menu)) = &app.modals.overlay else {
             unreachable!()
         };
         assert_eq!(
@@ -18531,24 +19550,28 @@ fn picker_model_submenu_types_to_filter() {
 
         // A letter no row matches is refused and flashed.
         type_text(&mut app, "z", &mut out);
-        let Some(Overlay::Menu(menu)) = &app.overlay else {
+        let Some(Overlay::Menu(menu)) = &app.modals.overlay else {
             unreachable!()
         };
         assert_eq!(menu.filter_query(), "opus");
         assert_eq!(menu.items.len(), 2);
-        assert!(app.flash.as_deref().is_some_and(|f| f.contains("opusz")));
+        assert!(app
+            .chrome
+            .flash
+            .as_deref()
+            .is_some_and(|f| f.contains("opusz")));
 
         // ↓ moves within the matches; → drills the hovered family into
         // its efforts, which start with an empty filter of their own.
         press(&mut app, KeyCode::Down, KeyModifiers::NONE, &mut out);
         press(&mut app, KeyCode::Right, KeyModifiers::NONE, &mut out);
-        let Some(Overlay::Menu(menu)) = &app.overlay else {
+        let Some(Overlay::Menu(menu)) = &app.modals.overlay else {
             unreachable!()
         };
         assert_eq!(menu.title.as_deref(), Some("Cursor effort"));
         assert_eq!(menu.filter_query(), "");
         type_text(&mut app, "hf", &mut out);
-        let Some(Overlay::Menu(menu)) = &app.overlay else {
+        let Some(Overlay::Menu(menu)) = &app.modals.overlay else {
             unreachable!()
         };
         assert!(
@@ -18566,18 +19589,18 @@ fn picker_model_submenu_types_to_filter() {
         // Backspace widens; Esc clears the text first, then backs out
         // to the (still filtered) model list.
         press(&mut app, KeyCode::Backspace, KeyModifiers::NONE, &mut out);
-        let Some(Overlay::Menu(menu)) = &app.overlay else {
+        let Some(Overlay::Menu(menu)) = &app.modals.overlay else {
             unreachable!()
         };
         assert_eq!(menu.filter_query(), "h");
         press(&mut app, KeyCode::Esc, KeyModifiers::NONE, &mut out);
-        let Some(Overlay::Menu(menu)) = &app.overlay else {
+        let Some(Overlay::Menu(menu)) = &app.modals.overlay else {
             unreachable!()
         };
         assert_eq!(menu.title.as_deref(), Some("Cursor effort"));
         assert_eq!(menu.filter_query(), "");
         press(&mut app, KeyCode::Esc, KeyModifiers::NONE, &mut out);
-        let Some(Overlay::Menu(menu)) = &app.overlay else {
+        let Some(Overlay::Menu(menu)) = &app.modals.overlay else {
             unreachable!()
         };
         assert_eq!(menu.title.as_deref(), Some("Cursor model"));
@@ -18585,7 +19608,7 @@ fn picker_model_submenu_types_to_filter() {
         assert_eq!(menu.hover, 1, "← restores the parent's hover");
         // Clearing the filter brings every row back, hovering the ✓.
         press(&mut app, KeyCode::Esc, KeyModifiers::NONE, &mut out);
-        let Some(Overlay::Menu(menu)) = &app.overlay else {
+        let Some(Overlay::Menu(menu)) = &app.modals.overlay else {
             unreachable!()
         };
         assert_eq!(menu.items.len(), all);
@@ -18610,15 +19633,15 @@ fn preset_editor_types_to_filter_choice_rows() {
         press(&mut app, KeyCode::Tab, KeyModifiers::NONE, &mut out);
         // Harness: "cu" jumps to cursor; h/l no longer cycle.
         type_text(&mut app, "cu", &mut out);
-        let Some(Overlay::AgentPresetEditor(editor)) = &app.overlay else {
-            panic!("editor should stay open, got {:?}", app.overlay);
+        let Some(Overlay::AgentPresetEditor(editor)) = &app.modals.overlay else {
+            panic!("editor should stay open, got {:?}", app.modals.overlay);
         };
         assert_eq!(editor.field, PresetField::Kind);
         assert_eq!(editor.kind, AgentKind::Cursor);
         assert_eq!(editor.filter, "cu");
         // Tab drops the filter and lands on Model.
         press(&mut app, KeyCode::Tab, KeyModifiers::NONE, &mut out);
-        let Some(Overlay::AgentPresetEditor(editor)) = &app.overlay else {
+        let Some(Overlay::AgentPresetEditor(editor)) = &app.modals.overlay else {
             unreachable!()
         };
         assert_eq!(editor.field, PresetField::Model);
@@ -18626,14 +19649,14 @@ fn preset_editor_types_to_filter_choice_rows() {
         // "sol" → gpt-5.6-sol at once, effort on its fallback; → cycles
         // only the matches (one), so it stays.
         type_text(&mut app, "sol", &mut out);
-        let Some(Overlay::AgentPresetEditor(editor)) = &app.overlay else {
+        let Some(Overlay::AgentPresetEditor(editor)) = &app.modals.overlay else {
             unreachable!()
         };
         assert_eq!(editor.model, "gpt-5.6-sol");
         assert_eq!(editor.effort, "high");
         assert_eq!(editor.filtered_choices(), vec!["gpt-5.6-sol"]);
         press(&mut app, KeyCode::Right, KeyModifiers::NONE, &mut out);
-        let Some(Overlay::AgentPresetEditor(editor)) = &app.overlay else {
+        let Some(Overlay::AgentPresetEditor(editor)) = &app.modals.overlay else {
             unreachable!()
         };
         assert_eq!(editor.model, "gpt-5.6-sol");
@@ -18647,30 +19670,37 @@ fn preset_editor_types_to_filter_choice_rows() {
 
         // A refused letter leaves everything as it was and flashes.
         type_text(&mut app, "q", &mut out);
-        let Some(Overlay::AgentPresetEditor(editor)) = &app.overlay else {
+        let Some(Overlay::AgentPresetEditor(editor)) = &app.modals.overlay else {
             unreachable!()
         };
         assert_eq!(editor.filter, "sol");
-        assert!(app.flash.as_deref().is_some_and(|f| f.contains("solq")));
+        assert!(app
+            .chrome
+            .flash
+            .as_deref()
+            .is_some_and(|f| f.contains("solq")));
         // Backspace to "so": sol still matches, so the value stays;
         // Esc clears the filter but keeps the value; a second Esc
         // backs out to the list as before.
         press(&mut app, KeyCode::Backspace, KeyModifiers::NONE, &mut out);
-        let Some(Overlay::AgentPresetEditor(editor)) = &app.overlay else {
+        let Some(Overlay::AgentPresetEditor(editor)) = &app.modals.overlay else {
             unreachable!()
         };
         assert_eq!(editor.filter, "so");
         assert_eq!(editor.model, "gpt-5.6-sol");
         press(&mut app, KeyCode::Esc, KeyModifiers::NONE, &mut out);
-        let Some(Overlay::AgentPresetEditor(editor)) = &app.overlay else {
-            panic!("first Esc only clears the filter, got {:?}", app.overlay);
+        let Some(Overlay::AgentPresetEditor(editor)) = &app.modals.overlay else {
+            panic!(
+                "first Esc only clears the filter, got {:?}",
+                app.modals.overlay
+            );
         };
         assert_eq!(editor.filter, "");
         assert_eq!(editor.model, "gpt-5.6-sol");
         // On the Effort row, "xf" lands on xhigh-fast.
         press(&mut app, KeyCode::Tab, KeyModifiers::NONE, &mut out);
         type_text(&mut app, "xf", &mut out);
-        let Some(Overlay::AgentPresetEditor(editor)) = &app.overlay else {
+        let Some(Overlay::AgentPresetEditor(editor)) = &app.modals.overlay else {
             unreachable!()
         };
         assert_eq!(editor.field, PresetField::Effort);
@@ -18678,9 +19708,9 @@ fn preset_editor_types_to_filter_choice_rows() {
         press(&mut app, KeyCode::Esc, KeyModifiers::NONE, &mut out);
         press(&mut app, KeyCode::Esc, KeyModifiers::NONE, &mut out);
         assert!(
-            matches!(app.overlay, Some(Overlay::AgentPresets(_))),
+            matches!(app.modals.overlay, Some(Overlay::AgentPresets(_))),
             "second Esc backs out: {:?}",
-            app.overlay
+            app.modals.overlay
         );
     });
 }
@@ -18690,15 +19720,18 @@ fn picker_cursor_drills_into_family_then_effort_and_auto_is_a_leaf() {
     with_default_config(|| {
         let mut app = App::new();
         seed_tree(&mut app);
-        app.focus = Focus::Sessions;
+        app.nav.focus = Focus::Sessions;
         let mut out = Vec::new();
 
         open_picker(&mut app);
         press(&mut app, KeyCode::Down, KeyModifiers::NONE, &mut out);
         press(&mut app, KeyCode::Down, KeyModifiers::NONE, &mut out);
         press(&mut app, KeyCode::Right, KeyModifiers::NONE, &mut out);
-        let Some(Overlay::Menu(menu)) = &app.overlay else {
-            panic!("expected cursor model submenu, got {:?}", app.overlay);
+        let Some(Overlay::Menu(menu)) = &app.modals.overlay else {
+            panic!(
+                "expected cursor model submenu, got {:?}",
+                app.modals.overlay
+            );
         };
         assert_eq!(menu.title.as_deref(), Some("Cursor model"));
         assert_eq!(
@@ -18716,8 +19749,11 @@ fn picker_cursor_drills_into_family_then_effort_and_auto_is_a_leaf() {
             press(&mut app, KeyCode::Down, KeyModifiers::NONE, &mut out);
         }
         press(&mut app, KeyCode::Right, KeyModifiers::NONE, &mut out);
-        let Some(Overlay::Menu(menu)) = &app.overlay else {
-            panic!("expected cursor effort submenu, got {:?}", app.overlay);
+        let Some(Overlay::Menu(menu)) = &app.modals.overlay else {
+            panic!(
+                "expected cursor effort submenu, got {:?}",
+                app.modals.overlay
+            );
         };
         assert_eq!(menu.title.as_deref(), Some("Cursor effort"));
         // No bare `claude-opus-5-thinking` id, so no default row; the
@@ -18778,8 +19814,8 @@ fn a_click_in_the_pr_preset_picker_launches_the_pr_session_not_a_root_session() 
         let mut app = App::new();
         seed_tree(&mut app);
         seed_open_prs(&mut app, &[(7, "Attach links")]);
-        app.focus = Focus::Worktrees;
-        app.sel_worktree = 1;
+        app.nav.focus = Focus::Worktrees;
+        app.nav.sel_worktree = 1;
         let mut out = Vec::new();
         press(&mut app, KeyCode::Char('e'), KeyModifiers::NONE, &mut out);
 
@@ -18792,33 +19828,33 @@ fn a_click_in_the_pr_preset_picker_launches_the_pr_session_not_a_root_session() 
             press(&mut app, key, mods, &mut out);
             assert!(
                 matches!(
-                    &app.overlay,
+                    &app.modals.overlay,
                     Some(Overlay::Confirm(c))
                         if matches!(&c.action, PendingAction::DeleteAgentPreset { quick: Some(_), .. })
                 ),
                 "{key:?} asks before deleting: {:?}",
-                app.overlay
+                app.modals.overlay
             );
             press(&mut app, KeyCode::Esc, KeyModifiers::NONE, &mut out);
             assert!(
                 matches!(
-                    &app.overlay,
+                    &app.modals.overlay,
                     Some(Overlay::AgentPresets(view))
                         if view.quick.as_ref().is_some_and(|back| back.launch.pr.is_some())
                 ),
                 "{key:?}'s confirm backs out to the PR picker: {:?}",
-                app.overlay
+                app.modals.overlay
             );
         }
 
         let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
         terminal.draw(|f| ui::draw(f, &mut app)).unwrap();
-        let list = match &app.overlay {
+        let list = match &app.modals.overlay {
             Some(Overlay::AgentPresets(view)) => view.list_area,
             other => panic!("{other:?}"),
         };
         click(&mut app, list.x + 1, list.y + skip_row, &mut out);
-        assert!(app.overlay.is_none(), "{:?}", app.overlay);
+        assert!(app.modals.overlay.is_none(), "{:?}", app.modals.overlay);
         let creates: Vec<&ClientRequest> = out
             .iter()
             .filter(|r| {
@@ -18855,24 +19891,24 @@ fn a_click_in_the_pr_preset_picker_launches_the_pr_session_not_a_root_session() 
         let mut app = App::new();
         seed_tree(&mut app);
         seed_open_prs(&mut app, &[(7, "Attach links")]);
-        app.focus = Focus::Worktrees;
-        app.sel_worktree = 1;
+        app.nav.focus = Focus::Worktrees;
+        app.nav.sel_worktree = 1;
         let mut out = Vec::new();
         press(&mut app, KeyCode::Char('e'), KeyModifiers::NONE, &mut out);
         terminal.draw(|f| ui::draw(f, &mut app)).unwrap();
-        let list = match &app.overlay {
+        let list = match &app.modals.overlay {
             Some(Overlay::AgentPresets(view)) => view.list_area,
             other => panic!("{other:?}"),
         };
         click(&mut app, list.x + 1, list.y, &mut out);
         assert!(
             matches!(
-                &app.overlay,
+                &app.modals.overlay,
                 Some(Overlay::Prompt(prompt))
                     if prompt.title == "Quick prompt · PR #7 · reviewer (claude · opus · high)"
             ),
             "{:?}",
-            app.overlay
+            app.modals.overlay
         );
         assert!(out.is_empty(), "{out:?}");
     });
@@ -18886,21 +19922,27 @@ fn presets_click_row_launches_and_outside_closes() {
         open_presets(&mut app, &mut out);
         let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
         terminal.draw(|f| ui::draw(f, &mut app)).unwrap();
-        let list = match &app.overlay {
+        let list = match &app.modals.overlay {
             Some(Overlay::AgentPresets(view)) => view.list_area,
             other => panic!("{other:?}"),
         };
         assert!(list.width > 0, "drawn list rect recorded");
         click(&mut app, list.x + 1, list.y + 1, &mut out);
-        match &app.overlay {
+        match &app.modals.overlay {
             Some(Overlay::Prompt(prompt)) => assert_eq!(prompt.title, "Task for scratch"),
             other => panic!("a click on the second row launches it, got {other:?}"),
         }
         press(&mut app, KeyCode::Esc, KeyModifiers::NONE, &mut out);
         terminal.draw(|f| ui::draw(f, &mut app)).unwrap();
-        assert!(matches!(&app.overlay, Some(Overlay::AgentPresets(_))));
+        assert!(matches!(
+            &app.modals.overlay,
+            Some(Overlay::AgentPresets(_))
+        ));
         click(&mut app, 0, 0, &mut out);
-        assert!(app.overlay.is_none(), "a click outside closes the list");
+        assert!(
+            app.modals.overlay.is_none(),
+            "a click outside closes the list"
+        );
         assert!(out.is_empty(), "{out:?}");
     });
 }
@@ -18923,9 +19965,12 @@ fn empty_presets_list_shows_the_hint() {
             );
             // Enter and Ctrl+e on nothing only nudge toward Ctrl+a.
             press(&mut app, KeyCode::Enter, KeyModifiers::NONE, &mut out);
-            assert!(matches!(&app.overlay, Some(Overlay::AgentPresets(_))));
+            assert!(matches!(
+                &app.modals.overlay,
+                Some(Overlay::AgentPresets(_))
+            ));
             assert_eq!(
-                app.flash.as_deref(),
+                app.chrome.flash.as_deref(),
                 Some("no preset selected — Ctrl+a creates one")
             );
             press(
@@ -18934,7 +19979,10 @@ fn empty_presets_list_shows_the_hint() {
                 KeyModifiers::CONTROL,
                 &mut out,
             );
-            assert!(matches!(&app.overlay, Some(Overlay::AgentPresets(_))));
+            assert!(matches!(
+                &app.modals.overlay,
+                Some(Overlay::AgentPresets(_))
+            ));
         })
     });
 }
@@ -18960,10 +20008,10 @@ fn shift_h_opens_hosts_picker_newest_first() {
         let mut app = App::new();
         let mut out = Vec::new();
         press(&mut app, KeyCode::Char('H'), KeyModifiers::SHIFT, &mut out);
-        let Some(Overlay::Hosts(view)) = &app.overlay else {
+        let Some(Overlay::Hosts(view)) = &app.modals.overlay else {
             panic!(
                 "shift+h should open the hosts picker, got {:?}",
-                app.overlay
+                app.modals.overlay
             );
         };
         assert_eq!(view.hosts.len(), 2);
@@ -18981,8 +20029,8 @@ fn shift_h_opens_hosts_picker_newest_first() {
         assert!(text.contains("just now"), "ago label rendered:\n{text}");
 
         press(&mut app, KeyCode::Esc, KeyModifiers::NONE, &mut out);
-        assert!(app.overlay.is_none(), "Esc closes the picker");
-        assert!(!app.should_quit);
+        assert!(app.modals.overlay.is_none(), "Esc closes the picker");
+        assert!(!app.chrome.should_quit);
     });
 }
 
@@ -18994,9 +20042,9 @@ fn hosts_enter_quits_with_the_selected_destination() {
         press(&mut app, KeyCode::Char('H'), KeyModifiers::SHIFT, &mut out);
         press(&mut app, KeyCode::Char('j'), KeyModifiers::NONE, &mut out);
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE, &mut out);
-        assert!(app.should_quit, "Enter hands off by quitting");
-        assert!(app.overlay.is_none());
-        let entry = app.pending_ssh.as_ref().expect("handoff target set");
+        assert!(app.chrome.should_quit, "Enter hands off by quitting");
+        assert!(app.modals.overlay.is_none());
+        let entry = app.chrome.pending_ssh.as_ref().expect("handoff target set");
         assert_eq!(entry.host, "old@one");
         assert_eq!(entry.path, None);
     });
@@ -19009,7 +20057,7 @@ fn hosts_d_removes_the_entry_and_persists() {
         let mut out = Vec::new();
         press(&mut app, KeyCode::Char('H'), KeyModifiers::SHIFT, &mut out);
         press(&mut app, KeyCode::Char('d'), KeyModifiers::NONE, &mut out);
-        match &app.overlay {
+        match &app.modals.overlay {
             Some(Overlay::Hosts(view)) => {
                 assert_eq!(view.hosts.len(), 1, "row dropped in place");
                 assert_eq!(view.hosts[0].host, "old@one");
@@ -19032,7 +20080,7 @@ fn hosts_click_on_a_row_connects_and_outside_closes() {
         // Draw once so the modal writes back its hit-test rects.
         let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
         terminal.draw(|f| ui::draw(f, &mut app)).unwrap();
-        let list = match &app.overlay {
+        let list = match &app.modals.overlay {
             Some(Overlay::Hosts(view)) => view.list_area,
             other => panic!("picker open, got {other:?}"),
         };
@@ -19046,12 +20094,12 @@ fn hosts_click_on_a_row_connects_and_outside_closes() {
             ),
             &mut out,
         );
-        assert!(app.should_quit, "click connects");
-        assert_eq!(app.pending_ssh.as_ref().unwrap().host, "old@one");
+        assert!(app.chrome.should_quit, "click connects");
+        assert_eq!(app.chrome.pending_ssh.as_ref().unwrap().host, "old@one");
 
         // Reopened, a click outside the modal closes it.
-        app.should_quit = false;
-        app.pending_ssh = None;
+        app.chrome.should_quit = false;
+        app.chrome.pending_ssh = None;
         press(&mut app, KeyCode::Char('H'), KeyModifiers::SHIFT, &mut out);
         terminal.draw(|f| ui::draw(f, &mut app)).unwrap();
         handle_mouse(
@@ -19059,8 +20107,8 @@ fn hosts_click_on_a_row_connects_and_outside_closes() {
             mev(MouseEventKind::Down(MouseButton::Left), 0, 0),
             &mut out,
         );
-        assert!(app.overlay.is_none(), "outside click closes");
-        assert!(!app.should_quit);
+        assert!(app.modals.overlay.is_none(), "outside click closes");
+        assert!(!app.chrome.should_quit);
     });
 }
 
@@ -19071,7 +20119,7 @@ fn hosts_click_on_a_row_connects_and_outside_closes() {
 fn drawn_modal_area(app: &mut App) -> ratatui::layout::Rect {
     let mut terminal = Terminal::new(TestBackend::new(140, 40)).unwrap();
     terminal.draw(|f| ui::draw(f, app)).unwrap();
-    let overlay = app.overlay.as_ref().expect("no modal open");
+    let overlay = app.modals.overlay.as_ref().expect("no modal open");
     let area = crate::overlay_close::overlay_area(overlay);
     assert!(area.width > 0 && area.x > 0 && area.y > 0, "{area:?}");
     area
@@ -19091,15 +20139,15 @@ fn click(app: &mut App, column: u16, row: u16, out: &mut Vec<ClientRequest>) {
 fn follow_up_app() -> App {
     let mut app = App::new();
     seed_tree(&mut app);
-    app.focus = Focus::Sessions;
-    app.sel_session = 0;
+    app.nav.focus = Focus::Sessions;
+    app.nav.sel_session = 0;
     app
 }
 
 /// What the open FOLLOW-UP box holds — the modal the grid's `Space`
 /// opens over it.
 fn follow_up_text(app: &App) -> Option<String> {
-    match &app.overlay {
+    match &app.modals.overlay {
         Some(Overlay::Prompt(p)) if matches!(p.kind, PromptKind::FollowUp { .. }) => {
             Some(p.input.as_str().to_string())
         }
@@ -19159,7 +20207,11 @@ fn a_cold_session_is_booted_instead_of_typed_at() {
             .any(|r| matches!(r, ClientRequest::Attach { .. })),
         "it was booted: {out:?}"
     );
-    assert!(app.flash.as_deref().is_some_and(|f| f.contains("starting")));
+    assert!(app
+        .chrome
+        .flash
+        .as_deref()
+        .is_some_and(|f| f.contains("starting")));
 }
 
 /// The FOLLOW-UP box is a modal over the grid, so Esc is the way out
@@ -19171,8 +20223,8 @@ fn esc_closes_the_follow_up_box_and_the_grid_has_the_keys() {
     press(&mut app, KeyCode::Char(' '), KeyModifiers::NONE, &mut out);
     assert!(follow_up_text(&app).is_some(), "the box is up");
     press(&mut app, KeyCode::Esc, KeyModifiers::NONE, &mut out);
-    assert!(app.overlay.is_none(), "{:?}", app.overlay);
-    assert_eq!(app.focus, Focus::Sessions, "the cards have the keys");
+    assert!(app.modals.overlay.is_none(), "{:?}", app.modals.overlay);
+    assert_eq!(app.nav.focus, Focus::Sessions, "the cards have the keys");
 }
 
 /// A paste lands in the box, line breaks and all, rather than in the
@@ -19202,7 +20254,7 @@ fn a_dropped_screenshot_reaches_the_agent_as_a_copy_it_can_find() {
     // The way Ghostty pastes a drop: a shell-escaped path.
     let dropped = shot.to_string_lossy().replace(' ', "\\ ");
     let mut app = follow_up_app();
-    app.attachments_dir = Some(root.path().join("attachments"));
+    app.modals.attachments_dir = Some(root.path().join("attachments"));
     let mut out = Vec::new();
 
     press(&mut app, KeyCode::Char(' '), KeyModifiers::NONE, &mut out);
@@ -19256,7 +20308,7 @@ fn with_no_attachments_dir_a_drop_is_pasted_as_it_came() {
 
 /// Everything observable about where an input left the app.
 fn ui_digest(app: &App, out: &[ClientRequest]) -> String {
-    let overlay = match &app.overlay {
+    let overlay = match &app.modals.overlay {
         None => "none".to_string(),
         Some(Overlay::Prompt(p)) => format!("prompt[{}|{}]", p.title, p.input.as_str()),
         Some(Overlay::Menu(m)) => format!(
@@ -19289,15 +20341,15 @@ fn ui_digest(app: &App, out: &[ClientRequest]) -> String {
     format!(
         "overlay={overlay} focus={:?} cursors=({},{},{}) pane={:?} locked={} editor={} \
              flash={:?} quit={} out={out:?}",
-        app.focus,
-        app.sel_project,
-        app.sel_worktree,
-        app.sel_session,
-        app.term.as_ref().map(|t| t.sref.clone()),
-        app.term_locked,
-        app.vim.is_some(),
-        app.flash,
-        app.should_quit,
+        app.nav.focus,
+        app.nav.sel_project,
+        app.nav.sel_worktree,
+        app.nav.sel_session,
+        app.pane.term.as_ref().map(|t| t.sref.clone()),
+        app.pane.term_locked,
+        app.pane.vim.is_some(),
+        app.chrome.flash,
+        app.chrome.should_quit,
     )
 }
 
@@ -19311,11 +20363,12 @@ fn click_target(
     let mut terminal = Terminal::new(TestBackend::new(160, 40)).unwrap();
     terminal.draw(|f| ui::draw(f, app)).unwrap();
     let rect = app
+        .chrome
         .hits
         .iter()
         .find(|(_, hit)| *hit == target)
         .map(|(rect, _)| *rect)
-        .unwrap_or_else(|| panic!("{target:?} is not on screen: {:?}", app.hits));
+        .unwrap_or_else(|| panic!("{target:?} is not on screen: {:?}", app.chrome.hits));
     // The middle of the row: its first cell is a splitter's grab zone.
     let (x, y) = (rect.x + rect.width / 2, rect.y);
     assert_eq!(app.hit_at(x, y), Some(target), "the click lands on it");
@@ -19326,9 +20379,9 @@ fn click_target(
 fn drawn_list_area(app: &mut App) -> ratatui::layout::Rect {
     let mut terminal = Terminal::new(TestBackend::new(160, 40)).unwrap();
     terminal.draw(|f| ui::draw(f, app)).unwrap();
-    match &app.overlay {
-        Some(Overlay::Palette(v)) => v.list_area,
-        Some(Overlay::Files(v)) => v.list_area,
+    match &app.modals.overlay {
+        Some(Overlay::Palette(v)) => v.list.list_area,
+        Some(Overlay::Files(v)) => v.list.list_area,
         Some(Overlay::AgentPresets(v)) => v.list_area,
         Some(Overlay::Menu(v)) => {
             // A menu's rows sit inside its border.
@@ -19348,7 +20401,7 @@ fn drawn_list_area(app: &mut App) -> ratatui::layout::Rect {
 fn parity_tree() -> App {
     use nebula_core::{Agent, AgentStatus, Entity};
     let mut app = App::new();
-    app.body_area = ratatui::layout::Rect::new(0, 0, 40, 35);
+    app.chrome.body_area = ratatui::layout::Rect::new(0, 0, 40, 35);
     seed_tree(&mut app);
     seed_feat_worktree(&mut app, "w2", "feat");
     hse(
@@ -19372,17 +20425,18 @@ fn parity_tree() -> App {
                 status_changed_at: 1,
                 alive: true,
                 issue_url: None,
+                role: nebula_core::AgentRole::Worker,
                 recent_prompts: Vec::new(),
             }),
         },
     );
-    app.focus = Focus::Worktrees;
+    app.nav.focus = Focus::Worktrees;
     let root = app
         .worktree_row_of(&WorktreeId("w1".into()))
         .expect("the root is a row");
     let mut out = Vec::new();
     select_worktree_row(&mut app, root, &mut out);
-    app.sel_worktree = root;
+    app.nav.sel_worktree = root;
     app
 }
 
@@ -19393,7 +20447,7 @@ fn parity_tree() -> App {
 #[test]
 fn a_context_menu_row_is_its_hotkey() {
     with_default_config(|| {
-        let confirm = |app: &App| match &app.overlay {
+        let confirm = |app: &App| match &app.modals.overlay {
             Some(Overlay::Confirm(c)) => format!("{}|{}|{:?}", c.title, c.message, c.action),
             other => format!("{other:?}"),
         };
@@ -19404,7 +20458,7 @@ fn a_context_menu_row_is_its_hotkey() {
                 .worktree_row_of(&WorktreeId("w2".into()))
                 .expect("feat is a row");
             select_worktree_row(&mut app, row, &mut out);
-            app.focus = Focus::Worktrees;
+            app.nav.focus = Focus::Worktrees;
             app
         };
 
@@ -19436,16 +20490,20 @@ fn a_context_menu_row_is_its_hotkey() {
             MenuAction::DeleteWorktree(WorktreeId("w1".into())),
             &mut out,
         );
-        assert!(by_menu.overlay.is_none(), "{:?}", by_menu.overlay);
+        assert!(
+            by_menu.modals.overlay.is_none(),
+            "{:?}",
+            by_menu.modals.overlay
+        );
         assert_eq!(
-            by_menu.flash.as_deref(),
+            by_menu.chrome.flash.as_deref(),
             Some("cannot delete the main checkout")
         );
 
         // Attach: Enter on the row.
         let on_session = || {
             let mut app = on_feat();
-            app.focus = Focus::Sessions;
+            app.nav.focus = Focus::Sessions;
             app
         };
         let mut by_key = on_session();
@@ -19476,7 +20534,7 @@ fn a_click_into_the_pane_is_enter_on_it() {
     with_default_config(|| {
         let sweep = || {
             let mut app = parity_tree();
-            app.focus = Focus::Sessions;
+            app.nav.focus = Focus::Sessions;
             seed_second_agent(&mut app, nebula_core::AgentStatus::Finished);
             // Reaped: the one kind of session a sweep debounces, since
             // attaching it boots a CLI.
@@ -19499,7 +20557,7 @@ fn a_click_into_the_pane_is_enter_on_it() {
                 Some(reaped),
                 "the walk landed on the reaped session"
             );
-            assert!(app.pending_attach.is_some(), "the sweep debounces");
+            assert!(app.pane.pending_attach.is_some(), "the sweep debounces");
             out.clear();
             (app, out)
         };
@@ -19518,7 +20576,7 @@ fn a_click_into_the_pane_is_enter_on_it() {
             &mut mouse_out,
         );
         // The press arms a drag-selection, which a key has no part in.
-        by_mouse.term_selection = None;
+        by_mouse.pane.term_selection = None;
 
         assert!(
             mouse_out
@@ -19526,7 +20584,7 @@ fn a_click_into_the_pane_is_enter_on_it() {
                 .any(|r| matches!(r, ClientRequest::Attach { .. })),
             "the waiting attach goes out with the click: {mouse_out:?}"
         );
-        assert!(by_mouse.pending_attach.is_none());
+        assert!(by_mouse.pane.pending_attach.is_none());
         assert_eq!(
             ui_digest(&by_mouse, &mouse_out),
             ui_digest(&by_keys, &keys_out)
@@ -19545,16 +20603,16 @@ fn a_click_on_a_list_row_is_enter_on_it() {
             press(app, KeyCode::Char('/'), KeyModifiers::NONE, out);
         };
         let new_session: Open = |app, _out| {
-            app.focus = Focus::Sessions;
+            app.nav.focus = Focus::Sessions;
             open_picker(app);
         };
         let presets: Open = |app, out| {
-            app.focus = Focus::Sessions;
+            app.nav.focus = Focus::Sessions;
             press(app, KeyCode::Char('e'), KeyModifiers::NONE, out);
         };
         let pr_presets: Open = |app, out| {
             seed_open_prs(app, &[(7, "Attach links")]);
-            app.sel_worktree = app.open_pr_row_of(&pr_url(7)).expect("#7 is a row");
+            app.nav.sel_worktree = app.open_pr_row_of(&pr_url(7)).expect("#7 is a row");
             press(app, KeyCode::Char('e'), KeyModifiers::NONE, out);
         };
         let surfaces: [(&str, Open); 4] = [
@@ -19581,8 +20639,8 @@ fn a_click_on_a_list_row_is_enter_on_it() {
                 // The palette opens with its cursor on the top
                 // session, under the project header drawn above it:
                 // walk up to the first row before counting down.
-                if let Some(Overlay::Palette(p)) = &by_keys.overlay {
-                    for _ in 0..p.selected {
+                if let Some(Overlay::Palette(p)) = &by_keys.modals.overlay {
+                    for _ in 0..p.list.cursor {
                         press(&mut by_keys, KeyCode::Up, KeyModifiers::NONE, &mut keys_out);
                     }
                 }
@@ -19624,7 +20682,7 @@ fn a_click_on_a_finder_row_is_enter_on_it() {
         let mut app = App::new();
         seed_repo_tree(&mut app, &repo);
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        app.vim_tx = Some(tx);
+        app.pane.vim_tx = Some(tx);
         let mut out = Vec::new();
         press(&mut app, KeyCode::Char('f'), KeyModifiers::NONE, &mut out);
         for c in ['n', 'o', 't'] {
@@ -19647,11 +20705,11 @@ fn a_click_on_a_finder_row_is_enter_on_it() {
     click(&mut by_mouse, list.x + 1, list.y, &mut mouse_out);
 
     assert!(
-        matches!(&by_mouse.overlay, Some(Overlay::FileTabs(_))),
+        matches!(&by_mouse.modals.overlay, Some(Overlay::FileTabs(_))),
         "the reader, not the editor: {:?}",
-        by_mouse.overlay
+        by_mouse.modals.overlay
     );
-    assert!(by_mouse.vim.is_none());
+    assert!(by_mouse.pane.vim.is_none());
     assert_eq!(
         ui_digest(&by_mouse, &mouse_out),
         ui_digest(&by_keys, &keys_out)
@@ -19737,12 +20795,12 @@ fn help_click_outside_closes_and_inside_stays() {
     let area = drawn_modal_area(&mut app);
     click(&mut app, area.x + 2, area.y + 2, &mut out);
     assert!(
-        matches!(app.overlay, Some(Overlay::Help(_))),
+        matches!(app.modals.overlay, Some(Overlay::Help(_))),
         "inside click keeps it"
     );
     click(&mut app, 0, 0, &mut out);
-    assert!(app.overlay.is_none(), "outside click closes");
-    assert!(app.dirty);
+    assert!(app.modals.overlay.is_none(), "outside click closes");
+    assert!(app.chrome.dirty);
 }
 
 #[test]
@@ -19753,19 +20811,19 @@ fn confirm_click_outside_cancels_without_confirming() {
     let mut out = Vec::new();
     press(&mut app, KeyCode::Char('D'), KeyModifiers::NONE, &mut out);
     assert!(
-        matches!(app.overlay, Some(Overlay::Confirm(_))),
+        matches!(app.modals.overlay, Some(Overlay::Confirm(_))),
         "{:?}",
-        app.overlay
+        app.modals.overlay
     );
     let area = drawn_modal_area(&mut app);
     out.clear();
     click(&mut app, area.x + 2, area.y + 1, &mut out);
     assert!(
-        matches!(app.overlay, Some(Overlay::Confirm(_))),
+        matches!(app.modals.overlay, Some(Overlay::Confirm(_))),
         "inside click keeps it"
     );
     click(&mut app, 0, 0, &mut out);
-    assert!(app.overlay.is_none(), "outside click cancels");
+    assert!(app.modals.overlay.is_none(), "outside click cancels");
     assert!(out.is_empty(), "nothing was confirmed: {out:?}");
 }
 
@@ -19780,16 +20838,16 @@ fn confirm_click_outside_lands_where_esc_would() {
         press(&mut app, KeyCode::Tab, KeyModifiers::NONE, &mut out);
         press(&mut app, KeyCode::Char('R'), KeyModifiers::SHIFT, &mut out);
         assert!(
-            matches!(app.overlay, Some(Overlay::Confirm(_))),
+            matches!(app.modals.overlay, Some(Overlay::Confirm(_))),
             "{:?}",
-            app.overlay
+            app.modals.overlay
         );
         drawn_modal_area(&mut app);
         click(&mut app, 0, 0, &mut out);
         assert!(
-            matches!(app.overlay, Some(Overlay::Settings(_))),
+            matches!(app.modals.overlay, Some(Overlay::Settings(_))),
             "back to the overlay, not the panels: {:?}",
-            app.overlay
+            app.modals.overlay
         );
     });
 }
@@ -19800,25 +20858,28 @@ fn prompt_click_outside_abandons_it() {
     let mut out = Vec::new();
     press(&mut app, KeyCode::Char('n'), KeyModifiers::NONE, &mut out);
     assert!(
-        matches!(app.overlay, Some(Overlay::Prompt(_))),
+        matches!(app.modals.overlay, Some(Overlay::Prompt(_))),
         "{:?}",
-        app.overlay
+        app.modals.overlay
     );
     let area = drawn_modal_area(&mut app);
     click(&mut app, area.x + 2, area.y + 1, &mut out);
     assert!(
-        matches!(app.overlay, Some(Overlay::Prompt(_))),
+        matches!(app.modals.overlay, Some(Overlay::Prompt(_))),
         "inside click keeps it"
     );
     click(&mut app, 0, 0, &mut out);
-    assert!(app.overlay.is_none(), "outside click abandons the prompt");
+    assert!(
+        app.modals.overlay.is_none(),
+        "outside click abandons the prompt"
+    );
 }
 
 #[test]
 fn diff_click_outside_closes_and_inside_stays() {
     let mut app = App::new();
     seed_tree(&mut app);
-    app.overlay = Some(Overlay::Diff(fake_diff_view(10)));
+    app.modals.overlay = Some(Overlay::Diff(fake_diff_view(10)));
     let mut out = Vec::new();
     let area = drawn_modal_area(&mut app);
     click(
@@ -19828,11 +20889,11 @@ fn diff_click_outside_closes_and_inside_stays() {
         &mut out,
     );
     assert!(
-        matches!(app.overlay, Some(Overlay::Diff(_))),
+        matches!(app.modals.overlay, Some(Overlay::Diff(_))),
         "inside click keeps it"
     );
     click(&mut app, 0, 0, &mut out);
-    assert!(app.overlay.is_none(), "outside click closes");
+    assert!(app.modals.overlay.is_none(), "outside click closes");
 }
 
 // ---- …and lands its focus on the panel it hit ----
@@ -19843,27 +20904,27 @@ fn diff_click_outside_closes_and_inside_stays() {
 fn click_outside_into_the_pane_focuses_and_locks_it() {
     let mut app = App::new();
     seed_tree(&mut app);
-    app.term = Some(AttachedTerm::new(
+    app.pane.term = Some(AttachedTerm::new(
         SessionRef::Agent(AgentId("a1".into())),
         40,
         10,
     ));
-    app.focus = Focus::Sessions;
+    app.nav.focus = Focus::Sessions;
     let mut out = Vec::new();
     press(&mut app, KeyCode::Char('?'), KeyModifiers::NONE, &mut out);
     let modal = drawn_modal_area(&mut app);
     // The modal is centred over the pane; its bottom-right cell is not.
-    let pane = app.term_area;
+    let pane = app.pane.term_area;
     let (x, y) = (pane.x + pane.width - 1, pane.y + pane.height - 1);
     assert!(
         !modal.contains(ratatui::layout::Position::new(x, y)),
         "the pane's corner {x},{y} is beside the modal {modal:?}"
     );
-    assert!(!app.term_locked);
+    assert!(!app.pane.term_locked);
     click(&mut app, x, y, &mut out);
-    assert!(app.overlay.is_none(), "outside click closes");
-    assert_eq!(app.focus, Focus::Terminal);
-    assert!(app.term_locked, "a click into the pane locks input");
+    assert!(app.modals.overlay.is_none(), "outside click closes");
+    assert_eq!(app.nav.focus, Focus::Terminal);
+    assert!(app.pane.term_locked, "a click into the pane locks input");
 }
 
 // ---- every modal has all three exits ----
@@ -19883,7 +20944,7 @@ fn every_overlay() -> Vec<(&'static str, fn(&mut App), Option<&'static str>)> {
             "Menu",
             |app| {
                 seed_tree(app);
-                app.focus = Focus::Sessions;
+                app.nav.focus = Focus::Sessions;
                 open_row_menu(app);
             },
             None,
@@ -19916,7 +20977,7 @@ fn every_overlay() -> Vec<(&'static str, fn(&mut App), Option<&'static str>)> {
             "Diff",
             |app| {
                 seed_tree(app);
-                app.overlay = Some(Overlay::Diff(fake_diff_view(10)));
+                app.modals.overlay = Some(Overlay::Diff(fake_diff_view(10)));
             },
             None,
         ),
@@ -19931,7 +20992,7 @@ fn every_overlay() -> Vec<(&'static str, fn(&mut App), Option<&'static str>)> {
         (
             "Files",
             |app| {
-                app.overlay = Some(Overlay::Files(FileFinder::new(
+                app.modals.overlay = Some(Overlay::Files(FileFinder::new(
                     "/tmp/demo".into(),
                     "main".into(),
                     "vi".into(),
@@ -19943,7 +21004,7 @@ fn every_overlay() -> Vec<(&'static str, fn(&mut App), Option<&'static str>)> {
         (
             "Grep",
             |app| {
-                app.overlay = Some(Overlay::Grep(GrepView::new(
+                app.modals.overlay = Some(Overlay::Grep(GrepView::new(
                     "/tmp/demo".into(),
                     "main".into(),
                     "vi".into(),
@@ -19954,7 +21015,7 @@ fn every_overlay() -> Vec<(&'static str, fn(&mut App), Option<&'static str>)> {
         (
             "Tree",
             |app| {
-                app.overlay = Some(Overlay::Tree(TreeBrowser::new(
+                app.modals.overlay = Some(Overlay::Tree(TreeBrowser::new(
                     "/tmp/demo".into(),
                     "main".into(),
                     "vi".into(),
@@ -19966,7 +21027,7 @@ fn every_overlay() -> Vec<(&'static str, fn(&mut App), Option<&'static str>)> {
         (
             "FileTabs",
             |app| {
-                app.overlay = Some(Overlay::FileTabs(crate::file_tabs::FileTabsView::new(
+                app.modals.overlay = Some(Overlay::FileTabs(crate::file_tabs::FileTabsView::new(
                     "/tmp/demo".into(),
                     "vi".into(),
                     vec!["/tmp/demo/README.md".into()],
@@ -19976,7 +21037,7 @@ fn every_overlay() -> Vec<(&'static str, fn(&mut App), Option<&'static str>)> {
         ),
         (
             "Metrics",
-            |app| app.overlay = Some(Overlay::Metrics(MetricsView::new())),
+            |app| app.modals.overlay = Some(Overlay::Metrics(MetricsView::new())),
             None,
         ),
         (
@@ -20006,7 +21067,7 @@ fn every_overlay() -> Vec<(&'static str, fn(&mut App), Option<&'static str>)> {
         (
             "Hosts",
             |app| {
-                app.overlay = Some(Overlay::Hosts(crate::app::HostsView::new(vec![
+                app.modals.overlay = Some(Overlay::Hosts(crate::app::HostsView::new(vec![
                     crate::hosts::HostEntry {
                         host: "old@one".into(),
                         path: None,
@@ -20061,7 +21122,7 @@ fn every_overlay() -> Vec<(&'static str, fn(&mut App), Option<&'static str>)> {
 }
 
 fn file_tabs(app: &App) -> &crate::file_tabs::FileTabsView {
-    match &app.overlay {
+    match &app.modals.overlay {
         Some(Overlay::FileTabs(v)) => v,
         other => panic!("expected the file tabs, got {other:?}"),
     }
@@ -20102,7 +21163,7 @@ fn files_opened_event_raises_the_file_tabs_previewing_the_first() {
         assert!(view.on_tabs, "opens on the strip");
         assert!(view.preview_is_file);
         assert_eq!(preview_text(view, 0), "# alpha");
-        assert!(app.dirty);
+        assert!(app.chrome.dirty);
 
         press(&mut app, KeyCode::Right, KeyModifiers::NONE, &mut out);
         let view = file_tabs(&app);
@@ -20123,20 +21184,20 @@ fn file_tabs_ctrl_q_steps_back_to_the_strip_before_closing() {
         std::fs::write(&a, "one\ntwo\nthree\n").unwrap();
         let mut app = App::new();
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        app.vim_tx = Some(tx);
+        app.pane.vim_tx = Some(tx);
         let mut out = Vec::new();
         // A shell stands in for vim (`sh +1 a.md` still spawns fine).
-        app.overlay = Some(Overlay::FileTabs(crate::file_tabs::FileTabsView::new(
+        app.modals.overlay = Some(Overlay::FileTabs(crate::file_tabs::FileTabsView::new(
             dir.path().to_path_buf(),
             "/bin/sh".into(),
             vec![a],
         )));
 
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE, &mut out);
-        let vim = app.vim.as_ref().expect("Enter spawns the editor");
+        let vim = app.pane.vim.as_ref().expect("Enter spawns the editor");
         assert!(vim.embedded, "embedded in the modal's body");
         assert!(
-            matches!(&app.overlay, Some(Overlay::FileTabs(_))),
+            matches!(&app.modals.overlay, Some(Overlay::FileTabs(_))),
             "the tabs stay under the editor"
         );
 
@@ -20146,7 +21207,7 @@ fn file_tabs_ctrl_q_steps_back_to_the_strip_before_closing() {
             KeyModifiers::CONTROL,
             &mut out,
         );
-        assert!(app.vim.is_none(), "Ctrl+Q kills the editor");
+        assert!(app.pane.vim.is_none(), "Ctrl+Q kills the editor");
         assert!(file_tabs(&app).on_tabs, "…and lands on the strip");
 
         press(&mut app, KeyCode::Down, KeyModifiers::NONE, &mut out);
@@ -20158,7 +21219,7 @@ fn file_tabs_ctrl_q_steps_back_to_the_strip_before_closing() {
             &mut out,
         );
         assert!(
-            matches!(&app.overlay, Some(Overlay::FileTabs(v)) if v.on_tabs),
+            matches!(&app.modals.overlay, Some(Overlay::FileTabs(v)) if v.on_tabs),
             "Ctrl+Q from the preview is the strip, not the panels"
         );
 
@@ -20168,7 +21229,7 @@ fn file_tabs_ctrl_q_steps_back_to_the_strip_before_closing() {
             KeyModifiers::CONTROL,
             &mut out,
         );
-        assert!(app.overlay.is_none(), "from the strip it closes");
+        assert!(app.modals.overlay.is_none(), "from the strip it closes");
     });
 }
 
@@ -20193,6 +21254,7 @@ fn overlay_label(overlay: &Overlay) -> &'static str {
         Overlay::Issues(_) => "Issues",
         Overlay::PullRequests(_) => "PullRequests",
         Overlay::BranchSwitch(_) => "BranchSwitch",
+        Overlay::Review(_) => "Review",
         Overlay::ProjectPicker(_) => "ProjectPicker",
     }
 }
@@ -20208,6 +21270,7 @@ fn the_overlay_table_covers_every_variant_exactly_once() {
             let mut app = App::new();
             open(&mut app);
             let overlay = app
+                .modals
                 .overlay
                 .as_ref()
                 .unwrap_or_else(|| panic!("{label}: the opener left no overlay open"));
@@ -20237,7 +21300,7 @@ fn one_esc_closes_every_overlay() {
             open(&mut app);
             press(&mut app, KeyCode::Esc, KeyModifiers::NONE, &mut out);
             assert_eq!(
-                app.overlay.as_ref().map(overlay_label),
+                app.modals.overlay.as_ref().map(overlay_label),
                 lands,
                 "{label}: one Esc landed somewhere else"
             );
@@ -20260,7 +21323,7 @@ fn a_click_outside_closes_every_overlay() {
             drawn_modal_area(&mut app);
             click(&mut app, 0, 0, &mut out);
             assert_eq!(
-                app.overlay.as_ref().map(overlay_label),
+                app.modals.overlay.as_ref().map(overlay_label),
                 lands,
                 "{label}: a click outside landed somewhere else"
             );
@@ -20284,9 +21347,9 @@ fn ctrl_q_closes_every_overlay() {
                 &mut out,
             );
             assert!(
-                app.overlay.is_none(),
+                app.modals.overlay.is_none(),
                 "{label}: Ctrl+Q left {:?} on screen",
-                app.overlay.as_ref().map(overlay_label)
+                app.modals.overlay.as_ref().map(overlay_label)
             );
         }
     });
@@ -20302,7 +21365,7 @@ fn ctrl_q_takes_the_layers_esc_would_peel() {
         // A typed diff filter: Esc clears it and keeps the viewer.
         let staged_diff = |app: &mut App| {
             seed_tree(app);
-            app.overlay = Some(Overlay::Diff(fake_diff_view(10)));
+            app.modals.overlay = Some(Overlay::Diff(fake_diff_view(10)));
             assert!(paste_into_overlay(app, "alpha"));
         };
         assert!(
@@ -20315,13 +21378,13 @@ fn ctrl_q_takes_the_layers_esc_would_peel() {
         let submenu = |app: &mut App| {
             let mut out = Vec::new();
             seed_tree(app);
-            app.focus = Focus::Sessions;
+            app.nav.focus = Focus::Sessions;
             open_picker(app);
             press(app, KeyCode::Right, KeyModifiers::NONE, &mut out);
             assert!(
-                matches!(&app.overlay, Some(Overlay::Menu(m)) if m.parent.is_some()),
+                matches!(&app.modals.overlay, Some(Overlay::Menu(m)) if m.parent.is_some()),
                 "→ should open a submenu, got {:?}",
-                app.overlay
+                app.modals.overlay
             );
         };
         assert!(
@@ -20334,13 +21397,13 @@ fn ctrl_q_takes_the_layers_esc_would_peel() {
         let editor = |app: &mut App| {
             let mut out = Vec::new();
             seed_tree(app);
-            app.focus = Focus::Sessions;
+            app.nav.focus = Focus::Sessions;
             press(app, KeyCode::Char('e'), KeyModifiers::NONE, &mut out);
             press(app, KeyCode::Char('a'), KeyModifiers::CONTROL, &mut out);
             assert!(
-                matches!(app.overlay, Some(Overlay::AgentPresetEditor(_))),
+                matches!(app.modals.overlay, Some(Overlay::AgentPresetEditor(_))),
                 "{:?}",
-                app.overlay
+                app.modals.overlay
             );
         };
         assert!(
@@ -20366,7 +21429,7 @@ fn peel_with(open: impl Fn(&mut App), code: KeyCode) -> Option<Overlay> {
         _ => KeyModifiers::CONTROL,
     };
     press(&mut app, code, mods, &mut out);
-    app.overlay
+    app.modals.overlay
 }
 
 /// Backing out of a QUICK PROMPT picker with the mouse is the same
@@ -20380,7 +21443,7 @@ fn clicking_outside_a_quick_prompt_picker_restores_the_box() {
             let picker = |app: &mut App| {
                 let mut out = Vec::new();
                 seed_tree(app);
-                app.focus = Focus::Sessions;
+                app.nav.focus = Focus::Sessions;
                 press(app, KeyCode::Char('p'), KeyModifiers::NONE, &mut out);
                 assert!(paste_into_overlay(app, "Fix auth"));
                 press(app, opener, KeyModifiers::NONE, &mut out);
@@ -20391,10 +21454,10 @@ fn clicking_outside_a_quick_prompt_picker_restores_the_box() {
             picker(&mut app);
             drawn_modal_area(&mut app);
             click(&mut app, 0, 0, &mut out);
-            let Some(Overlay::Prompt(prompt)) = &app.overlay else {
+            let Some(Overlay::Prompt(prompt)) = &app.modals.overlay else {
                 panic!(
                     "{opener:?}: the click should hand the box back, got {:?}",
-                    app.overlay
+                    app.modals.overlay
                 );
             };
             assert_eq!(prompt.input.as_str(), "Fix auth");
@@ -20426,7 +21489,7 @@ fn ctrl_q_closes_settings_out_from_under_a_hotkey_capture() {
             KeyModifiers::CONTROL,
             &mut out,
         );
-        assert!(app.overlay.is_none(), "{:?}", app.overlay);
+        assert!(app.modals.overlay.is_none(), "{:?}", app.modals.overlay);
     });
 }
 
@@ -20438,15 +21501,15 @@ fn clicking_outside_a_submenu_closes_the_whole_menu() {
         let mut app = App::new();
         let mut out = Vec::new();
         seed_tree(&mut app);
-        app.focus = Focus::Sessions;
+        app.nav.focus = Focus::Sessions;
         press(&mut app, KeyCode::Char('n'), KeyModifiers::NONE, &mut out);
         press(&mut app, KeyCode::Right, KeyModifiers::NONE, &mut out);
         drawn_modal_area(&mut app);
         click(&mut app, 0, 0, &mut out);
         assert!(
-            app.overlay.is_none(),
+            app.modals.overlay.is_none(),
             "outside click closes the whole menu, not one level: {:?}",
-            app.overlay
+            app.modals.overlay
         );
     });
 }
@@ -20463,7 +21526,7 @@ fn hosts_a_types_a_new_destination_and_enter_connects() {
         for c in "qd@db /var".chars() {
             press(&mut app, KeyCode::Char(c), KeyModifiers::NONE, &mut out);
         }
-        match &app.overlay {
+        match &app.modals.overlay {
             Some(Overlay::Hosts(view)) => {
                 assert_eq!(view.input.as_deref(), Some("qd@db /var"));
                 assert_eq!(view.hosts.len(), 2, "d typed, not deleted");
@@ -20477,8 +21540,8 @@ fn hosts_a_types_a_new_destination_and_enter_connects() {
         assert!(text.contains("+ qd@db /var"), "input row rendered:\n{text}");
 
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE, &mut out);
-        assert!(app.should_quit, "Enter connects to the typed host");
-        let entry = app.pending_ssh.as_ref().expect("handoff target set");
+        assert!(app.chrome.should_quit, "Enter connects to the typed host");
+        let entry = app.chrome.pending_ssh.as_ref().expect("handoff target set");
         assert_eq!(entry.host, "qd@db");
         assert_eq!(entry.path.as_deref(), Some("/var"));
     });
@@ -20492,17 +21555,17 @@ fn hosts_input_esc_cancels_and_empty_enter_is_a_noop() {
         press(&mut app, KeyCode::Char('H'), KeyModifiers::SHIFT, &mut out);
         press(&mut app, KeyCode::Char('a'), KeyModifiers::NONE, &mut out);
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE, &mut out);
-        match &app.overlay {
+        match &app.modals.overlay {
             Some(Overlay::Hosts(view)) => {
                 assert!(view.input.is_none(), "empty Enter cancels the input");
             }
             other => panic!("picker should stay open, got {other:?}"),
         }
-        assert!(!app.should_quit);
+        assert!(!app.chrome.should_quit);
         press(&mut app, KeyCode::Char('a'), KeyModifiers::NONE, &mut out);
         press(&mut app, KeyCode::Char('x'), KeyModifiers::NONE, &mut out);
         press(&mut app, KeyCode::Esc, KeyModifiers::NONE, &mut out);
-        match &app.overlay {
+        match &app.modals.overlay {
             Some(Overlay::Hosts(view)) => assert!(view.input.is_none()),
             other => panic!("Esc only cancels the input, got {other:?}"),
         }
@@ -20517,7 +21580,7 @@ fn empty_hosts_picker_shows_the_hint() {
         let mut app = App::new();
         let mut out = Vec::new();
         press(&mut app, KeyCode::Char('H'), KeyModifiers::SHIFT, &mut out);
-        assert!(matches!(app.overlay, Some(Overlay::Hosts(_))));
+        assert!(matches!(app.modals.overlay, Some(Overlay::Hosts(_))));
         let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
         terminal.draw(|f| ui::draw(f, &mut app)).unwrap();
         let text = buffer_text(&terminal);
@@ -20528,14 +21591,14 @@ fn empty_hosts_picker_shows_the_hint() {
         // d on the empty list must not panic or write.
         press(&mut app, KeyCode::Char('d'), KeyModifiers::NONE, &mut out);
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE, &mut out);
-        assert!(!app.should_quit, "Enter on an empty list is a no-op");
+        assert!(!app.chrome.should_quit, "Enter on an empty list is a no-op");
     });
 }
 
 // ---- KEY COMBO DISPLAY ----
 
 fn combo_text(app: &App) -> Option<String> {
-    app.key_combo.as_ref().map(|c| c.text())
+    app.chrome.key_combo.as_ref().map(|c| c.text())
 }
 
 /// A panel key shows as `key - label` and an unbound one bare, out of
@@ -20546,7 +21609,7 @@ fn key_combo_display_spells_each_press_with_what_it_did() {
     let mut app = App::new();
     seed_tree(&mut app);
     let mut out = Vec::new();
-    assert!(app.key_combo.is_none(), "nothing pressed yet");
+    assert!(app.chrome.key_combo.is_none(), "nothing pressed yet");
     press(&mut app, KeyCode::Char('j'), KeyModifiers::NONE, &mut out);
     assert_eq!(combo_text(&app).as_deref(), Some("j - Move down"));
     press(
@@ -20567,7 +21630,7 @@ fn key_combo_display_spells_each_press_with_what_it_did() {
     // never shows, its navigation keys show bare.
     press(&mut app, KeyCode::Char('/'), KeyModifiers::NONE, &mut out);
     assert_eq!(combo_text(&app).as_deref(), Some("/ - Fuzzy jump"));
-    assert!(matches!(app.overlay, Some(Overlay::Palette(_))));
+    assert!(matches!(app.modals.overlay, Some(Overlay::Palette(_))));
     press(&mut app, KeyCode::Char('a'), KeyModifiers::NONE, &mut out);
     press(&mut app, KeyCode::Char('B'), KeyModifiers::SHIFT, &mut out);
     press(&mut app, KeyCode::Backspace, KeyModifiers::NONE, &mut out);
@@ -20586,7 +21649,7 @@ fn key_combo_display_spells_each_press_with_what_it_did() {
     press(&mut app, KeyCode::Esc, KeyModifiers::NONE, &mut out);
     assert_eq!(combo_text(&app).as_deref(), Some("Esc"));
     press(&mut app, KeyCode::Esc, KeyModifiers::NONE, &mut out);
-    assert!(app.overlay.is_none());
+    assert!(app.modals.overlay.is_none());
 
     // The hardwired hatch out of any modal names itself.
     press(&mut app, KeyCode::Char('?'), KeyModifiers::NONE, &mut out);
@@ -20598,7 +21661,7 @@ fn key_combo_display_spells_each_press_with_what_it_did() {
         &mut out,
     );
     assert_eq!(combo_text(&app).as_deref(), Some("^q - Force close"));
-    assert!(app.overlay.is_none());
+    assert!(app.modals.overlay.is_none());
 }
 
 /// Keys typed into a LOCKED PANE are the agent's — a password at a
@@ -20609,9 +21672,9 @@ fn key_combo_display_never_echoes_what_is_typed_into_a_locked_pane() {
     let mut app = App::new();
     seed_tree(&mut app);
     let sref = SessionRef::Agent(AgentId("a1".into()));
-    app.term = Some(AttachedTerm::new(sref, 80, 24));
-    app.focus = Focus::Terminal;
-    app.term_locked = true;
+    app.pane.term = Some(AttachedTerm::new(sref, 80, 24));
+    app.nav.focus = Focus::Terminal;
+    app.pane.term_locked = true;
     let mut out = Vec::new();
     for code in [
         KeyCode::Char('h'),
@@ -20623,10 +21686,13 @@ fn key_combo_display_never_echoes_what_is_typed_into_a_locked_pane() {
         press(&mut app, code, KeyModifiers::NONE, &mut out);
     }
     assert!(
-        app.key_combo.is_none(),
+        app.chrome.key_combo.is_none(),
         "typed keys are the agent's, not the display's"
     );
-    assert!(app.term_locked, "and none of them was taken for a hotkey");
+    assert!(
+        app.pane.term_locked,
+        "and none of them was taken for a hotkey"
+    );
     press(
         &mut app,
         KeyCode::Char('q'),
@@ -20637,7 +21703,7 @@ fn key_combo_display_never_echoes_what_is_typed_into_a_locked_pane() {
         combo_text(&app).as_deref(),
         Some("^q - Unlock terminal input")
     );
-    assert!(!app.term_locked);
+    assert!(!app.pane.term_locked);
 }
 
 /// The retired `show_key_combos` key changes nothing: a config that
@@ -20657,7 +21723,10 @@ fn the_key_combo_display_shows_whatever_the_retired_key_says() {
     press(&mut app, KeyCode::Char('j'), KeyModifiers::NONE, &mut out);
     assert_eq!(combo_text(&app).as_deref(), Some("j - Move down"));
     apply_config(&mut app, &cfg);
-    assert!(app.key_combo.is_some(), "a config apply leaves it standing");
+    assert!(
+        app.chrome.key_combo.is_some(),
+        "a config apply leaves it standing"
+    );
 }
 
 /// PR & ISSUE COUNTS is live the same way: the switch reaches the
@@ -20680,12 +21749,12 @@ fn card_line_counts_are_always_kept_and_drop_when_nothing_changed() {
     note_worktree_lines(&mut app, &w1, Some(lines));
     assert_eq!(app.worktree_lines(&w1), Some(lines));
 
-    app.dirty = false;
+    app.chrome.dirty = false;
     note_worktree_lines(&mut app, &w1, Some(lines));
-    assert!(!app.dirty, "the same count again paints nothing");
+    assert!(!app.chrome.dirty, "the same count again paints nothing");
     note_worktree_lines(&mut app, &w1, Some(LineChanges::default()));
     assert_eq!(app.worktree_lines(&w1), None, "nothing changed by the line");
-    assert!(app.dirty);
+    assert!(app.chrome.dirty);
 
     note_worktree_lines(&mut app, &w1, Some(lines));
     apply_config(&mut app, &crate::config::Config::default());
@@ -20717,10 +21786,10 @@ fn key_combo_display_sits_on_the_footers_padding_row_at_the_left() {
     );
     let cell = &terminal.backend().buffer()[(2, 28)];
     assert_eq!(cell.symbol(), "j");
-    assert_eq!(cell.bg, app.theme.sel_bg, "the key sits in a keycap");
-    assert_eq!(cell.fg, app.theme.accent);
+    assert_eq!(cell.bg, app.chrome.theme.sel_bg, "the key sits in a keycap");
+    assert_eq!(cell.fg, app.chrome.theme.accent);
 
-    app.key_combo = None;
+    app.chrome.key_combo = None;
     draw_frame(&mut terminal, &mut app).unwrap();
     let text = buffer_text(&terminal);
     assert_eq!(
@@ -20763,7 +21832,7 @@ fn delete_worktree_requests(out: &[ClientRequest]) -> Vec<&str> {
 fn menu_delete(app: &mut App, id: &str) -> ConfirmDialog {
     let mut out = Vec::new();
     run_menu_action(app, MenuAction::DeleteAgent(AgentId(id.into())), &mut out);
-    match &app.overlay {
+    match &app.modals.overlay {
         Some(Overlay::Confirm(c)) => c.clone(),
         other => panic!("expected a confirm, got {other:?}"),
     }
@@ -20788,18 +21857,18 @@ fn deleting_the_last_card_asks_about_the_worktree_first() {
         seed_emptiable_tree(&mut app);
         upsert_agent(&mut app, "a2", "w2", "agent-2", false);
         let by_menu = menu_delete(&mut app, "a2");
-        app.overlay = None;
+        app.modals.overlay = None;
 
-        app.focus = Focus::Sessions;
-        app.sel_worktree = app
+        app.nav.focus = Focus::Sessions;
+        app.nav.sel_worktree = app
             .visible_worktrees()
             .iter()
             .position(|w| w.id.0 == "w2")
             .unwrap();
-        app.sel_session = 0;
+        app.nav.sel_session = 0;
         let mut out = Vec::new();
         press(&mut app, KeyCode::Char('d'), KeyModifiers::NONE, &mut out);
-        let by_key = match &app.overlay {
+        let by_key = match &app.modals.overlay {
             Some(Overlay::Confirm(c)) => c.clone(),
             other => panic!("d opens the confirm, got {other:?}"),
         };
@@ -20844,7 +21913,11 @@ fn yes_deletes_the_card_and_then_the_worktree() {
         menu_delete(&mut app, "a2");
         let mut out = Vec::new();
         press(&mut app, KeyCode::Char('y'), KeyModifiers::NONE, &mut out);
-        assert!(app.overlay.is_none(), "y answered it: {:?}", app.overlay);
+        assert!(
+            app.modals.overlay.is_none(),
+            "y answered it: {:?}",
+            app.modals.overlay
+        );
         let kinds: Vec<&str> = out
             .iter()
             .filter_map(|r| match r {
@@ -20874,7 +21947,11 @@ fn no_deletes_the_card_and_keeps_the_worktree() {
         menu_delete(&mut app, "a2");
         let mut out = Vec::new();
         press(&mut app, KeyCode::Char('n'), KeyModifiers::NONE, &mut out);
-        assert!(app.overlay.is_none(), "n answered it: {:?}", app.overlay);
+        assert!(
+            app.modals.overlay.is_none(),
+            "n answered it: {:?}",
+            app.modals.overlay
+        );
         assert!(
             out.iter()
                 .any(|r| matches!(r, ClientRequest::DeleteAgent { id, .. } if id.0 == "a2")),
@@ -20898,7 +21975,7 @@ fn esc_keeps_the_last_card_alive() {
         menu_delete(&mut app, "a2");
         let mut out = Vec::new();
         press(&mut app, KeyCode::Esc, KeyModifiers::NONE, &mut out);
-        assert!(app.overlay.is_none());
+        assert!(app.modals.overlay.is_none());
         assert!(out.is_empty(), "Esc deletes nothing: {out:?}");
         assert!(
             app.tree.agents.iter().any(|a| a.id.0 == "a2"),
@@ -20926,7 +22003,7 @@ fn closing_the_last_terminal_asks_about_the_worktree() {
             MenuAction::CloseTerminal(TerminalId("t1".into())),
             &mut out,
         );
-        match &app.overlay {
+        match &app.modals.overlay {
             Some(Overlay::Confirm(c)) => {
                 assert_eq!(c.title, "Close terminal");
                 assert_eq!(
@@ -20991,14 +22068,14 @@ fn deleting_all_sessions_asks_about_the_worktree() {
                 entity: terminal_entity("t1", "w2", "shell-1"),
             },
         );
-        app.focus = Focus::Sessions;
-        app.sel_worktree = app
+        app.nav.focus = Focus::Sessions;
+        app.nav.sel_worktree = app
             .visible_worktrees()
             .iter()
             .position(|w| w.id.0 == "w2")
             .unwrap();
         open_delete_all_confirm(&mut app);
-        let action = match &app.overlay {
+        let action = match &app.modals.overlay {
             Some(Overlay::Confirm(c)) => c.action.clone(),
             other => panic!("expected the delete-all confirm, got {other:?}"),
         };
@@ -21106,7 +22183,7 @@ fn delete_empty_worktree_setting_holds_with_show_all_worktrees_on() {
     with_config_json(r#"{"delete_empty_worktree": true}"#, || {
         let mut app = App::new();
         seed_emptiable_tree(&mut app);
-        app.show_all_worktrees = true;
+        app.launcher.show_all_worktrees = true;
         upsert_agent(&mut app, "a2", "w2", "agent-2", false);
         let c = menu_delete(&mut app, "a2");
         assert_eq!(
@@ -21134,7 +22211,7 @@ fn delete_empty_worktree_setting_holds_with_show_all_worktrees_on() {
     with_config_json(r#"{"delete_empty_worktree": true}"#, || {
         let mut app = App::new();
         seed_emptiable_tree(&mut app);
-        app.show_all_worktrees = true;
+        app.launcher.show_all_worktrees = true;
         hse(
             &mut app,
             ServerEvent::EntityUpserted {
@@ -21165,7 +22242,7 @@ fn archived_sessions_keep_the_question_with_show_all_worktrees_on() {
     with_config_json(r#"{"delete_empty_worktree": true}"#, || {
         let mut app = App::new();
         seed_emptiable_tree(&mut app);
-        app.show_all_worktrees = true;
+        app.launcher.show_all_worktrees = true;
         upsert_agent(&mut app, "a2", "w2", "agent-2", false);
         upsert_agent(&mut app, "a3", "w2", "agent-3", true);
         let c = menu_delete(&mut app, "a2");
@@ -21178,4 +22255,372 @@ fn archived_sessions_keep_the_question_with_show_all_worktrees_on() {
             c.action
         );
     });
+}
+
+/// `d` on the band of `feat` in [`parity_tree`], with the DELETE CHECK the
+/// loop's next turn sends: the app, and that check's req_id.
+fn delete_feat_with_check() -> (App, u64) {
+    let mut app = parity_tree();
+    let mut out = Vec::new();
+    let row = app
+        .worktree_row_of(&WorktreeId("w2".into()))
+        .expect("feat is a row");
+    select_worktree_row(&mut app, row, &mut out);
+    app.nav.focus = Focus::Worktrees;
+    out.clear();
+    press(&mut app, KeyCode::Char('d'), KeyModifiers::NONE, &mut out);
+    assert!(
+        matches!(&app.modals.overlay, Some(Overlay::Confirm(c))
+            if c.action == PendingAction::DeleteWorktree(WorktreeId("w2".into()))),
+        "{:?}",
+        app.modals.overlay
+    );
+    crate::delete_check::sync(&mut app, &mut out);
+    let req_id = match out.as_slice() {
+        [ClientRequest::CheckWorktree { req_id, id }] if id.0 == "w2" => *req_id,
+        other => panic!("the confirm asks for one check: {other:?}"),
+    };
+    (app, req_id)
+}
+
+fn confirm_screen(app: &mut App) -> String {
+    let mut terminal = Terminal::new(TestBackend::new(140, 30)).unwrap();
+    terminal.draw(|f| ui::draw(f, app)).unwrap();
+    buffer_text(&terminal)
+}
+
+/// The DELETE CHECK: a confirm that would take a worktree off disk asks
+/// the DAEMON what it still holds, Enter waits for the answer, and the
+/// answer is listed under the question before anything is deleted — a
+/// band that reads "nothing running" can still have an agent building in
+/// it from another checkout.
+#[test]
+fn a_worktree_delete_waits_for_its_check_and_lists_what_it_found() {
+    with_default_config(|| {
+        let (mut app, req_id) = delete_feat_with_check();
+        let mut out = Vec::new();
+        crate::delete_check::sync(&mut app, &mut out);
+        assert!(out.is_empty(), "asked once per confirm: {out:?}");
+        // A check that has not answered within SHOW_AFTER: the dialog
+        // shows with "Checking…".
+        crate::delete_check::age_checks(&mut app, crate::delete_check::SHOW_AFTER);
+        assert!(confirm_screen(&mut app).contains("Checking 'feat' for work in progress"));
+
+        press(&mut app, KeyCode::Enter, KeyModifiers::NONE, &mut out);
+        assert!(
+            out.is_empty(),
+            "nothing deleted ahead of the check: {out:?}"
+        );
+        assert!(matches!(app.modals.overlay, Some(Overlay::Confirm(_))));
+        assert_eq!(
+            app.chrome.flash.as_deref(),
+            Some("still checking 'feat' for work in progress — a moment")
+        );
+
+        hse(
+            &mut app,
+            ServerEvent::WorktreeChecked {
+                req_id,
+                id: WorktreeId("w2".into()),
+                check: nebula_core::WorktreeCheck {
+                    processes: vec![nebula_core::WorktreeProcess {
+                        pid: 4242,
+                        name: "cargo".into(),
+                    }],
+                    changes: 2,
+                    ahead: 1,
+                    base: Some("origin/main".into()),
+                    ..Default::default()
+                },
+            },
+        );
+        assert!(!app.requests.pending.contains_key(&req_id));
+        let screen = confirm_screen(&mut app);
+        for finding in [
+            "1 process is working in it: cargo (4242)",
+            "2 uncommitted changes",
+            "1 commit origin/main lacks (the branch keeps them)",
+        ] {
+            assert!(screen.contains(finding), "{finding:?} in:\n{screen}");
+        }
+
+        assert_eq!(app.chrome.flash, None, "the wait's footer line is down");
+        press(&mut app, KeyCode::Enter, KeyModifiers::NONE, &mut out);
+        assert!(
+            out.iter().any(|r| matches!(r,
+                ClientRequest::DeleteWorktree { id, .. } if id.0 == "w2")),
+            "confirmed with the findings in view: {out:?}"
+        );
+    });
+}
+
+/// A check that answers within SHOW_AFTER opens the dialog once, already
+/// filled in: until the answer nothing is drawn but a footer line, and
+/// once shown its text does not change — the first frame is the last
+/// word, not a "Checking…" body that grows into another dialog.
+#[test]
+fn a_fast_check_opens_the_dialog_once_and_filled_in() {
+    with_default_config(|| {
+        let (mut app, req_id) = delete_feat_with_check();
+        let held = confirm_screen(&mut app);
+        assert!(!held.contains("from disk?"), "no dialog yet:\n{held}");
+        assert!(
+            held.contains("checking 'feat' for work in progress"),
+            "{held}"
+        );
+
+        hse(
+            &mut app,
+            ServerEvent::WorktreeChecked {
+                req_id,
+                id: WorktreeId("w2".into()),
+                check: nebula_core::WorktreeCheck {
+                    changes: 2,
+                    ..Default::default()
+                },
+            },
+        );
+        let shown = confirm_screen(&mut app);
+        assert!(
+            shown.contains("from disk?") && shown.contains("2 uncommitted changes"),
+            "{shown}"
+        );
+        assert!(
+            !shown.contains("checking 'feat'"),
+            "the footer line is down"
+        );
+        assert!(!shown.contains("Checking 'feat'"), "{shown}");
+        assert_eq!(app.chrome.flash, None);
+        assert_eq!(confirm_screen(&mut app), shown, "the same dialog");
+    });
+}
+
+/// A check that has not answered by SHOW_AFTER: the event loop wakes then,
+/// and the dialog shows with "Checking…" so the user sees why Enter waits.
+#[test]
+fn a_slow_check_reveals_the_dialog_at_show_after() {
+    with_default_config(|| {
+        let (mut app, _) = delete_feat_with_check();
+        let reveal = crate::delete_check::reveal_at(&app).expect("held");
+        let wait = reveal.saturating_duration_since(std::time::Instant::now());
+        assert!(
+            wait > crate::delete_check::SHOW_AFTER - std::time::Duration::from_secs(1),
+            "{wait:?}"
+        );
+        crate::delete_check::age_checks(&mut app, crate::delete_check::SHOW_AFTER);
+        assert!(crate::delete_check::reveal_at(&app).is_none());
+        let screen = confirm_screen(&mut app);
+        assert!(
+            screen.contains("from disk?") && screen.contains("Checking 'feat'"),
+            "{screen}"
+        );
+    });
+}
+
+/// While the check is out the dialog chooses nothing: held unshown, only a
+/// cancel gets through (Enter waits, saying so); shown with "Checking…",
+/// Enter and `y` still wait for the answer. Esc cancels throughout, and
+/// takes the footer line down with it.
+#[test]
+fn a_confirm_waiting_on_its_check_chooses_nothing_but_cancel() {
+    with_default_config(|| {
+        let (mut app, _) = delete_feat_with_check();
+        let mut out = Vec::new();
+        for key in ['x', 'D', 'y'] {
+            press(&mut app, KeyCode::Char(key), KeyModifiers::NONE, &mut out);
+        }
+        press(&mut app, KeyCode::Enter, KeyModifiers::NONE, &mut out);
+        assert!(out.is_empty(), "{out:?}");
+        assert!(matches!(app.modals.overlay, Some(Overlay::Confirm(_))));
+
+        crate::delete_check::age_checks(&mut app, crate::delete_check::SHOW_AFTER);
+        press(&mut app, KeyCode::Char('y'), KeyModifiers::NONE, &mut out);
+        press(&mut app, KeyCode::Enter, KeyModifiers::NONE, &mut out);
+        assert!(out.is_empty(), "{out:?}");
+        assert!(matches!(app.modals.overlay, Some(Overlay::Confirm(_))));
+
+        let (mut app, _) = delete_feat_with_check();
+        press(&mut app, KeyCode::Esc, KeyModifiers::NONE, &mut out);
+        assert!(app.modals.overlay.is_none(), "Esc cancels a held confirm");
+        crate::delete_check::sync(&mut app, &mut out);
+        assert!(out.is_empty(), "{out:?}");
+        assert_eq!(app.chrome.flash, None, "and takes its footer line down");
+    });
+}
+
+/// A check the DAEMON could not run says so in the confirm — never read
+/// as a clean bill of health, never a footer error — and stops holding
+/// Enter.
+#[test]
+fn a_failed_worktree_check_says_so_and_lets_the_confirm_through() {
+    with_default_config(|| {
+        let (mut app, req_id) = delete_feat_with_check();
+        hse(
+            &mut app,
+            ServerEvent::Error {
+                req_id: Some(req_id),
+                message: "worktree not found".into(),
+            },
+        );
+        assert_eq!(app.chrome.flash, None);
+        assert!(confirm_screen(&mut app).contains("Could not check 'feat': worktree not found"));
+        let mut out = Vec::new();
+        press(&mut app, KeyCode::Enter, KeyModifiers::NONE, &mut out);
+        assert!(out
+            .iter()
+            .any(|r| matches!(r, ClientRequest::DeleteWorktree { .. })));
+    });
+}
+
+/// Closing the confirm forgets its check: a late answer is dropped, and
+/// reopening asks afresh rather than showing a stale reading.
+#[test]
+fn reopening_a_worktree_delete_checks_again() {
+    with_default_config(|| {
+        let (mut app, first) = delete_feat_with_check();
+        let mut out = Vec::new();
+        press(&mut app, KeyCode::Esc, KeyModifiers::NONE, &mut out);
+        crate::delete_check::sync(&mut app, &mut out);
+        assert!(out.is_empty());
+        // Its error, landing after the confirm closed, is no footer flash.
+        hse(
+            &mut app,
+            ServerEvent::Error {
+                req_id: Some(first),
+                message: "git failed".into(),
+            },
+        );
+        assert_eq!(app.chrome.flash, None);
+        hse(
+            &mut app,
+            ServerEvent::WorktreeChecked {
+                req_id: first,
+                id: WorktreeId("w2".into()),
+                check: Default::default(),
+            },
+        );
+        press(&mut app, KeyCode::Char('d'), KeyModifiers::NONE, &mut out);
+        crate::delete_check::sync(&mut app, &mut out);
+        match out.as_slice() {
+            [ClientRequest::CheckWorktree { req_id, .. }] => assert_ne!(*req_id, first),
+            other => panic!("asked again: {other:?}"),
+        }
+        crate::delete_check::age_checks(&mut app, crate::delete_check::SHOW_AFTER);
+        assert!(confirm_screen(&mut app).contains("Checking 'feat'"));
+    });
+}
+
+/// A DAEMON older than the check is never sent it, and its confirm works
+/// exactly as before.
+#[test]
+fn an_older_daemon_gets_no_check_and_the_old_confirm() {
+    with_default_config(|| {
+        let mut app = parity_tree();
+        app.requests.daemon_protocol = nebula_core::CHECK_WORKTREE_PROTOCOL - 1;
+        let mut out = Vec::new();
+        let row = app.worktree_row_of(&WorktreeId("w2".into())).unwrap();
+        select_worktree_row(&mut app, row, &mut out);
+        app.nav.focus = Focus::Worktrees;
+        out.clear();
+        press(&mut app, KeyCode::Char('d'), KeyModifiers::NONE, &mut out);
+        crate::delete_check::sync(&mut app, &mut out);
+        assert!(out.is_empty(), "{out:?}");
+        press(&mut app, KeyCode::Enter, KeyModifiers::NONE, &mut out);
+        assert!(out
+            .iter()
+            .any(|r| matches!(r, ClientRequest::DeleteWorktree { .. })));
+    });
+}
+
+/// The card's own delete that offers to take the emptied worktree too is
+/// checked the same way; once shown, its "no, the card only" never waits,
+/// since it deletes no checkout — but nothing is chosen in a dialog still
+/// held unshown for its check.
+#[test]
+fn a_card_delete_that_offers_the_worktree_checks_it_but_n_never_waits() {
+    with_default_config(|| {
+        let mut app = App::new();
+        seed_emptiable_tree(&mut app);
+        upsert_agent(&mut app, "a2", "w2", "agent-2", false);
+        app.nav.focus = Focus::Sessions;
+        app.nav.sel_worktree = app
+            .visible_worktrees()
+            .iter()
+            .position(|w| w.id.0 == "w2")
+            .unwrap();
+        app.nav.sel_session = 0;
+        let mut out = Vec::new();
+        press(&mut app, KeyCode::Char('d'), KeyModifiers::NONE, &mut out);
+        crate::delete_check::sync(&mut app, &mut out);
+        assert!(
+            matches!(out.as_slice(), [ClientRequest::CheckWorktree { id, .. }] if id.0 == "w2"),
+            "{out:?}"
+        );
+        out.clear();
+        press(&mut app, KeyCode::Char('n'), KeyModifiers::NONE, &mut out);
+        assert!(out.is_empty(), "not chosen unseen: {out:?}");
+        assert!(matches!(app.modals.overlay, Some(Overlay::Confirm(_))));
+        crate::delete_check::age_checks(&mut app, crate::delete_check::SHOW_AFTER);
+        press(&mut app, KeyCode::Enter, KeyModifiers::NONE, &mut out);
+        assert!(out.is_empty(), "yes-to-both waits for the check: {out:?}");
+        press(&mut app, KeyCode::Char('n'), KeyModifiers::NONE, &mut out);
+        assert!(
+            out.iter()
+                .any(|r| matches!(r, ClientRequest::DeleteAgent { .. }))
+                && !out
+                    .iter()
+                    .any(|r| matches!(r, ClientRequest::DeleteWorktree { .. })),
+            "{out:?}"
+        );
+    });
+}
+
+/// The main loop holds an attach asked for before the pane has a size —
+/// the tree landing ahead of the first frame — and sends it right after
+/// the frame, sized to the pane that frame drew: the session's PTY goes
+/// straight to that size instead of the fallback grid and back, a bounce
+/// an app reading its size off SIGWINCH never sees.
+#[test]
+fn an_attach_before_the_pane_has_a_size_waits_for_the_frame() {
+    let mut app = App::new();
+    app.pane.size_before_attach = true;
+    let sref = SessionRef::Agent(AgentId("a1".into()));
+    let mut out = Vec::new();
+    send_attach(&mut app, sref.clone(), &mut out);
+    assert!(out.is_empty(), "nothing goes out before the frame: {out:?}");
+    assert_eq!(app.pane.attach_after_draw, Some(sref.clone()));
+
+    // The frame draws the pane at 78×35.
+    app.pane.term_area = ratatui::layout::Rect::new(1, 2, 78, 35);
+    send_held_attach(&mut app, &mut out);
+    assert!(
+        matches!(
+            out.as_slice(),
+            [ClientRequest::Attach { session, cols: 78, rows: 35, .. }] if *session == sref
+        ),
+        "{out:?}"
+    );
+    assert_eq!(app.pane.attach_after_draw, None);
+}
+
+/// A frame that draws no pane (folded away) does not hold the attach
+/// forever: it goes out after that frame at the fallback grid, as it
+/// always did — a follow-up typed from the grid still reaches its CLI.
+#[test]
+fn a_held_attach_goes_out_after_a_frame_with_no_pane() {
+    let mut app = App::new();
+    app.pane.size_before_attach = true;
+    let sref = SessionRef::Agent(AgentId("a1".into()));
+    let mut out = Vec::new();
+    send_attach(&mut app, sref.clone(), &mut out);
+    send_held_attach(&mut app, &mut out);
+    let (cols, rows) = FALLBACK_PANE;
+    assert!(
+        matches!(
+            out.as_slice(),
+            [ClientRequest::Attach { session, cols: c, rows: r, .. }]
+                if *session == sref && *c == cols && *r == rows
+        ),
+        "{out:?}"
+    );
 }

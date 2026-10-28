@@ -463,6 +463,7 @@ async fn full_crud_attach_and_restart_persistence() {
             cloud_prompt: None,
             starting_prompt: None,
             issue_url: None,
+            role: nebula_core::AgentRole::Worker,
         },
     )
     .await
@@ -516,6 +517,38 @@ async fn full_crud_attach_and_restart_persistence() {
         })
         .expect("worktree upsert carries its path");
     assert!(feature_wt_path.exists(), "worktree dir created on disk");
+
+    // ---- CheckWorktree: the DELETE CHECK sees an uncommitted file ----
+    std::fs::write(feature_wt_path.join("draft.txt"), "half done").unwrap();
+    write_frame(
+        &mut c,
+        &ClientRequest::CheckWorktree {
+            req_id: 50,
+            id: feature_wt_id.clone(),
+        },
+    )
+    .await
+    .unwrap();
+    let events = read_events_until(&mut c, SLOW_TIMEOUT, |evs| {
+        evs.iter()
+            .any(|e| matches!(e, ServerEvent::WorktreeChecked { req_id: 50, .. }))
+    })
+    .await;
+    let check = events
+        .iter()
+        .find_map(|e| match e {
+            ServerEvent::WorktreeChecked {
+                req_id: 50, check, ..
+            } => Some(check.clone()),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("CheckWorktree unanswered: {events:#?}"));
+    assert_eq!(check.changes, 1, "{check:?}");
+    assert!(
+        check.process_error.is_none() && check.git_error.is_none(),
+        "{check:?}"
+    );
+    assert!(feature_wt_path.exists(), "a check touches nothing");
 
     // ---- DeleteWorktree removes it from disk ----
     write_frame(
@@ -896,6 +929,7 @@ async fn hook_post_from_agent_pty_drives_status() {
             cloud_prompt: None,
             starting_prompt: None,
             issue_url: None,
+            role: nebula_core::AgentRole::Worker,
         },
     )
     .await
@@ -1079,6 +1113,21 @@ async fn hook_post_from_agent_pty_drives_status() {
 /// hook involved at all.
 #[tokio::test]
 async fn pty_progress_sequence_drives_status_without_any_hook() {
+    pty_busy_idle_sequences_drive_status("9;4;3;", "9;4;0;").await;
+}
+
+/// Codex 0.163.0 emits OSC 7501 instead of OSC 9;4. Its hookless turn
+/// completion must take the same PTY -> STATUS MACHINE -> TUI event path.
+#[tokio::test]
+async fn pty_codex_lifecycle_drives_status_without_any_hook() {
+    pty_busy_idle_sequences_drive_status(
+        "7501;state=working:app=codex",
+        "7501;state=idle:app=codex",
+    )
+    .await;
+}
+
+async fn pty_busy_idle_sequences_drive_status(busy: &str, idle: &str) {
     let env = TestEnv::new();
     let repo = env.make_repo();
     let mut daemon = env.spawn_daemon();
@@ -1101,18 +1150,18 @@ async fn pty_progress_sequence_drives_status_without_any_hook() {
     .await
     .unwrap();
 
-    // Have the shell in the agent PTY emit exactly what Claude Code emits.
+    // Have the shell in the agent PTY emit the CLI's lifecycle sequences.
     // The command text is echoed back by the tty, which is the point: only
     // the real escape bytes may move the status, never a mention of them.
     // `\ddd` octal, not `\e` — POSIX printf, so this works under dash too.
-    let emit = |state: &str| format!("printf '\\033]9;4;{state};\\007'\n").into_bytes();
+    let emit = |payload: &str| format!("printf '\\033]{payload}\\033\\134'\n").into_bytes();
 
     // Turn starts: progress goes indeterminate → running.
     write_frame(
         &mut c,
         &ClientRequest::Input {
             session: sref.clone(),
-            data: emit("3"),
+            data: emit(busy),
         },
     )
     .await
@@ -1125,12 +1174,12 @@ async fn pty_progress_sequence_drives_status_without_any_hook() {
     })
     .await;
 
-    // User hits escape: the progress bar clears, and nothing else happens.
+    // The turn finishes or is cancelled, and nothing else happens.
     write_frame(
         &mut c,
         &ClientRequest::Input {
             session: sref.clone(),
-            data: emit("0"),
+            data: emit(idle),
         },
     )
     .await
@@ -1235,6 +1284,7 @@ async fn hook_cwd_rehomes_agent_to_other_worktree() {
             cloud_prompt: None,
             starting_prompt: None,
             issue_url: None,
+            role: nebula_core::AgentRole::Worker,
         },
     )
     .await
@@ -1363,6 +1413,7 @@ async fn claude_session_title_and_row_name_stay_tied() {
             cloud_prompt: None,
             starting_prompt: None,
             issue_url: None,
+            role: nebula_core::AgentRole::Worker,
         },
     )
     .await
@@ -1528,6 +1579,7 @@ async fn restart_rebinds_an_attached_client_to_the_new_pty() {
             cloud_prompt: None,
             starting_prompt: None,
             issue_url: None,
+            role: nebula_core::AgentRole::Worker,
         },
     )
     .await
@@ -1664,6 +1716,7 @@ async fn codex_hooks_install_and_drive_status() {
             cloud_prompt: None,
             starting_prompt: None,
             issue_url: None,
+            role: nebula_core::AgentRole::Worker,
         },
     )
     .await
@@ -2323,6 +2376,7 @@ async fn reload_keeps_an_agent_of_every_harness() {
                 cloud_prompt: None,
                 starting_prompt: None,
                 issue_url: None,
+                role: nebula_core::AgentRole::Worker,
             },
         )
         .await
@@ -2615,17 +2669,22 @@ async fn prewarmed_session_is_adopted_by_create_agent() {
     // adoption works, the marker is in scrollback the moment we attach; a
     // cold spawn at CreateAgent time couldn't print it for another 3s.
     let script = env.tmp.path().join("slow-agent.sh");
+    let ready = env.tmp.path().join("prewarm-ready");
     std::fs::write(
         &script,
-        concat!(
+        format!(
+            concat!(
             "#!/bin/sh\n",
             "curl -sS -m 3 -X POST -H \"Authorization: Bearer $ODYN_API_TOKEN\" \\\n",
-            "  -H 'Content-Type: application/json' -d '{\"session_id\":\"warm-sid-99\"}' \\\n",
+            "  -H 'Content-Type: application/json' -d '{{\"session_id\":\"warm-sid-99\"}}' \\\n",
             "  \"$ODYN_API_URL/api/hooks/claude?agentId=$ODYN_AGENT_ID&hookEvent=SessionStart\" \\\n",
             "  >/dev/null 2>&1\n",
             "sleep 3\n",
+            ": > '{}'\n",
             "echo PREWARM_READY\n",
             "exec /bin/sh\n",
+            ),
+            ready.display(),
         ),
     )
     .unwrap();
@@ -2648,8 +2707,8 @@ async fn prewarmed_session_is_adopted_by_create_agent() {
     )
     .await
     .unwrap();
-    // "User types the name": long enough for the warm boot to finish.
-    tokio::time::sleep(Duration::from_millis(4500)).await;
+    // "User types the name": wait until the warm boot has reached the shell.
+    wait_for_file(&ready, "prewarm-ready marker").await;
 
     write_frame(
         &mut c,
@@ -2665,6 +2724,7 @@ async fn prewarmed_session_is_adopted_by_create_agent() {
             cloud_prompt: None,
             starting_prompt: None,
             issue_url: None,
+            role: nebula_core::AgentRole::Worker,
         },
     )
     .await
@@ -2777,7 +2837,12 @@ async fn dead_prewarm_falls_back_to_cold_spawn() {
     let env = TestEnv::new();
     let repo = env.make_repo();
     let script = env.tmp.path().join("dying-agent.sh");
-    std::fs::write(&script, "#!/bin/sh\nexit 127\n").unwrap();
+    let started = env.tmp.path().join("dying-agent-started");
+    std::fs::write(
+        &script,
+        format!("#!/bin/sh\n: > '{}'\nexit 127\n", started.display()),
+    )
+    .unwrap();
     make_executable(&script);
     let mut daemon = env.spawn_daemon_with_agent_cmd(script.to_str().unwrap());
 
@@ -2796,8 +2861,7 @@ async fn dead_prewarm_falls_back_to_cold_spawn() {
     )
     .await
     .unwrap();
-    // Give the warm spawn time to die.
-    tokio::time::sleep(Duration::from_millis(1000)).await;
+    wait_for_file(&started, "dying prewarm marker").await;
 
     write_frame(
         &mut c,
@@ -2813,6 +2877,7 @@ async fn dead_prewarm_falls_back_to_cold_spawn() {
             cloud_prompt: None,
             starting_prompt: None,
             issue_url: None,
+            role: nebula_core::AgentRole::Worker,
         },
     )
     .await
@@ -2871,6 +2936,7 @@ async fn create_agent_refuses_when_the_cli_is_not_installed() {
                 cloud_prompt: None,
                 starting_prompt: None,
                 issue_url: None,
+                role: nebula_core::AgentRole::Worker,
             },
         )
         .await
@@ -2958,6 +3024,7 @@ async fn create_agent_succeeds_when_the_cli_is_on_the_login_shell_path() {
             cloud_prompt: None,
             starting_prompt: None,
             issue_url: None,
+            role: nebula_core::AgentRole::Worker,
         },
     )
     .await
@@ -3030,6 +3097,7 @@ async fn create_agent_get_id(
             cloud_prompt: None,
             starting_prompt: None,
             issue_url: None,
+            role: nebula_core::AgentRole::Worker,
         },
     )
     .await
@@ -3057,6 +3125,20 @@ async fn read_pidfile(path: &Path) -> i32 {
         assert!(
             tokio::time::Instant::now() < deadline,
             "pidfile {path:?} never appeared"
+        );
+        tokio::time::sleep(POLL_STEP).await;
+    }
+}
+
+async fn wait_for_file(path: &Path, what: &str) {
+    let deadline = tokio::time::Instant::now() + EVENT_TIMEOUT;
+    loop {
+        if path.exists() {
+            return;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "{what} never appeared"
         );
         tokio::time::sleep(POLL_STEP).await;
     }
@@ -3199,6 +3281,7 @@ async fn archive_sigkills_an_agent_that_ignores_sighup() {
             cloud_prompt: None,
             starting_prompt: None,
             issue_url: None,
+            role: nebula_core::AgentRole::Worker,
         },
     )
     .await
@@ -3316,9 +3399,63 @@ async fn create_agent_runs_the_shells_own_claude_and_archive_clears_its_job() {
 /// never reaches `<agent>`. Nebula keeps the login shell interactive for rc
 /// files, but makes stdin non-TTY until the launch line itself reopens the
 /// PTY, so aliases/functions from rc still work and the agent gets a real
-/// terminal.
+/// terminal — by the PTY's own device path, not `/dev/tty`: macOS kqueue
+/// refuses `/dev/tty`, and Claude Code (Bun) dies on its stdin watcher with
+/// `EINVAL: invalid argument, kqueue` the moment it starts.
 #[tokio::test]
 async fn create_agent_survives_rc_autostart_that_execs_on_tty_stdin() {
+    let launch = launch_claude_through_rc("").await;
+    assert!(
+        launch.ran.starts_with("claude tty --append-system-prompt "),
+        "{:?}",
+        launch.ran
+    );
+    assert!(
+        !launch.iris_took_over,
+        "the rc autostart hook should not have taken over the PTY"
+    );
+    assert_ne!(
+        launch.stdin.trim_end(),
+        "/dev/tty",
+        "stdin must be the PTY's own device, which kqueue can watch"
+    );
+    assert_eq!(
+        launch.pane_tty.trim_end(),
+        "unset",
+        "the launch line unsets the PTY's name before the agent runs"
+    );
+}
+
+/// An rc file that clears `ODYN_PANE_TTY` must not leave the agent on the
+/// `/dev/null` the rc files ran with: the launch line falls back to
+/// `/dev/tty` instead of failing on `exec <""`.
+#[tokio::test]
+async fn create_agent_gets_a_tty_when_rc_clears_the_pane_tty() {
+    let launch = launch_claude_through_rc("unset ODYN_PANE_TTY\n").await;
+    assert!(
+        launch.ran.starts_with("claude tty --append-system-prompt "),
+        "{:?}",
+        launch.ran
+    );
+    assert!(!launch.iris_took_over);
+}
+
+/// What the rc-defined `claude` saw when [`launch_claude_through_rc`] ran it.
+struct RcLaunch {
+    /// `claude <tty|notty> <args>`.
+    ran: String,
+    /// `tty`'s answer for its stdin.
+    stdin: String,
+    /// `ODYN_PANE_TTY` as it saw it, or `unset`.
+    pane_tty: String,
+    /// The Iris-style autostart ran instead.
+    iris_took_over: bool,
+}
+
+/// Create a Claude agent through a login shell whose rc file has an
+/// Iris-style autostart (it `exec`s when interactive with a TTY stdin),
+/// then `extra_rc`, then a `claude` function that records its stdin.
+async fn launch_claude_through_rc(extra_rc: &str) -> RcLaunch {
     let env = TestEnv::new();
     let repo = env.make_repo();
     let dir = env.tmp.path().to_path_buf();
@@ -3332,13 +3469,17 @@ async fn create_agent_survives_rc_autostart_that_execs_on_tty_stdin() {
                 "if [ \"$interactive\" = 1 ] && [ -t 0 ]; then\n",
                 "  exec sh -c 'echo iris-autostarted > \"{d}/iris\"; sleep 600'\n",
                 "fi\n",
+                "{extra}",
                 "claude() {{\n",
                 "  if [ -t 0 ]; then tty=tty; else tty=notty; fi\n",
+                "  tty > '{d}/claude-stdin'\n",
+                "  echo \"${{ODYN_PANE_TTY-unset}}\" > '{d}/claude-pane-tty'\n",
                 "  echo \"claude $tty $*\" > '{d}/claude-ran'\n",
                 "  sleep 600\n",
                 "}}\n",
             ),
-            d = dir.display()
+            d = dir.display(),
+            extra = extra_rc,
         ),
     )
     .unwrap();
@@ -3370,15 +3511,12 @@ async fn create_agent_survives_rc_autostart_that_execs_on_tty_stdin() {
     })
     .await
     .expect("the rc-defined claude function should run");
-    let ran = std::fs::read_to_string(&marker).unwrap();
-    assert!(
-        ran.starts_with("claude tty --append-system-prompt "),
-        "{ran:?}"
-    );
-    assert!(
-        !dir.join("iris").exists(),
-        "the rc autostart hook should not have taken over the PTY"
-    );
+    let launch = RcLaunch {
+        ran: std::fs::read_to_string(&marker).unwrap(),
+        stdin: std::fs::read_to_string(dir.join("claude-stdin")).unwrap(),
+        pane_tty: std::fs::read_to_string(dir.join("claude-pane-tty")).unwrap(),
+        iris_took_over: dir.join("iris").exists(),
+    };
 
     write_frame(
         &mut c,
@@ -3393,6 +3531,7 @@ async fn create_agent_survives_rc_autostart_that_execs_on_tty_stdin() {
 
     write_frame(&mut c, &ClientRequest::Shutdown).await.unwrap();
     wait_for_exit(&mut daemon);
+    launch
 }
 
 /// One PrewarmWorktreeSessions must revive every dead session under the
@@ -3424,6 +3563,7 @@ async fn prewarm_worktree_sessions_boots_dead_sessions() {
             cloud_prompt: None,
             starting_prompt: None,
             issue_url: None,
+            role: nebula_core::AgentRole::Worker,
         },
     )
     .await
@@ -3472,6 +3612,7 @@ async fn prewarm_worktree_sessions_boots_dead_sessions() {
             cloud_prompt: None,
             starting_prompt: None,
             issue_url: None,
+            role: nebula_core::AgentRole::Worker,
         },
     )
     .await
@@ -3589,6 +3730,7 @@ async fn prewarm_worktree_sessions_boots_nothing_when_switched_off() {
             cloud_prompt: None,
             starting_prompt: None,
             issue_url: None,
+            role: nebula_core::AgentRole::Worker,
         },
     )
     .await
@@ -3733,6 +3875,7 @@ async fn idle_sessions_reap_unwatched_but_spare_busy_and_attached() {
             cloud_prompt: None,
             starting_prompt: None,
             issue_url: None,
+            role: nebula_core::AgentRole::Worker,
         },
     )
     .await
@@ -4126,6 +4269,7 @@ async fn auto_title_instruction_and_rename_flow() {
             cloud_prompt: None,
             starting_prompt: None,
             issue_url: None,
+            role: nebula_core::AgentRole::Worker,
         },
     )
     .await
@@ -4199,7 +4343,7 @@ async fn auto_title_instruction_and_rename_flow() {
 /// processes: the CLI (what the model runs) resolves the paths against its
 /// own cwd, the daemon checks the caller and fans the files out to every
 /// subscriber as one `FilesOpened` carrying the agent's checkout — and a
-/// path that does not exist, or is not a text file, fails in the CLI
+/// path that does not exist, or is an unsupported binary, fails in the CLI
 /// before anything is sent.
 #[tokio::test]
 async fn nebula_open_cli_hands_the_files_to_every_subscriber() {
@@ -4259,14 +4403,35 @@ async fn nebula_open_cli_hands_the_files_to_every_subscriber() {
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("no such file"), "stderr: {stderr}");
 
-    // So is a binary file: a terminal has nothing to show for a PNG, and
-    // the model is told to name the path instead.
+    // Image and Mermaid files are previewable, so they pass through even
+    // though image bytes fail git's text sniff.
     let png = repo.join("shot.png");
     std::fs::write(&png, b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR").unwrap();
-    let out = agent_cli(&env, &agent_id, &["open", png.to_str().unwrap()]);
-    assert!(!out.status.success(), "a binary file must fail: {out:?}");
+    let mmd = repo.join("flow.mmd");
+    std::fs::write(&mmd, "flowchart LR\nA-->B\n").unwrap();
+    let out = agent_cli(
+        &env,
+        &agent_id,
+        &["open", png.to_str().unwrap(), mmd.to_str().unwrap()],
+    );
+    assert!(
+        out.status.success(),
+        "previewable visuals must open: {out:?}"
+    );
+
+    // Other binary files are still refused before the daemon hears them.
+    let bin = repo.join("blob.bin");
+    std::fs::write(&bin, b"a\0b").unwrap();
+    let out = agent_cli(&env, &agent_id, &["open", bin.to_str().unwrap()]);
+    assert!(
+        !out.status.success(),
+        "an unsupported binary must fail: {out:?}"
+    );
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("not a text file"), "stderr: {stderr}");
+    assert!(
+        stderr.contains("unsupported binary file"),
+        "stderr: {stderr}"
+    );
 
     // Outside a session there is no row to open for.
     let out = std::process::Command::new(env!("CARGO_BIN_EXE_odyn"))
@@ -4329,6 +4494,7 @@ async fn nebula_worktree_cli_relocates_the_session_when_the_turn_ends() {
             cloud_prompt: None,
             starting_prompt: None,
             issue_url: None,
+            role: nebula_core::AgentRole::Worker,
         },
     )
     .await
@@ -4636,6 +4802,7 @@ async fn nebula_spawn_cli_starts_a_sibling_session_in_the_same_worktree() {
             cloud_prompt: None,
             starting_prompt: None,
             issue_url: None,
+            role: nebula_core::AgentRole::Worker,
         },
     )
     .await
@@ -4843,6 +5010,161 @@ async fn nebula_spawn_cli_starts_a_sibling_session_in_the_same_worktree() {
     let _ = daemon.kill();
 }
 
+/// `nebula ask` sends a labelled question to another local agent, waits on
+/// the ordinary status hooks, queues behind a busy turn, and times out
+/// clearly when the target never becomes idle.
+#[tokio::test]
+async fn nebula_ask_cli_round_trips_queues_and_times_out() {
+    let env = TestEnv::new();
+    let repo = env.make_repo();
+    let env_dir = env.tmp.path().join("agent-env");
+    let log_dir = env.tmp.path().join("agent-log");
+    std::fs::create_dir_all(&env_dir).unwrap();
+    std::fs::create_dir_all(&log_dir).unwrap();
+
+    let script = env.tmp.path().join("answer-agent.sh");
+    std::fs::write(
+        &script,
+        format!(
+            concat!(
+                "#!/bin/sh\n",
+                "env | grep '^ODYN_' > '{env_dir}'/$ODYN_AGENT_ID.env\n",
+                "while IFS= read -r line; do\n",
+                "  case \"$line\" in\n",
+                "    *'[question from session'*)\n",
+                "      echo \"$line\" >> '{log_dir}'/$ODYN_AGENT_ID.questions\n",
+                "      curl -sS -m 3 -X POST -H \"Authorization: Bearer $ODYN_API_TOKEN\" ",
+                "-H 'Content-Type: application/json' -d '{{\"session_id\":\"ask-sid\",\"prompt\":\"ask\"}}' ",
+                "\"$ODYN_API_URL/api/hooks/claude?agentId=$ODYN_AGENT_ID&hookEvent=UserPromptSubmit\" ",
+                ">/dev/null 2>&1\n",
+                "      ;;\n",
+                "  esac\n",
+                "  case \"$line\" in\n",
+                "    *'Answer concisely;'*)\n",
+                "      echo 'Research answer: use serde_json.'\n",
+                "      curl -sS -m 3 -X POST -H \"Authorization: Bearer $ODYN_API_TOKEN\" ",
+                "-H 'Content-Type: application/json' -d '{{\"session_id\":\"ask-sid\"}}' ",
+                "\"$ODYN_API_URL/api/hooks/claude?agentId=$ODYN_AGENT_ID&hookEvent=Stop\" ",
+                ">/dev/null 2>&1\n",
+                "      ;;\n",
+                "  esac\n",
+                "done\n",
+            ),
+            env_dir = env_dir.display(),
+            log_dir = log_dir.display()
+        ),
+    )
+    .unwrap();
+    make_executable(&script);
+
+    let mut daemon = env.spawn_daemon_with_agent_cmd(script.to_str().unwrap());
+    let mut c = connect(&env.sock()).await;
+    handshake(&mut c).await;
+    subscribe(&mut c).await;
+    let worktree = add_project_get_main_worktree(&mut c, &repo).await;
+    let caller = create_agent_get_id(&mut c, &worktree.id, "feature", 2).await;
+    let target = create_agent_get_id(&mut c, &worktree.id, "research", 3).await;
+    let target_env = read_env_file(&env_dir.join(format!("{}.env", target.0))).await;
+    read_env_file(&env_dir.join(format!("{}.env", caller.0))).await;
+
+    let ask = |args: &[&str]| agent_cli(&env, &caller, args);
+    let out = ask(&[
+        "ask",
+        "research",
+        "which library should the feature use?",
+        "--timeout",
+        "5",
+    ]);
+    assert!(out.status.success(), "ask failed: {out:?}");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("Research answer: use serde_json."),
+        "stdout: {stdout}"
+    );
+
+    let port: u16 = target_env[env::API_URL]
+        .rsplit(':')
+        .next()
+        .unwrap()
+        .parse()
+        .unwrap();
+    let token = target_env[env::API_TOKEN].clone();
+    let hook = |event: &str| format!("/api/hooks/claude?agentId={}&hookEvent={event}", target.0);
+    let target_log = log_dir.join(format!("{}.questions", target.0));
+    let question_count = || {
+        std::fs::read_to_string(&target_log)
+            .map(|s| s.lines().count())
+            .unwrap_or(0)
+    };
+    let before_busy = question_count();
+
+    let (status, _) = hook_post_json(
+        port,
+        &hook("UserPromptSubmit"),
+        &token,
+        r#"{"session_id":"ask-sid","prompt":"busy"}"#,
+    )
+    .await;
+    assert_eq!(status, 200);
+    read_events_until(&mut c, EVENT_TIMEOUT, |evs| {
+        evs.iter().any(|e| {
+            matches!(e, ServerEvent::StatusChanged { agent, status, .. }
+                if agent == &target && *status == nebula_core::AgentStatus::Running)
+        })
+    })
+    .await;
+
+    let mut queued = env.cli();
+    let queued = queued
+        .args([
+            "ask",
+            "research",
+            "answer after your current turn",
+            "--timeout",
+            "5",
+        ])
+        .env(env::AGENT_ID, &caller.0)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(
+        question_count(),
+        before_busy,
+        "busy target should not receive the queued question yet"
+    );
+    let (status, _) =
+        hook_post_json(port, &hook("Stop"), &token, r#"{"session_id":"ask-sid"}"#).await;
+    assert_eq!(status, 200);
+    let out = queued.wait_with_output().unwrap();
+    assert!(out.status.success(), "queued ask failed: {out:?}");
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("Research answer: use serde_json."),
+        "queued stdout: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+
+    let (status, _) = hook_post_json(
+        port,
+        &hook("UserPromptSubmit"),
+        &token,
+        r#"{"session_id":"ask-sid","prompt":"stuck"}"#,
+    )
+    .await;
+    assert_eq!(status, 200);
+    let out = ask(&["ask", "--timeout", "1", "research", "will this time out?"]);
+    assert!(!out.status.success(), "timeout ask should fail: {out:?}");
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("timed out"),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    write_frame(&mut c, &ClientRequest::Shutdown).await.unwrap();
+    wait_for_exit(&mut daemon);
+}
+
 /// Run the `nebula` CLI the way a hook would inside an agent session: the
 /// test daemon's runtime dir plus the session's `ODYN_AGENT_ID`.
 fn agent_cli(
@@ -5008,6 +5330,7 @@ exit 0
             cloud_prompt: Some("  Hello,\n  world  ".into()),
             starting_prompt: None,
             issue_url: None,
+            role: nebula_core::AgentRole::Worker,
         },
     )
     .await

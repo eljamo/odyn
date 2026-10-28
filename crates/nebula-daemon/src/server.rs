@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::io::{AsyncWriteExt, BufWriter};
 use tokio::net::{UnixListener, UnixStream};
-use tokio::sync::mpsc;
+use tokio::sync::{broadcast, mpsc};
 
 /// The most of a ring one `TailOutput` copies, whatever the client asked:
 /// the answer is built on the request loop, ahead of the next Input frame.
@@ -40,6 +40,13 @@ pub async fn accept_loop(daemon: Arc<Daemon>, listener: UnixListener) {
 }
 
 async fn handle_client(daemon: Arc<Daemon>, stream: UnixStream) -> Result<()> {
+    // Who is asking, when the OS says: the DELETE CHECK spares the asking
+    // client's own processes.
+    let peer_pid = stream
+        .peer_cred()
+        .ok()
+        .and_then(|cred| cred.pid())
+        .and_then(|pid| u32::try_from(pid).ok());
     let (read_half, write_half) = stream.into_split();
     let mut reader = tokio::io::BufReader::new(read_half);
 
@@ -57,6 +64,7 @@ async fn handle_client(daemon: Arc<Daemon>, stream: UnixStream) -> Result<()> {
     });
 
     let mut client = ClientConnection::new(daemon, out_tx);
+    client.peer_pid = peer_pid;
     let result: Result<()> = async {
         while let Some(req) = read_frame::<ClientRequest, _>(&mut reader).await? {
             if !client.handle_request(req).await? {
@@ -79,6 +87,8 @@ struct ClientConnection {
     attached: HashMap<SessionRef, tokio::task::JoinHandle<()>>,
     subscription: Option<tokio::task::JoinHandle<()>>,
     handshaken: bool,
+    /// The client process, when the socket's credentials name it.
+    peer_pid: Option<u32>,
 }
 
 impl ClientConnection {
@@ -89,6 +99,7 @@ impl ClientConnection {
             attached: HashMap::new(),
             subscription: None,
             handshaken: false,
+            peer_pid: None,
         }
     }
 
@@ -215,6 +226,21 @@ impl ClientConnection {
                 self.spawn_delete_worktree(req_id, id, force);
                 Ok(true)
             }
+            ClientRequest::CheckWorktree { req_id, id } => {
+                self.spawn_check_worktree(req_id, id);
+                Ok(true)
+            }
+            ClientRequest::CleanupMergedWorktree {
+                req_id,
+                id,
+                branch,
+                pr_number,
+                pr_url,
+                head_sha,
+            } => {
+                self.spawn_cleanup_merged_worktree(req_id, id, branch, pr_number, pr_url, head_sha);
+                Ok(true)
+            }
             ClientRequest::CreateAgent {
                 req_id,
                 worktree,
@@ -227,6 +253,7 @@ impl ClientConnection {
                 cloud_prompt,
                 starting_prompt,
                 issue_url,
+                role,
             } => {
                 self.handle_create_agent(
                     req_id,
@@ -240,6 +267,7 @@ impl ClientConnection {
                     cloud_prompt,
                     starting_prompt,
                     issue_url,
+                    role,
                 )
                 .await;
                 Ok(true)
@@ -325,6 +353,180 @@ impl ClientConnection {
                     .blocking_daemon(move |daemon| daemon.open_files(&id, paths))
                     .await;
                 reply_done(&self.out_tx, req_id, result).await;
+                Ok(true)
+            }
+            ClientRequest::OrchestratorList { req_id, caller } => {
+                let result = self
+                    .blocking_daemon(move |daemon| daemon.orchestrator_tree(&caller))
+                    .await;
+                match result {
+                    Ok((projects, worktrees, agents, terminals, links)) => {
+                        self.send(ServerEvent::OrchestratorList {
+                            req_id,
+                            projects,
+                            worktrees,
+                            agents,
+                            terminals,
+                            links,
+                        })
+                        .await;
+                    }
+                    Err(err) => reply_done(&self.out_tx, req_id, Err(err)).await,
+                }
+                Ok(true)
+            }
+            ClientRequest::OrchestratorRead {
+                req_id,
+                caller,
+                session,
+                max_bytes,
+            } => {
+                let reply_session = session.clone();
+                let result = self
+                    .blocking_daemon(move |daemon| {
+                        daemon.orchestrator_read(&caller, &session, max_bytes)
+                    })
+                    .await;
+                match result {
+                    Ok(tail) => {
+                        self.send(ServerEvent::OutputTail {
+                            req_id,
+                            session: reply_session,
+                            tail,
+                        })
+                        .await;
+                    }
+                    Err(err) => reply_done(&self.out_tx, req_id, Err(err)).await,
+                }
+                Ok(true)
+            }
+            ClientRequest::OrchestratorSend {
+                req_id,
+                caller,
+                target,
+                message,
+            } => {
+                let result = self.daemon.orchestrator_send(&caller, &target, &message);
+                reply_done(&self.out_tx, req_id, result).await;
+                Ok(true)
+            }
+            ClientRequest::OrchestratorSpawn {
+                req_id,
+                caller,
+                project,
+                worktree,
+                branch,
+                base,
+                name,
+                kind,
+                custom_harness,
+                model,
+                effort,
+                starting_prompt,
+            } => {
+                let daemon = self.daemon.clone();
+                let out_tx = self.out_tx.clone();
+                tokio::spawn(async move {
+                    let result = daemon
+                        .orchestrator_spawn(
+                            &caller,
+                            &project,
+                            worktree,
+                            branch,
+                            base,
+                            name,
+                            kind,
+                            custom_harness,
+                            model,
+                            effort,
+                            starting_prompt,
+                        )
+                        .await;
+                    reply(&out_tx, req_id, result.map(Some)).await;
+                });
+                Ok(true)
+            }
+            ClientRequest::OrchestratorOpenReview {
+                req_id,
+                caller,
+                sessions,
+                tabs,
+            } => {
+                let result = self
+                    .blocking_daemon(move |daemon| {
+                        daemon.orchestrator_open_review(&caller, sessions, tabs)
+                    })
+                    .await;
+                reply_done(&self.out_tx, req_id, result).await;
+                Ok(true)
+            }
+            ClientRequest::ListSessions { req_id } => {
+                let result = self
+                    .blocking_daemon(move |daemon| daemon.session_summaries())
+                    .await;
+                match result {
+                    Ok(sessions) => {
+                        self.send(ServerEvent::SessionList { req_id, sessions })
+                            .await;
+                    }
+                    Err(err) => reply_done(&self.out_tx, req_id, Err(err)).await,
+                }
+                Ok(true)
+            }
+            ClientRequest::ReadSession {
+                req_id,
+                target,
+                max_lines,
+            } => {
+                let result = self
+                    .blocking_daemon(move |daemon| daemon.read_session_context(&target, max_lines))
+                    .await;
+                match result {
+                    Ok(read) => {
+                        self.send(ServerEvent::SessionText {
+                            req_id,
+                            session: read.session,
+                            text: read.text,
+                        })
+                        .await;
+                    }
+                    Err(err) => reply_done(&self.out_tx, req_id, Err(err)).await,
+                }
+                Ok(true)
+            }
+            ClientRequest::AskSession {
+                req_id,
+                caller,
+                target,
+                question,
+                timeout_ms,
+                wait,
+            } => {
+                let daemon = self.daemon.clone();
+                let out_tx = self.out_tx.clone();
+                tokio::spawn(async move {
+                    let result = daemon
+                        .ask_session(
+                            caller,
+                            &target,
+                            &question,
+                            std::time::Duration::from_millis(timeout_ms),
+                            wait,
+                        )
+                        .await;
+                    match result {
+                        Ok((session, answer)) => {
+                            let _ = out_tx
+                                .send(ServerEvent::SessionAnswer {
+                                    req_id,
+                                    session,
+                                    answer,
+                                })
+                                .await;
+                        }
+                        Err(err) => reply_done(&out_tx, req_id, Err(err)).await,
+                    }
+                });
                 Ok(true)
             }
             ClientRequest::EnterWorktree {
@@ -437,7 +639,7 @@ impl ClientConnection {
     }
 
     async fn handle_hello(&mut self, protocol_version: u32) -> bool {
-        self.handshaken = protocol_version == PROTOCOL_VERSION;
+        self.handshaken = nebula_core::protocol_compatible_with(protocol_version);
         let reply = if self.handshaken {
             ServerEvent::HelloOk {
                 protocol_version: PROTOCOL_VERSION,
@@ -456,34 +658,14 @@ impl ClientConnection {
         // Subscribed before the snapshot is taken, so a change made between
         // the two is not lost: it arrives after the Snapshot, where a client
         // folds it in by id.
-        let mut rx = self.daemon.events.subscribe();
+        let rx = self.daemon.events.subscribe();
         let snapshot = self
             .blocking_daemon(|daemon| daemon.snapshot())
             .await
-            .unwrap_or(ServerEvent::Snapshot {
-                projects: vec![],
-                worktrees: vec![],
-                agents: vec![],
-                terminals: vec![],
-                links: vec![],
-                pr_seen: vec![],
-                ui_state: None,
-            });
+            .unwrap_or_else(|_| empty_snapshot());
         self.send(snapshot).await;
         let tx = self.out_tx.clone();
-        let forward = tokio::spawn(async move {
-            loop {
-                match rx.recv().await {
-                    Ok(ev) => {
-                        if tx.send(ev).await.is_err() {
-                            break;
-                        }
-                    }
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-                }
-            }
-        });
+        let forward = tokio::spawn(forward_subscription_events(self.daemon.clone(), rx, tx));
         if let Some(old) = self.subscription.replace(forward) {
             old.abort();
         }
@@ -637,6 +819,7 @@ impl ClientConnection {
         cloud_prompt: Option<String>,
         starting_prompt: Option<String>,
         issue_url: Option<String>,
+        role: nebula_core::AgentRole,
     ) {
         // Logged by mode only — never the task, prompt text or issue URL.
         let launch_mode = match (&cloud_prompt, &starting_prompt, &issue_url) {
@@ -659,6 +842,7 @@ impl ClientConnection {
                 starting_prompt,
                 pr_url: None,
                 issue_url,
+                role,
             })
             .await;
         if let Some(launch_mode) = launch_mode {
@@ -709,6 +893,47 @@ impl ClientConnection {
         let out_tx = self.out_tx.clone();
         tokio::spawn(async move {
             reply_done(&out_tx, req_id, daemon.delete_worktree(&id, force).await).await;
+        });
+    }
+
+    fn spawn_check_worktree(&self, req_id: u64, id: nebula_core::WorktreeId) {
+        // `git status` on a big checkout and an `lsof` of every process are
+        // each a fraction of a second; off the request loop, like a delete.
+        let daemon = self.daemon.clone();
+        let out_tx = self.out_tx.clone();
+        let client = self.peer_pid;
+        tokio::spawn(async move {
+            let ev = match daemon.check_worktree(&id, client).await {
+                Ok(check) => ServerEvent::WorktreeChecked { req_id, id, check },
+                Err(e) => ServerEvent::Error {
+                    req_id: Some(req_id),
+                    message: format!("{e:#}"),
+                },
+            };
+            let _ = out_tx.send(ev).await;
+        });
+    }
+
+    fn spawn_cleanup_merged_worktree(
+        &self,
+        req_id: u64,
+        id: nebula_core::WorktreeId,
+        branch: String,
+        pr_number: u64,
+        pr_url: String,
+        head_sha: String,
+    ) {
+        let daemon = self.daemon.clone();
+        let out_tx = self.out_tx.clone();
+        tokio::spawn(async move {
+            reply_done(
+                &out_tx,
+                req_id,
+                daemon
+                    .cleanup_merged_worktree(&id, &branch, pr_number, &pr_url, &head_sha)
+                    .await,
+            )
+            .await;
         });
     }
 
@@ -930,6 +1155,52 @@ fn log_spawn_result<F>(
     }
 }
 
+fn empty_snapshot() -> ServerEvent {
+    ServerEvent::Snapshot {
+        projects: vec![],
+        worktrees: vec![],
+        agents: vec![],
+        terminals: vec![],
+        links: vec![],
+        pr_seen: vec![],
+        ui_state: None,
+    }
+}
+
+fn snapshot_or_empty(daemon: &Daemon) -> ServerEvent {
+    daemon.snapshot().unwrap_or_else(|error| {
+        tracing::warn!(%error, "failed to build resync snapshot");
+        empty_snapshot()
+    })
+}
+
+async fn send_snapshot(daemon: &Daemon, tx: &mpsc::Sender<ServerEvent>) -> bool {
+    tx.send(snapshot_or_empty(daemon)).await.is_ok()
+}
+
+async fn forward_subscription_events(
+    daemon: Arc<Daemon>,
+    mut rx: broadcast::Receiver<ServerEvent>,
+    tx: mpsc::Sender<ServerEvent>,
+) {
+    loop {
+        match rx.recv().await {
+            Ok(ev) => {
+                if tx.send(ev).await.is_err() {
+                    break;
+                }
+            }
+            Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                tracing::warn!(skipped, "client subscription lagged; sending snapshot");
+                if !send_snapshot(&daemon, &tx).await {
+                    break;
+                }
+            }
+            Err(broadcast::error::RecvError::Closed) => break,
+        }
+    }
+}
+
 /// [`reply`] for the requests that create nothing: success is a bare Ack.
 async fn reply_done(out_tx: &mpsc::Sender<ServerEvent>, req_id: u64, result: anyhow::Result<()>) {
     reply(out_tx, req_id, result.map(|_| None)).await
@@ -948,4 +1219,53 @@ async fn reply(
         },
     };
     let _ = out_tx.send(ev).await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::hooks::HookEnv;
+    use crate::store::Store;
+
+    fn test_daemon() -> Arc<Daemon> {
+        Daemon::new(
+            Arc::new(Store::open_in_memory().unwrap()),
+            HookEnv {
+                port: 0,
+                token: String::new(),
+            },
+        )
+    }
+
+    #[tokio::test]
+    async fn lagged_subscription_resyncs_with_a_snapshot() {
+        let daemon = test_daemon();
+        let (events, rx) = broadcast::channel(1);
+        events
+            .send(ServerEvent::Ack {
+                req_id: 1,
+                created: None,
+            })
+            .unwrap();
+        events
+            .send(ServerEvent::Ack {
+                req_id: 2,
+                created: None,
+            })
+            .unwrap();
+
+        let (tx, mut out) = mpsc::channel(4);
+        let forward = tokio::spawn(forward_subscription_events(daemon, rx, tx));
+
+        let ev = tokio::time::timeout(std::time::Duration::from_secs(1), out.recv())
+            .await
+            .expect("forwarder sent no resync")
+            .expect("forwarder closed");
+        forward.abort();
+
+        assert!(
+            matches!(ev, ServerEvent::Snapshot { .. }),
+            "lag should resync with a snapshot, got {ev:?}"
+        );
+    }
 }

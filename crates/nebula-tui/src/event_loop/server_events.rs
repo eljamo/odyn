@@ -14,7 +14,9 @@ pub(crate) fn handle_server_event(app: &mut App, event: ServerEvent, out: &mut V
         event @ ServerEvent::EntityUpserted { .. }
         | event @ ServerEvent::EntityRemoved { .. }
         | event @ ServerEvent::FilesOpened { .. }
+        | event @ ServerEvent::ReviewOpened { .. }
         | event @ ServerEvent::Metrics { .. }
+        | event @ ServerEvent::WorktreeChecked { .. }
         | event @ ServerEvent::OutputTail { .. }
         | event @ ServerEvent::AttachRefused { .. } => handle_tree_event(app, event, out),
         event @ ServerEvent::Error { .. } => handle_error_event(app, event, out),
@@ -23,7 +25,6 @@ pub(crate) fn handle_server_event(app: &mut App, event: ServerEvent, out: &mut V
 }
 
 fn handle_snapshot_event(app: &mut App, event: ServerEvent, out: &mut Vec<ClientRequest>) {
-    let _ = &mut *out;
     match event {
         ServerEvent::Snapshot {
             projects,
@@ -34,20 +35,28 @@ fn handle_snapshot_event(app: &mut App, event: ServerEvent, out: &mut Vec<Client
             pr_seen,
             ui_state,
         } => {
+            let first_snapshot = !app.chrome.snapshot_loaded;
+            app.chrome.snapshot_loaded = true;
+            let before = (!first_snapshot).then(|| selection_snapshot(app));
             app.tree.projects = projects;
             app.tree.worktrees = worktrees;
             app.tree.agents = agents;
             app.tree.terminals = terminals;
             app.tree.links = links;
-            app.pr_seen = pr_seen.into_iter().map(|s| (s.url, s.marker)).collect();
+            app.github.pr_seen = pr_seen.into_iter().map(|s| (s.url, s.marker)).collect();
             // The cache painted rows for whatever the last run's tree had;
             // the ones this tree no longer has go, before they could be
             // written back.
             prune_pull_requests_to_tree(app);
-            let session_restored = ui_state
-                .as_deref()
-                .is_some_and(|json| restore_ui_state(app, json));
-            clamp_selections(app);
+            let session_restored = first_snapshot
+                && ui_state
+                    .as_deref()
+                    .is_some_and(|json| restore_ui_state(app, json));
+            if let Some(before) = before {
+                reconcile_selection(app, before, out);
+            } else {
+                clamp_selections(app);
+            }
             refresh_palette(app);
             // Boot the restored worktree's sessions right away — the first
             // thing the user does after launch is walk into one of them.
@@ -63,10 +72,10 @@ fn handle_snapshot_event(app: &mut App, event: ServerEvent, out: &mut Vec<Client
             // the card its cursor is on, so a boot that remembered no
             // session fills it from the grid's own cursor rather than
             // sitting empty under a grid full of cards.
-            if session_restored || app.launcher_grid() {
+            if first_snapshot && (session_restored || app.launcher_grid()) {
                 preview_selected_now(app, out);
             }
-            app.dirty = true;
+            app.chrome.dirty = true;
         }
         _ => unreachable!("server event dispatcher passed the wrong event variant"),
     }
@@ -80,20 +89,21 @@ fn handle_terminal_event(app: &mut App, event: ServerEvent, out: &mut Vec<Client
             base_seq,
             data,
         } => {
-            if let Some(term) = &mut app.term {
+            if let Some(term) = &mut app.pane.term {
                 if term.sref == session {
                     // The session started after all (its checkout came
                     // back, its CLI was installed): the refusal is over, on
                     // the pane and in the status line.
                     term.refused = None;
                     if app
+                        .chrome
                         .refusal_flash
                         .as_ref()
                         .is_some_and(|(refused, _)| *refused == session)
                     {
-                        if let Some((_, line)) = app.refusal_flash.take() {
-                            if app.flash.as_deref() == Some(line.as_str()) {
-                                app.flash = None;
+                        if let Some((_, line)) = app.chrome.refusal_flash.take() {
+                            if app.chrome.flash.as_deref() == Some(line.as_str()) {
+                                app.chrome.flash = None;
                             }
                         }
                     }
@@ -115,12 +125,12 @@ fn handle_terminal_event(app: &mut App, event: ServerEvent, out: &mut Vec<Client
                                 base_after.saturating_sub(base_before - line)
                             }
                         };
-                        match &mut app.term_selection {
+                        match &mut app.pane.term_selection {
                             Some(sel) if sel.dragging => {
                                 sel.anchor.1 = rebase(sel.anchor.1);
                                 sel.head.1 = rebase(sel.head.1);
                             }
-                            _ => app.term_selection = None,
+                            _ => app.pane.term_selection = None,
                         }
                     }
                     // A replay is history: a clipboard write in it went out
@@ -128,12 +138,12 @@ fn handle_terminal_event(app: &mut App, event: ServerEvent, out: &mut Vec<Client
                     // redoing it now would clobber whatever the user has
                     // copied since.
                     term.take_clipboard();
-                    app.dirty = true;
+                    app.chrome.dirty = true;
                 }
             }
         }
         ServerEvent::Output { session, seq, data } => {
-            if let Some(term) = &mut app.term {
+            if let Some(term) = &mut app.pane.term {
                 if term.sref == session {
                     term.apply_output(seq, &data);
                     // The program wrote "the clipboard" with OSC 52 —
@@ -143,23 +153,23 @@ fn handle_terminal_event(app: &mut App, event: ServerEvent, out: &mut Vec<Client
                     // sitting at, the route nebula's own copy takes on a
                     // remote host.
                     if let Some(payload) = term.take_clipboard() {
-                        app.pending_clipboard = Some(payload);
-                        app.flash = Some("copied (via terminal)".into());
+                        app.chrome.pending_clipboard = Some(payload);
+                        app.chrome.flash = Some("copied (via terminal)".into());
                     }
-                    app.dirty = true;
+                    app.chrome.dirty = true;
                 }
             }
         }
         ServerEvent::SessionExited { session, .. } => {
-            if let Some(term) = &mut app.term {
+            if let Some(term) = &mut app.pane.term {
                 if term.sref == session {
                     term.exited = true;
-                    app.dirty = true;
+                    app.chrome.dirty = true;
                 }
             }
         }
         ServerEvent::KittyFlags { session, flags } => {
-            if let Some(term) = &mut app.term {
+            if let Some(term) = &mut app.pane.term {
                 if term.sref == session {
                     term.kitty_flags = flags;
                 }
@@ -195,7 +205,7 @@ fn handle_status_event(app: &mut App, event: ServerEvent, out: &mut Vec<ClientRe
                         nebula_core::AgentStatus::Running | nebula_core::AgentStatus::NeedsFeedback
                     )
                 {
-                    app.pending_ding = true;
+                    app.chrome.pending_ding = true;
                 }
                 // The edge *into* NEEDS FEEDBACK is the FEEDBACK SOUND's;
                 // a re-stamp of a row already red is not.
@@ -204,18 +214,19 @@ fn handle_status_event(app: &mut App, event: ServerEvent, out: &mut Vec<ClientRe
                 a.status = status;
                 a.status_changed_at = changed_at;
                 a.unseen = unseen;
-                app.dirty = true;
+                app.chrome.dirty = true;
             }
             // The first turn in a session we just launched: its own stamp
             // leads the list from here, so the launch stops having to.
             if status != nebula_core::AgentStatus::Fresh
-                && app.just_launched.as_ref() == Some(&agent)
+                && app.requests.just_launched.as_ref() == Some(&agent)
             {
-                app.just_launched = None;
+                app.requests.just_launched = None;
             }
             // A turn that finished in the pane the user is looking at was
             // watched: clear it before it can count anywhere.
             let on_screen = app
+                .pane
                 .term
                 .as_ref()
                 .is_some_and(|t| t.sref == SessionRef::Agent(agent.clone()));
@@ -227,10 +238,10 @@ fn handle_status_event(app: &mut App, event: ServerEvent, out: &mut Vec<ClientRe
             // there is noise. Previewing the pane from a panel is not
             // typing at it, and a window in the background can't be seen —
             // both ring, and the second is the whole point.
-            let under_hands = on_screen && app.term_locked && app.window_focused;
+            let under_hands = on_screen && app.pane.term_locked && app.chrome.window_focused;
             if went_red && !under_hands {
                 if let Some(alert) = alerts::alert_for(&app.tree, &agent) {
-                    app.pending_feedback.push(alert);
+                    app.chrome.pending_feedback.push(alert);
                 }
             }
             // Nothing left any list, so this only re-seats the cursors.
@@ -248,8 +259,8 @@ fn handle_ack_event(app: &mut App, event: ServerEvent, out: &mut Vec<ClientReque
             // firing it (`App::left_behind`): the rows still become the
             // real ones, and nothing below moves a cursor, the pane or
             // FOCUS back to them.
-            let follow = !app.left_behind.remove(&req_id);
-            match (app.pending.remove(&req_id), created) {
+            let follow = !app.requests.left_behind.remove(&req_id);
+            match (app.requests.pending.remove(&req_id), created) {
                 (Some(PendingIntent::AttachCreated { focus, placeholder }), Some(id)) => {
                     attach_created(app, id, focus, placeholder, follow, out);
                 }
@@ -285,7 +296,7 @@ fn handle_ack_event(app: &mut App, event: ServerEvent, out: &mut Vec<ClientReque
                     }
                 }
                 (Some(PendingIntent::ReopenPromptOnError { note, .. }), _) => {
-                    app.flash = Some(note);
+                    app.chrome.flash = Some(note);
                 }
                 (
                     Some(PendingIntent::ProjectPathSet {
@@ -295,10 +306,11 @@ fn handle_ack_event(app: &mut App, event: ServerEvent, out: &mut Vec<ClientReque
                     }),
                     _,
                 ) => {
-                    app.dismissed_repath_projects.remove(&project);
+                    app.launcher.dismissed_repath_projects.remove(&project);
                     rekey_project_config(app, &old_path, &new_path);
                     app.bring_tab_forward(&project);
-                    app.flash = Some(format!("project folder updated: {}", new_path.display()));
+                    app.chrome.flash =
+                        Some(format!("project folder updated: {}", new_path.display()));
                 }
                 (
                     Some(PendingIntent::RunToggled {
@@ -313,14 +325,14 @@ fn handle_ack_event(app: &mut App, event: ServerEvent, out: &mut Vec<ClientReque
                     match created {
                         Some(EntityId::Terminal(id)) => match run_command_of(app, &id) {
                             Some(command) => {
-                                app.flash = Some(format!("▶ running {command} in {branch}"));
+                                app.chrome.flash = Some(format!("▶ running {command} in {branch}"));
                             }
                             None => {
-                                app.flash = Some(format!("▶ running in {branch}"));
-                                app.run_flash_when_seen = Some((id, branch));
+                                app.chrome.flash = Some(format!("▶ running in {branch}"));
+                                app.requests.run_flash_when_seen = Some((id, branch));
                             }
                         },
-                        _ => app.flash = Some(format!("▶ running in {branch}")),
+                        _ => app.chrome.flash = Some(format!("▶ running in {branch}")),
                     }
                 }
                 (
@@ -330,13 +342,13 @@ fn handle_ack_event(app: &mut App, event: ServerEvent, out: &mut Vec<ClientReque
                     }),
                     _,
                 ) => {
-                    app.flash = Some(format!("■ stopped the run in {branch}"));
+                    app.chrome.flash = Some(format!("■ stopped the run in {branch}"));
                 }
                 (Some(PendingIntent::SelectCreatedProject), Some(EntityId::Project(id))) => {
                     // Its upsert usually lands just before this Ack; if not,
                     // stash the id and select once it does.
                     if follow && !select_created_project(app, &id, out) {
-                        app.select_project_when_seen = Some(id);
+                        app.requests.select_project_when_seen = Some(id);
                     }
                 }
                 (
@@ -387,7 +399,7 @@ fn handle_ack_event(app: &mut App, event: ServerEvent, out: &mut Vec<ClientReque
                 (Some(PendingIntent::Undo(undo)), _) => optimistic::settled(app, undo),
                 _ => {}
             }
-            app.dirty = true;
+            app.chrome.dirty = true;
         }
         _ => unreachable!("server event dispatcher passed the wrong event variant"),
     }
@@ -418,6 +430,7 @@ fn handle_tree_event(app: &mut App, event: ServerEvent, out: &mut Vec<ClientRequ
             let became_cloud = match &entity {
                 nebula_core::Entity::Agent(a) if a.cloud_session_id.is_some() => {
                     let shown = app
+                        .pane
                         .term
                         .as_ref()
                         .is_some_and(|t| t.sref == SessionRef::Agent(a.id.clone()));
@@ -433,7 +446,7 @@ fn handle_tree_event(app: &mut App, event: ServerEvent, out: &mut Vec<ClientRequ
             apply_upsert(app, entity);
             if became_cloud {
                 detach_pane(app, out);
-                if app.focus == Focus::Terminal {
+                if app.nav.focus == Focus::Terminal {
                     leave_terminal_lock(app);
                 }
             }
@@ -446,19 +459,19 @@ fn handle_tree_event(app: &mut App, event: ServerEvent, out: &mut Vec<ClientRequ
             // one we just moved into another worktree or project.
             land_pending_selection(app, out);
             // ...and onto a project we just added.
-            if let Some(pid) = app.select_project_when_seen.clone() {
+            if let Some(pid) = app.requests.select_project_when_seen.clone() {
                 if select_created_project(app, &pid, out) {
-                    app.select_project_when_seen = None;
+                    app.requests.select_project_when_seen = None;
                 }
             }
             // ...and onto a worktree we just created.
-            if let Some(wt_id) = app.select_worktree_when_seen.clone() {
+            if let Some(wt_id) = app.requests.select_worktree_when_seen.clone() {
                 if select_worktree_by_id(app, &wt_id, out) {
-                    app.select_worktree_when_seen = None;
+                    app.requests.select_worktree_when_seen = None;
                 }
             }
             refresh_palette(app);
-            app.dirty = true;
+            app.chrome.dirty = true;
         }
         ServerEvent::EntityRemoved { id } => {
             let before = selection_snapshot(app);
@@ -468,21 +481,28 @@ fn handle_tree_event(app: &mut App, event: ServerEvent, out: &mut Vec<ClientRequ
             // neighbor — show that neighbor's session/context.
             reconcile_selection(app, before, out);
             refresh_palette(app);
-            app.dirty = true;
+            app.chrome.dirty = true;
         }
         // `nebula open` in a session: the user asked to see these files.
         ServerEvent::FilesOpened { root, paths, .. } => {
             crate::file_tabs::open(app, root, paths);
         }
+        ServerEvent::ReviewOpened { sessions, tabs, .. } => {
+            crate::review_modal::open(app, sessions, tabs);
+        }
         ServerEvent::Metrics { req_id, snapshot } => {
             // Answered with Metrics, not Ack — clear the pending slot by hand.
-            app.pending.remove(&req_id);
-            if let Some(Overlay::Metrics(view)) = &mut app.overlay {
+            app.requests.pending.remove(&req_id);
+            if let Some(Overlay::Metrics(view)) = &mut app.modals.overlay {
                 view.snapshot = Some(snapshot.clone());
             }
             // The footer's readout keeps the latest reading either way.
-            app.last_metrics = Some(snapshot);
-            app.dirty = true;
+            app.jobs.last_metrics = Some(snapshot);
+            app.chrome.dirty = true;
+        }
+        ServerEvent::WorktreeChecked { req_id, id, check } => {
+            // Answered with WorktreeChecked, not Ack; `land` clears the slot.
+            crate::delete_check::land(app, req_id, id, check);
         }
         ServerEvent::OutputTail {
             req_id,
@@ -490,7 +510,7 @@ fn handle_tree_event(app: &mut App, event: ServerEvent, out: &mut Vec<ClientRequ
             tail,
         } => {
             // Answered with OutputTail, not Ack — clear the slot by hand.
-            app.pending.remove(&req_id);
+            app.requests.pending.remove(&req_id);
             if let SessionRef::Terminal(id) = session {
                 land_terminal_tail(app, id, tail);
             }
@@ -499,17 +519,17 @@ fn handle_tree_event(app: &mut App, event: ServerEvent, out: &mut Vec<ClientRequ
             // The pane waiting on this session says why, in full; the
             // status line gets the first sentence, which fits it.
             let line = refusal_flash(&message);
-            app.flash = Some(line.clone());
-            app.refusal_flash = Some((session.clone(), line));
-            if let Some(term) = app.term.as_mut().filter(|t| t.sref == session) {
+            app.chrome.flash = Some(line.clone());
+            app.chrome.refusal_flash = Some((session.clone(), line));
+            if let Some(term) = app.pane.term.as_mut().filter(|t| t.sref == session) {
                 term.refused = Some(message);
             }
-            if app.overlay.is_none() {
+            if app.modals.overlay.is_none() {
                 if let Some(project) = app.project_of_session(&session).cloned() {
                     prompt_for_missing_project_path(app, &project);
                 }
             }
-            app.dirty = true;
+            app.chrome.dirty = true;
         }
         _ => unreachable!("server event dispatcher passed the wrong event variant"),
     }
@@ -519,13 +539,17 @@ fn handle_error_event(app: &mut App, event: ServerEvent, out: &mut Vec<ClientReq
     let _ = &mut *out;
     match event {
         ServerEvent::Error { req_id, message } => {
+            // A DELETE CHECK that failed says so in its confirm.
+            if req_id.is_some_and(|id| crate::delete_check::land_error(app, id, &message)) {
+                return;
+            }
             // A failed request's intent never gets an Ack; clear it — and if
             // it was an optimistic worktree delete, put the rows back. A
             // failed Cloud launch reopens its populated task editor.
             if let Some(id) = &req_id {
-                app.left_behind.remove(id);
+                app.requests.left_behind.remove(id);
             }
-            match req_id.and_then(|id| app.pending.remove(&id)) {
+            match req_id.and_then(|id| app.requests.pending.remove(&id)) {
                 Some(PendingIntent::DeleteWorktree(rollback)) => {
                     restore_worktree_rows(app, rollback)
                 }
@@ -594,7 +618,7 @@ fn handle_error_event(app: &mut App, event: ServerEvent, out: &mut Vec<ClientReq
                         placeholder::discard_agent(app, &agent, out);
                     }
                     if placeholder::discard_worktree(app, &placeholder, out) {
-                        app.focus = focus;
+                        app.nav.focus = focus;
                     }
                     reopen_prompt_with(app, prompt, text);
                 }
@@ -616,7 +640,7 @@ fn handle_error_event(app: &mut App, event: ServerEvent, out: &mut Vec<ClientReq
                     // wherever `restore_context` falls back to.
                     if on_stand_in {
                         if let Some(row) = app.open_pr_row_of(&pr_url) {
-                            if app.sel_worktree != row {
+                            if app.nav.sel_worktree != row {
                                 select_worktree_row(app, row, out);
                             }
                         }
@@ -625,9 +649,9 @@ fn handle_error_event(app: &mut App, event: ServerEvent, out: &mut Vec<ClientReq
                         // The refusal lands seconds after Enter: a modal
                         // opened meanwhile keeps its own text, and this
                         // box's waits for the next `p` on the pull request.
-                        Some((_, text)) if app.overlay.is_some() => {
+                        Some((_, text)) if app.modals.overlay.is_some() => {
                             if !text.is_empty() {
-                                app.parked_pr_prompt = Some((pr_url, text));
+                                app.modals.parked_pr_prompt = Some((pr_url, text));
                             }
                         }
                         Some((kind, text)) => reopen_prompt_with(app, kind, text),
@@ -643,8 +667,8 @@ fn handle_error_event(app: &mut App, event: ServerEvent, out: &mut Vec<ClientReq
                 }) => placeholder::discard_agent(app, &stand_in, out),
                 _ => {}
             }
-            app.flash = Some(message);
-            app.dirty = true;
+            app.chrome.flash = Some(message);
+            app.chrome.dirty = true;
         }
         _ => unreachable!("server event dispatcher passed the wrong event variant"),
     }

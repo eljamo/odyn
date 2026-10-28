@@ -153,6 +153,9 @@ const CLAUDE_ALLOW_RULES: &[&str] = &[
     concat!("Bash(", nebula_core::cli_name!(), " worktree:*)"),
     concat!("Bash(", nebula_core::cli_name!(), " spawn:*)"),
     concat!("Bash(", nebula_core::cli_name!(), " open:*)"),
+    concat!("Bash(", nebula_core::cli_name!(), " sessions:*)"),
+    concat!("Bash(", nebula_core::cli_name!(), " read:*)"),
+    concat!("Bash(", nebula_core::cli_name!(), " ask:*)"),
 ];
 
 /// Cursor variant: the payload arrives on stdin like Claude's, but cursor

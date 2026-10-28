@@ -70,6 +70,16 @@ fn parse_agent_kind(s: &str) -> Result<nebula_core::AgentKind, String> {
     })
 }
 
+fn parse_review_tab(s: &str) -> Result<nebula_core::ReviewTabKind, String> {
+    match s {
+        "terminal" => Ok(nebula_core::ReviewTabKind::Terminal),
+        "diff" => Ok(nebula_core::ReviewTabKind::Diff),
+        "history" => Ok(nebula_core::ReviewTabKind::History),
+        "pr" | "pull-request" | "pull_request" => Ok(nebula_core::ReviewTabKind::PullRequest),
+        _ => Err("expected terminal, diff, history or pr".into()),
+    }
+}
+
 #[derive(Subcommand)]
 pub(crate) enum Command {
     /// Register a git checkout as a project.
@@ -187,8 +197,9 @@ pub(crate) enum Command {
     /// Show files to the user inside this nebula.
     ///
     /// Run from inside a nebula agent session; agents run it only when you
-    /// ask to see a file, never unprompted. Text files only: an image or any
-    /// other binary is refused, since a terminal has nothing to show for it.
+    /// ask to see a file, image, mockup or diagram, never unprompted.
+    /// Opens text, supported local images and Mermaid diagrams; other
+    /// binaries are refused.
     /// The files open in nebula's file tabs — a modal with one tab per file,
     /// the focused one previewed, Enter editing it — in every nebula
     /// attached to this daemon, and this session carries on untouched.
@@ -197,6 +208,60 @@ pub(crate) enum Command {
         /// The files to show, relative to the current directory or absolute.
         #[arg(required = true, num_args = 1.., value_name = "FILE")]
         files: Vec<String>,
+    },
+    /// List every session across every project.
+    ///
+    /// Prints the session id/name, project, worktree branch, harness, status
+    /// and a one-line recent summary. Agents run this when you refer to
+    /// another nebula session by name and they need its exact id.
+    #[command(after_help = SESSIONS_EXAMPLES)]
+    Sessions {
+        /// Print JSON instead of compact text.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Read another session's recent context.
+    ///
+    /// Resolves a session by id or unambiguous fuzzy name, then prints clean
+    /// recent conversation text. Claude transcript text is preferred when
+    /// available; otherwise nebula falls back to stripped PTY scrollback.
+    #[command(after_help = READ_EXAMPLES)]
+    Read {
+        /// Session id or unambiguous fuzzy name.
+        session: String,
+        /// Number of recent text lines to print.
+        #[arg(long, default_value_t = 200)]
+        lines: u32,
+    },
+    /// Ask another session a question and print its answer.
+    ///
+    /// Sends a labelled prompt into the target agent, waits for that turn to
+    /// finish, and prints only the answer text captured from the target's
+    /// output. If the target is busy, the default is to wait until it is idle
+    /// before sending; --no-wait fails fast instead.
+    #[command(after_help = ASK_EXAMPLES)]
+    Ask {
+        /// Target agent id or unambiguous fuzzy name.
+        session: String,
+        /// Question text; multiple words need no quotes.
+        #[arg(required = true, num_args = 1..)]
+        question: Vec<String>,
+        /// Total seconds to wait for queueing and the answer turn.
+        #[arg(long, default_value_t = 120)]
+        timeout: u64,
+        /// Fail instead of queueing when the target is currently busy.
+        #[arg(long)]
+        no_wait: bool,
+    },
+    /// Coordinate projects from the orchestrator session.
+    ///
+    /// These commands are for the pinned orchestrator agent only. They are
+    /// refused by the daemon unless the current NEBULA_AGENT_ID belongs to
+    /// the persisted orchestrator row.
+    #[command(after_help = ORCHESTRATOR_EXAMPLES)]
+    Orchestrator {
+        #[command(subcommand)]
+        command: OrchestratorCommand,
     },
     /// Back up, restore or locate this machine's settings.
     ///
@@ -272,6 +337,25 @@ pub(crate) enum Command {
         #[arg(long)]
         no_sync_config: bool,
     },
+    /// Open nebula inside a local Docker sandbox.
+    ///
+    /// Starts a Docker container and runs nebula in it, installing it there
+    /// first as `nebula ssh` does, so agents work inside the container and
+    /// never see this machine's files. The container is kept: the next
+    /// `nebula sbx` finds its daemon, sessions and clones where you left
+    /// them. A NAME gets a sandbox of its own, `nebula-sbx-NAME`; remove
+    /// one with `docker rm -f`. Settings ride along as for `nebula ssh`.
+    #[command(after_help = SBX_EXAMPLES)]
+    Sbx {
+        /// A separate sandbox, e.g. one per client (default: `nebula-sbx`).
+        name: Option<String>,
+        /// Image to create the container from (default:
+        /// buildpack-deps:bookworm-scm).
+        ///
+        /// Only read when the container is created; recreate it to change.
+        #[arg(long)]
+        image: Option<String>,
+    },
     /// Open a remote host's nebula in a browser tab here.
     ///
     /// One ssh tunnel does the whole thing: it installs nebula on the remote
@@ -329,10 +413,67 @@ pub(crate) enum Command {
     /// attach to the daemon left running.
     #[command(hide = true, name = "_protocol-version")]
     ProtocolVersion,
+    /// Upgrade hook: print the oldest protocol version this binary can
+    /// attach to, paired with `_protocol-version` for compatibility checks.
+    #[command(hide = true, name = "_protocol-min-compatible-version")]
+    ProtocolMinCompatibleVersion,
     /// Reload hook: print the newest restart-state version this binary
     /// reads, so a daemon asked to restart onto it knows it can.
     #[command(hide = true, name = "_restart-version")]
     RestartVersion,
+}
+
+#[derive(Subcommand)]
+pub(crate) enum OrchestratorCommand {
+    /// List every project, worktree and session.
+    List {
+        /// Print JSON instead of compact text.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Read recent bounded output from a session.
+    Read {
+        /// Agent id, or terminal:<id> for a terminal.
+        session: String,
+        /// Max bytes to read from the PTY ring (capped by the daemon).
+        #[arg(long, default_value_t = 8192)]
+        bytes: u32,
+    },
+    /// Send a follow-up prompt to another local agent.
+    Send {
+        /// Target agent id.
+        session: String,
+        /// Prompt text; multiple words need no quotes.
+        #[arg(required = true, num_args = 1..)]
+        prompt: Vec<String>,
+    },
+    /// Spawn an agent in any project or worktree.
+    Spawn {
+        /// Project id or visible project name.
+        #[arg(long)]
+        project: String,
+        /// Worktree id or branch. Existing checkouts are reused; a missing
+        /// branch is cut using nebula's normal worktree base rules.
+        #[arg(long)]
+        worktree: Option<String>,
+        /// Start point when a new worktree has to be cut.
+        #[arg(long)]
+        base: Option<String>,
+        /// Harness for the new session.
+        #[arg(long, value_name = "KIND", value_parser = parse_agent_kind, default_value = "claude")]
+        kind: nebula_core::AgentKind,
+        /// Prompt text; multiple words need no quotes.
+        #[arg(required = true, num_args = 1..)]
+        task: Vec<String>,
+    },
+    /// Open the tabbed review modal in every attached TUI.
+    Review {
+        /// Agent id, or terminal:<id> for a terminal.
+        session: String,
+        /// Tabs to open. Repeats allowed; default is terminal, diff, history, pr.
+        #[arg(long = "tab", value_parser = parse_review_tab)]
+        tabs: Vec<nebula_core::ReviewTabKind>,
+    },
 }
 
 const ADD_EXAMPLES: &str = "\
@@ -380,7 +521,32 @@ Examples:
 const OPEN_EXAMPLES: &str = "\
 Examples:
   nebula open README.md                one tab
+  nebula open mockup.png flow.mmd      image and diagram previews
   nebula open src/main.rs docs/keys.md a tab each, in this order";
+
+const SESSIONS_EXAMPLES: &str = "\
+Examples:
+  nebula sessions
+  nebula sessions --json";
+
+const READ_EXAMPLES: &str = "\
+Examples:
+  nebula read research
+  nebula read 01HZY8QHA4AYM7M4XTA2G3KC9B --lines 80";
+
+const ASK_EXAMPLES: &str = "\
+Examples:
+  nebula ask research \"which library did you recommend?\"
+  nebula ask \"feature spike\" \"summarize your Redis findings\" --timeout 60
+  nebula ask research \"are you idle?\" --no-wait";
+
+const ORCHESTRATOR_EXAMPLES: &str = "\
+Examples:
+  nebula orchestrator list --json
+  nebula orchestrator read agent-2 --bytes 12000
+  nebula orchestrator send agent-2 \"continue after the test failure\"
+  nebula orchestrator spawn --project nebula --worktree fix-auth \"fix the login redirect\"
+  nebula orchestrator review agent-2 --tab diff --tab terminal";
 
 const BROWSER_EXAMPLES: &str = "\
 Examples:
@@ -396,6 +562,13 @@ Examples:
   nebula ssh user@server /srv/app  start in a directory there
   nebula ssh user@server --no-sync-config
                                    keep this machine's settings here";
+
+const SBX_EXAMPLES: &str = "\
+Examples:
+  nebula sbx                       open nebula in the nebula-sbx container
+  nebula sbx client-a              a separate sandbox, nebula-sbx-client-a
+  nebula sbx --image node:22       create it from another image
+  docker rm -f nebula-sbx          throw the default sandbox away";
 
 const CONFIG_EXAMPLES: &str = "\
 Examples:

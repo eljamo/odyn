@@ -1,13 +1,42 @@
 use crate::entities::{
-    Agent, AgentKind, AgentStatus, Entity, EntityId, Link, Project, TerminalTab, Worktree,
+    Agent, AgentKind, AgentRole, AgentStatus, Entity, EntityId, Link, Project, TerminalTab,
+    Worktree,
 };
 use crate::ids::{AgentId, LinkId, ProjectId, TerminalId, WorktreeId};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-/// Bump on any breaking change to these enums. The daemon refuses mismatched
-/// clients; the client then offers a kill-and-restart of the old daemon.
-pub const PROTOCOL_VERSION: u32 = 47;
+/// Highest IPC protocol this build speaks.
+///
+/// Bump on every protocol change. Additive changes keep
+/// [`MIN_COMPATIBLE_PROTOCOL`] where it is; breaking changes bump both.
+pub const PROTOCOL_VERSION: u32 = 51;
+
+/// Oldest IPC protocol this build can safely talk to.
+///
+/// Compatibility is a range overlap: two peers can talk when each peer's
+/// `[MIN_COMPATIBLE_PROTOCOL, PROTOCOL_VERSION]` range includes at least one
+/// version the other peer also supports.
+pub const MIN_COMPATIBLE_PROTOCOL: u32 = 49;
+
+/// First protocol whose daemon answers `ClientRequest::CheckWorktree`. A
+/// client asks only a daemon at least this new; an older one is never sent
+/// a request it could not decode, and its delete confirm simply goes
+/// without the check.
+pub const CHECK_WORKTREE_PROTOCOL: u32 = 51;
+
+pub fn protocol_ranges_overlap(
+    local_min: u32,
+    local_current: u32,
+    peer_min: u32,
+    peer_current: u32,
+) -> bool {
+    local_min <= peer_current && peer_min <= local_current
+}
+
+pub fn protocol_compatible_with(peer_version: u32) -> bool {
+    peer_version >= MIN_COMPATIBLE_PROTOCOL
+}
 
 /// Max IPC frame size (length prefix sanity bound).
 pub const MAX_FRAME_LEN: u32 = 4 * 1024 * 1024;
@@ -100,6 +129,27 @@ pub enum ClientRequest {
         id: WorktreeId,
         force: bool,
     },
+    /// What deleting this worktree would interrupt or lose — the DELETE
+    /// CHECK a confirm shows before the checkout leaves the disk. Answered
+    /// by `ServerEvent::WorktreeChecked` with the same req_id (not an Ack),
+    /// or an `Error`. Reads only: nothing is touched. Gated on
+    /// [`CHECK_WORKTREE_PROTOCOL`].
+    CheckWorktree {
+        req_id: u64,
+        id: WorktreeId,
+    },
+    /// Opt-in cleanup for a linked worktree whose PR was detected as merged.
+    /// The daemon re-checks the safety invariants before touching disk:
+    /// never the root/default branch, branch and HEAD must still match the
+    /// trusted PR row, the checkout must be clean, and sessions must be idle.
+    CleanupMergedWorktree {
+        req_id: u64,
+        id: WorktreeId,
+        branch: String,
+        pr_number: u64,
+        pr_url: String,
+        head_sha: String,
+    },
     CreateAgent {
         req_id: u64,
         worktree: WorktreeId,
@@ -138,6 +188,10 @@ pub enum ClientRequest {
         /// since a spare booted bare never got it.
         #[serde(default)]
         issue_url: Option<String>,
+        /// Special role for the row. Only an orchestrator row may use the
+        /// privileged orchestrator command surface.
+        #[serde(default)]
+        role: AgentRole,
     },
     /// Create a local AGENT of any kind from an OPEN PRS row — a PR
     /// SESSION. It never runs in the ROOT WORKTREE: the daemon finds the
@@ -270,6 +324,77 @@ pub enum ClientRequest {
         req_id: u64,
         id: AgentId,
         paths: Vec<PathBuf>,
+    },
+    /// Privileged orchestrator command: list the whole daemon tree in one
+    /// bounded model-readable response. The daemon refuses this unless
+    /// `caller` is the persisted orchestrator row.
+    OrchestratorList {
+        req_id: u64,
+        caller: AgentId,
+    },
+    /// Privileged orchestrator command: read a bounded tail of a session's
+    /// output. This is recent output only, not transcript export.
+    OrchestratorRead {
+        req_id: u64,
+        caller: AgentId,
+        session: SessionRef,
+        max_bytes: u32,
+    },
+    /// Privileged orchestrator command: send a follow-up prompt to another
+    /// local agent through the same PTY path as the TUI follow-up composer.
+    OrchestratorSend {
+        req_id: u64,
+        caller: AgentId,
+        target: AgentId,
+        message: String,
+    },
+    /// Privileged orchestrator command: start an agent in any project and
+    /// worktree. `worktree` reuses an existing checkout; otherwise `branch`
+    /// is found or cut in `project`.
+    OrchestratorSpawn {
+        req_id: u64,
+        caller: AgentId,
+        project: ProjectId,
+        worktree: Option<WorktreeId>,
+        branch: Option<String>,
+        base: Option<String>,
+        name: String,
+        kind: AgentKind,
+        #[serde(default)]
+        custom_harness: Option<String>,
+        model: Option<String>,
+        effort: Option<String>,
+        starting_prompt: String,
+    },
+    /// Privileged orchestrator command: ask every TUI client to open the
+    /// tabbed review modal.
+    OrchestratorOpenReview {
+        req_id: u64,
+        caller: AgentId,
+        sessions: Vec<SessionRef>,
+        tabs: Vec<ReviewTabKind>,
+    },
+    /// Agent-readable list of every session across every project.
+    ListSessions {
+        req_id: u64,
+    },
+    /// Agent-readable recent context for one session, addressed by id or
+    /// fuzzy name. Prefers harness transcripts when the daemon knows one.
+    ReadSession {
+        req_id: u64,
+        target: String,
+        max_lines: u32,
+    },
+    /// Send a labelled question to another local agent, optionally waiting
+    /// for it to become idle first, and answer with clean text from that
+    /// turn's output.
+    AskSession {
+        req_id: u64,
+        caller: Option<AgentId>,
+        target: String,
+        question: String,
+        timeout_ms: u64,
+        wait: bool,
     },
     /// Kills the PTY, sets archived=1.
     ArchiveAgent {
@@ -455,6 +580,27 @@ pub struct OutputTail {
     pub data: Vec<u8>,
 }
 
+/// One row in the agent-readable `nebula sessions` listing.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionSummary {
+    pub session: SessionRef,
+    pub id: String,
+    pub name: String,
+    pub project_id: ProjectId,
+    pub project: String,
+    pub worktree_id: WorktreeId,
+    pub worktree: PathBuf,
+    pub branch: String,
+    /// The agent harness (`claude`, `codex`, ...), or `terminal`.
+    pub harness: String,
+    /// Model-facing status: `idle`, `running`, `needs_feedback`,
+    /// `terminated`, or `disconnected`.
+    pub status: String,
+    pub alive: bool,
+    /// One-line recent context: newest user prompt when known, else title.
+    pub summary: String,
+}
+
 /// Daemon-side half of the metrics modal's data; the client stacks its own
 /// RSS on top. Session subtrees are daemon descendants, so `daemon_rss_bytes`
 /// counts the daemon process alone — the total stays double-count-free.
@@ -467,6 +613,58 @@ pub struct MetricsSnapshot {
     pub sessions: Vec<SessionMetrics>,
 }
 
+/// What deleting a worktree would interrupt or lose, as the DAEMON found
+/// it just now (`ClientRequest::CheckWorktree`). Every part is best effort
+/// and says so when it could not look: a check that failed is not a clean
+/// bill of health.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorktreeCheck {
+    /// Processes whose working directory is inside the checkout — a build,
+    /// an editor, a shell, the tool calls of an agent whose own session
+    /// lives elsewhere — other than the worktree's own sessions, which the
+    /// confirm already counts and which go down with it.
+    pub processes: Vec<WorktreeProcess>,
+    /// Why the process sweep could not run, when it could not.
+    pub process_error: Option<String>,
+    /// Paths `git status` reports: uncommitted edits, untracked files, and
+    /// submodules with changes or new commits.
+    pub changes: u32,
+    /// Epoch ms of the newest write among those paths — "still being
+    /// worked on" when it is a moment ago. None with no changes.
+    pub newest_change_ms: Option<i64>,
+    /// Commits HEAD has that `base` lacks. The branch keeps them after the
+    /// checkout goes, unless `detached`.
+    pub ahead: u32,
+    /// What `ahead` was counted against (`origin/main`); None when nothing
+    /// could be found to compare with.
+    pub base: Option<String>,
+    /// HEAD is detached: `ahead` then counts commits no branch or remote
+    /// holds, which the delete leaves to the reflog alone.
+    pub detached: bool,
+    /// Why git could not be asked, when it could not.
+    pub git_error: Option<String>,
+}
+
+/// One process `WorktreeCheck` found working inside a checkout.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorktreeProcess {
+    pub pid: u32,
+    /// The executable's short name (`cargo`, `zsh`).
+    pub name: String,
+}
+
+impl WorktreeCheck {
+    /// Did the check find anything a delete would interrupt or lose — or
+    /// fail to look at something it should have?
+    pub fn has_findings(&self) -> bool {
+        !self.processes.is_empty()
+            || self.process_error.is_some()
+            || self.changes > 0
+            || self.ahead > 0
+            || self.git_error.is_some()
+    }
+}
+
 /// What `EnterWorktree` did to the agent's live session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum EnterOutcome {
@@ -477,6 +675,15 @@ pub enum EnterOutcome {
     Relocating,
     /// The row moved and nothing was running: the next launch lands there.
     NextLaunch,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReviewTabKind {
+    Terminal,
+    Diff,
+    History,
+    PullRequest,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -513,6 +720,39 @@ pub enum ServerEvent {
     Error {
         req_id: Option<u64>,
         message: String,
+    },
+    /// Reply to `OrchestratorList`.
+    OrchestratorList {
+        req_id: u64,
+        projects: Vec<Project>,
+        worktrees: Vec<Worktree>,
+        agents: Vec<Agent>,
+        terminals: Vec<TerminalTab>,
+        links: Vec<Link>,
+    },
+    /// Reply to `ListSessions`.
+    SessionList {
+        req_id: u64,
+        sessions: Vec<SessionSummary>,
+    },
+    /// Reply to `ReadSession`.
+    SessionText {
+        req_id: u64,
+        session: SessionRef,
+        text: String,
+    },
+    /// Reply to `AskSession`.
+    SessionAnswer {
+        req_id: u64,
+        session: AgentId,
+        answer: String,
+    },
+    /// Broadcast by `OrchestratorOpenReview`: clients open a local review
+    /// modal for these sessions and tabs.
+    ReviewOpened {
+        opener: AgentId,
+        sessions: Vec<SessionRef>,
+        tabs: Vec<ReviewTabKind>,
     },
     /// An `Attach` the DAEMON could not honour: the session's process was
     /// not running and could not be started (its checkout is gone from
@@ -580,6 +820,12 @@ pub enum ServerEvent {
         flags: u8,
     },
 
+    /// Reply to `ClientRequest::CheckWorktree`.
+    WorktreeChecked {
+        req_id: u64,
+        id: WorktreeId,
+        check: WorktreeCheck,
+    },
     /// Reply to `ClientRequest::GetMetrics`.
     Metrics {
         req_id: u64,
@@ -592,4 +838,24 @@ pub enum ServerEvent {
         session: SessionRef,
         tail: Option<OutputTail>,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn protocol_ranges_overlap_when_either_side_is_additive() {
+        assert!(protocol_ranges_overlap(47, 47, 47, 48));
+        assert!(protocol_ranges_overlap(47, 48, 47, 47));
+        assert!(!protocol_ranges_overlap(48, 48, 47, 47));
+        assert!(!protocol_ranges_overlap(47, 47, 48, 48));
+    }
+
+    #[test]
+    fn protocol_compatibility_accepts_current_and_additive_peers() {
+        assert!(protocol_compatible_with(PROTOCOL_VERSION));
+        assert!(protocol_compatible_with(PROTOCOL_VERSION + 1));
+        assert!(!protocol_compatible_with(MIN_COMPATIBLE_PROTOCOL - 1));
+    }
 }
